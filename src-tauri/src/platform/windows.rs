@@ -315,7 +315,7 @@ impl ContextDetector for WindowsContextDetector {
         #[cfg(target_os = "windows")]
         {
             // Strategy: simulate Ctrl+C → read clipboard → restore clipboard.
-            tokio::task::block_in_place(|| copy_selection_via_clipboard())
+            tokio::task::block_in_place(copy_selection_via_clipboard)
         }
 
         #[cfg(not(target_os = "windows"))]

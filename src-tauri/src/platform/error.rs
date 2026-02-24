@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)] // ToolNotFound used only on Linux, not on Windows
 pub enum PlatformError {
     #[error("Text injection failed: {0}")]
     InjectionFailed(String),
