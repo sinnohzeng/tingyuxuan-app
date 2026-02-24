@@ -115,7 +115,13 @@ pub async fn start_recording(
     session_state: State<'_, SessionState>,
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
+    pipeline_state: State<'_, PipelineState>,
 ) -> Result<String, String> {
+    // Validate pipeline is available before starting recording.
+    if pipeline_state.0.read().await.is_none() {
+        return Err("请先在设置中配置 STT 和 LLM 的 API Key".to_string());
+    }
+
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut processing_mode = parse_mode(&mode);
 
@@ -209,6 +215,7 @@ pub async fn stop_recording(
     recorder_state: State<'_, RecorderState>,
     network_state: State<'_, NetworkState>,
     queue_state: State<'_, QueueState>,
+    config_state: State<'_, ConfigState>,
 ) -> Result<String, String> {
     use tingyuxuan_core::pipeline::queue::QueuedRecording;
 
@@ -265,6 +272,12 @@ pub async fn stop_recording(
         .clone()
         .ok_or_else(|| "Pipeline not configured — check API keys in Settings".to_string())?;
 
+    // Read user dictionary from config for the processing request.
+    let user_dictionary = {
+        let config = config_state.0.read().await;
+        config.user_dictionary.clone()
+    };
+
     // Build processing request with the actual recorded audio path.
     let request = ProcessingRequest {
         audio_path,
@@ -272,24 +285,29 @@ pub async fn stop_recording(
         app_context: session.app_context,
         target_language: session.target_language,
         selected_text: session.selected_text,
-        user_dictionary: Vec::new(),
+        user_dictionary,
     };
 
     let cancel_token = session.cancel_token;
     let history = history_state.0.clone();
 
+    // Remember the mode for deciding whether to auto-inject.
+    let is_ai_assistant = matches!(request.mode, ProcessingMode::AiAssistant);
+
     // Spawn async processing task — does not block the command response.
     tokio::spawn(async move {
         match pipeline.process_audio(&request, cancel_token).await {
             Ok(processed_text) => {
-                // Small delay so the floating bar can hide and focus returns.
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-                // Inject text into the active application.
-                // inject_text is synchronous (spawns xdotool/wtype), but fast enough
-                // to call from a tokio task without spawn_blocking.
-                if let Err(e) = text_injector::inject_text(&processed_text) {
-                    tracing::error!("Text injection failed: {}", e);
+                if is_ai_assistant {
+                    // AI assistant mode: show result panel, don't auto-inject.
+                    // ProcessingComplete event is already emitted by Pipeline.
+                    tracing::info!("AI assistant result ready (no auto-inject)");
+                } else {
+                    // Other modes: auto-inject text into the active application.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    if let Err(e) = text_injector::inject_text(&processed_text) {
+                        tracing::error!("Text injection failed: {}", e);
+                    }
                 }
 
                 // Update history record.
@@ -332,6 +350,88 @@ pub async fn cancel_recording(
 
         tracing::info!("Recording cancelled: session={}", session.session_id);
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Retry
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn retry_transcription(
+    id: String,
+    pipeline_state: State<'_, PipelineState>,
+    history_state: State<'_, HistoryState>,
+    event_bus: State<'_, EventBus>,
+) -> Result<(), String> {
+    // 1. Look up the history record.
+    let record = {
+        let h = history_state.0.lock().await;
+        h.get_by_id(&id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Record {} not found", id))?
+    };
+
+    // 2. Verify the audio file still exists (may have been cleaned up).
+    let audio_path = record
+        .audio_path
+        .ok_or_else(|| "此记录没有关联的音频文件".to_string())?;
+    let audio_path = PathBuf::from(&audio_path);
+    if !audio_path.exists() {
+        return Err("音频文件已过期，无法重试".to_string());
+    }
+
+    // 3. Get pipeline.
+    let pipeline = pipeline_state
+        .0
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "Pipeline 未配置，请先设置 API Key".to_string())?;
+
+    // 4. Build processing request.
+    let request = ProcessingRequest {
+        audio_path,
+        mode: parse_mode(&record.mode),
+        app_context: record.app_context,
+        target_language: None,
+        selected_text: None,
+        user_dictionary: Vec::new(),
+    };
+
+    // 5. Emit processing started event.
+    let _ = event_bus.0.send(PipelineEvent::ProcessingStarted);
+
+    // 6. Update status to "processing".
+    {
+        let h = history_state.0.lock().await;
+        let _ = h.update_status(&id, "processing");
+    }
+
+    // 7. Spawn async processing.
+    let history = history_state.0.clone();
+    let cancel = CancellationToken::new();
+    let tx = event_bus.0.clone();
+    tokio::spawn(async move {
+        match pipeline.process_audio(&request, cancel).await {
+            Ok(processed_text) => {
+                let _ = tx.send(PipelineEvent::ProcessingComplete {
+                    processed_text: processed_text.clone(),
+                });
+                if let Ok(h) = history.try_lock() {
+                    let _ = h.update_result(&id, &processed_text);
+                }
+                tracing::info!("Retry succeeded for session {}", id);
+            }
+            Err(e) => {
+                tracing::error!("Retry failed for {}: {}", id, e);
+                if let Ok(h) = history.try_lock() {
+                    let _ = h.update_status(&id, "failed");
+                }
+            }
+        }
+    });
+
     Ok(())
 }
 
@@ -380,6 +480,13 @@ pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+pub async fn is_first_launch(
+    pipeline_state: State<'_, PipelineState>,
+) -> Result<bool, String> {
+    Ok(pipeline_state.0.read().await.is_none())
+}
+
+#[tauri::command]
 pub async fn get_config(config_state: State<'_, ConfigState>) -> Result<AppConfig, String> {
     let config = config_state.0.read().await;
     Ok(config.clone())
@@ -417,6 +524,91 @@ pub async fn get_recent_history(
 ) -> Result<Vec<TranscriptRecord>, String> {
     let history = history_state.0.lock().await;
     history.get_recent(limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn search_history(
+    query: String,
+    limit: u32,
+    history_state: State<'_, HistoryState>,
+) -> Result<Vec<TranscriptRecord>, String> {
+    let history = history_state.0.lock().await;
+    history.search(&query, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_history_page(
+    limit: u32,
+    offset: u32,
+    history_state: State<'_, HistoryState>,
+) -> Result<Vec<TranscriptRecord>, String> {
+    let history = history_state.0.lock().await;
+    history.get_page(limit, offset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_history(
+    id: String,
+    history_state: State<'_, HistoryState>,
+) -> Result<(), String> {
+    let history = history_state.0.lock().await;
+    history.delete(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_history_batch(
+    ids: Vec<String>,
+    history_state: State<'_, HistoryState>,
+) -> Result<u64, String> {
+    let history = history_state.0.lock().await;
+    history.delete_batch(&ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_history(
+    history_state: State<'_, HistoryState>,
+) -> Result<u64, String> {
+    let history = history_state.0.lock().await;
+    history.clear_all().map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Dictionary
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_dictionary(config_state: State<'_, ConfigState>) -> Result<Vec<String>, String> {
+    let config = config_state.0.read().await;
+    Ok(config.user_dictionary.clone())
+}
+
+#[tauri::command]
+pub async fn add_dictionary_word(
+    word: String,
+    config_state: State<'_, ConfigState>,
+) -> Result<(), String> {
+    let mut config = config_state.0.write().await;
+    let trimmed = word.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("词汇不能为空".to_string());
+    }
+    if config.user_dictionary.contains(&trimmed) {
+        return Ok(()); // Already exists, no-op.
+    }
+    config.user_dictionary.push(trimmed);
+    config.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_dictionary_word(
+    word: String,
+    config_state: State<'_, ConfigState>,
+) -> Result<(), String> {
+    let mut config = config_state.0.write().await;
+    config.user_dictionary.retain(|w| w != &word);
+    config.save().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -54,6 +54,11 @@ pub fn run() {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
+                            PipelineEvent::Error { .. } => {
+                                // Show floating bar on errors so user sees the error panel.
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                             PipelineEvent::ProcessingComplete { .. } => {
                                 // Auto-hide after a short delay (frontend handles the
                                 // 1.5s "done" display then calls window.hide()).
@@ -206,6 +211,16 @@ pub fn run() {
             commands::save_api_key,
             commands::get_api_key,
             commands::inject_text,
+            commands::retry_transcription,
+            commands::get_dictionary,
+            commands::add_dictionary_word,
+            commands::remove_dictionary_word,
+            commands::search_history,
+            commands::get_history_page,
+            commands::delete_history,
+            commands::delete_history_batch,
+            commands::clear_history,
+            commands::is_first_launch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TingYuXuan");

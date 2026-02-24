@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../stores/appStore";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
+import ResultPanel from "./ResultPanel";
 
 /** Mode display labels */
 const MODE_LABELS: Record<string, string> = {
@@ -20,6 +21,7 @@ export default function FloatingBar() {
     errorMessage,
     errorAction,
     rawTranscript,
+    aiResult,
     setRecordingState,
     setRecordingMode,
     reset,
@@ -56,9 +58,10 @@ export default function FloatingBar() {
     };
   }, [recordingState]);
 
-  // Auto-hide after done/cancelled
+  // Auto-hide after done/cancelled (except AI assistant — it shows result panel).
   useEffect(() => {
-    if (recordingState === "done" || recordingState === "cancelled") {
+    const isAiDone = recordingState === "done" && recordingMode === "ai_assistant";
+    if ((recordingState === "done" && !isAiDone) || recordingState === "cancelled") {
       hideTimerRef.current = setTimeout(() => {
         reset();
       }, 1500);
@@ -66,7 +69,7 @@ export default function FloatingBar() {
     return () => {
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
-  }, [recordingState, reset]);
+  }, [recordingState, recordingMode, reset]);
 
   // Hide the window when idle (window stays alive but becomes invisible)
   useEffect(() => {
@@ -110,6 +113,9 @@ export default function FloatingBar() {
               // STT done, keep processing state
               break;
             case "ProcessingComplete":
+              if (useAppStore.getState().recordingMode === "ai_assistant") {
+                store.setAiResult(data.processed_text as string);
+              }
               store.setRecordingState("done");
               break;
             case "Error":
@@ -162,7 +168,9 @@ export default function FloatingBar() {
             case "ai_assistant":
               if (currentState === "idle") {
                 store.setRecordingMode(action as "dictate" | "translate" | "ai_assistant");
-                invoke("start_recording", { mode: action }).catch(() => {});
+                invoke("start_recording", { mode: action }).catch((err: string) => {
+                  store.setError(err, "CheckApiKey", null);
+                });
               }
               break;
           }
@@ -198,9 +206,20 @@ export default function FloatingBar() {
   }, [setRecordingState]);
 
   const handleRetry = useCallback(async () => {
+    const currentSession = useAppStore.getState().sessionId;
+    if (!currentSession) {
+      reset();
+      return;
+    }
     setRecordingState("processing");
-    // TODO: implement retry logic (re-process last audio)
-  }, [setRecordingState]);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("retry_transcription", { id: currentSession });
+    } catch {
+      // Retry failed (audio expired, etc.) — reset to idle.
+      reset();
+    }
+  }, [setRecordingState, reset]);
 
   const handleInsertRaw = useCallback(async () => {
     if (rawTranscript) {
@@ -249,7 +268,7 @@ export default function FloatingBar() {
               : "bg-gray-900/90 border-gray-700/50"
           }
           backdrop-blur-md
-          ${recordingState === "error" ? "w-[400px] min-h-[64px]" : "w-[400px] h-[56px]"}
+          ${recordingState === "error" ? "w-[400px] min-h-[64px]" : recordingState === "done" && recordingMode === "ai_assistant" && aiResult ? "w-[420px] h-[360px] flex-col" : "w-[400px] h-[56px]"}
         `}
       >
         {/* Recording state */}
@@ -303,8 +322,23 @@ export default function FloatingBar() {
           </div>
         )}
 
-        {/* Done state */}
-        {recordingState === "done" && (
+        {/* Done state — AI assistant shows result panel */}
+        {recordingState === "done" && recordingMode === "ai_assistant" && aiResult && (
+          <ResultPanel
+            result={aiResult}
+            onCopy={() => navigator.clipboard.writeText(aiResult)}
+            onInsert={async () => {
+              try {
+                const { invoke } = await import("@tauri-apps/api/core");
+                await invoke("inject_text", { text: aiResult });
+              } catch { /* dev mode */ }
+              reset();
+            }}
+            onDismiss={reset}
+          />
+        )}
+        {/* Done state — normal modes */}
+        {recordingState === "done" && !(recordingMode === "ai_assistant" && aiResult) && (
           <div className="flex-1 flex items-center justify-center gap-2 px-4">
             <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />

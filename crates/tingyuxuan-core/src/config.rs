@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub stt: STTConfig,
     pub llm: LLMConfig,
     pub cache: CacheConfig,
+    #[serde(default)]
+    pub user_dictionary: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +132,7 @@ impl Default for AppConfig {
                 failed_retention_days: 7,
                 max_cache_size_mb: 500,
             },
+            user_dictionary: Vec::new(),
         }
     }
 }
@@ -319,6 +322,31 @@ mod tests {
             config2.llm_base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
         );
+    }
+
+    #[test]
+    fn test_config_backward_compat_no_dictionary() {
+        // Old config files won't have user_dictionary — should deserialize with empty Vec.
+        let json = r#"{
+            "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
+            "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
+            "language": { "primary": "auto", "translation_target": "en", "variant": null },
+            "stt": { "provider": "whisper", "api_key_ref": "", "base_url": null, "model": "whisper-1" },
+            "llm": { "provider": "openai", "api_key_ref": "", "base_url": null, "model": "gpt-4o-mini" },
+            "cache": { "audio_retention_hours": 24, "failed_retention_days": 7, "max_cache_size_mb": 500 }
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(config.user_dictionary.is_empty());
+    }
+
+    #[test]
+    fn test_config_with_dictionary() {
+        let mut config = AppConfig::default();
+        config.user_dictionary = vec!["TingYuXuan".to_string(), "Rust".to_string()];
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.user_dictionary.len(), 2);
+        assert_eq!(parsed.user_dictionary[0], "TingYuXuan");
     }
 
     #[test]

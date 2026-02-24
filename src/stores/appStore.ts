@@ -22,6 +22,9 @@ interface AppStore {
   // Network
   isOnline: boolean;
 
+  // AI assistant result
+  aiResult: string | null;
+
   // Config
   config: AppConfig | null;
 
@@ -38,6 +41,7 @@ interface AppStore {
   ) => void;
   clearError: () => void;
   setIsOnline: (online: boolean) => void;
+  setAiResult: (text: string | null) => void;
   setConfig: (config: AppConfig) => void;
   reset: () => void;
 }
@@ -52,6 +56,7 @@ export const useAppStore = create<AppStore>((set) => ({
   errorMessage: null,
   errorAction: null,
   rawTranscript: null,
+  aiResult: null,
   isOnline: true,
   config: null,
 
@@ -70,6 +75,7 @@ export const useAppStore = create<AppStore>((set) => ({
     }),
   clearError: () =>
     set({ errorMessage: null, errorAction: null, rawTranscript: null }),
+  setAiResult: (aiResult) => set({ aiResult }),
   setIsOnline: (isOnline) => set({ isOnline }),
   setConfig: (config) => set({ config }),
   reset: () =>
@@ -82,5 +88,6 @@ export const useAppStore = create<AppStore>((set) => ({
       errorMessage: null,
       errorAction: null,
       rawTranscript: null,
+      aiResult: null,
     }),
 }));

@@ -81,6 +81,7 @@ export interface AppConfig {
     failed_retention_days: number;
     max_cache_size_mb: number;
   };
+  user_dictionary: string[];
 }
 
 /** Transcript history record */

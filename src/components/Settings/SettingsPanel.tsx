@@ -4,14 +4,19 @@ import type { AppConfig } from "../../lib/types";
 import ApiConfig from "./ApiConfig";
 import ShortcutConfig from "./ShortcutConfig";
 import GeneralConfig from "./GeneralConfig";
+import DictionaryConfig from "./DictionaryConfig";
+import HistoryPanel from "./HistoryPanel";
+import SetupWizard from "./SetupWizard";
 
-type Tab = "general" | "api" | "shortcuts" | "language";
+type Tab = "general" | "api" | "shortcuts" | "language" | "dictionary" | "history";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "general", label: "常规" },
   { id: "api", label: "API 配置" },
   { id: "shortcuts", label: "快捷键" },
   { id: "language", label: "语言" },
+  { id: "dictionary", label: "个人词典" },
+  { id: "history", label: "历史记录" },
 ];
 
 export default function SettingsPanel() {
@@ -19,8 +24,27 @@ export default function SettingsPanel() {
   const { config, setConfig } = useAppStore();
   const [localConfig, setLocalConfig] = useState<AppConfig | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>("");
+  const [showWizard, setShowWizard] = useState(false);
 
-  // Load config on mount
+  // Listen for open-history event from tray menu.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => {
+        listen("open-history", () => {
+          setActiveTab("history");
+          setShowWizard(false);
+        }).then((u) => {
+          unlisten = u;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Load config on mount and check if first launch.
   useEffect(() => {
     async function loadConfig() {
       try {
@@ -28,6 +52,10 @@ export default function SettingsPanel() {
         const cfg = await invoke<AppConfig>("get_config");
         setConfig(cfg);
         setLocalConfig(cfg);
+
+        // Check if this is the first launch (no API keys configured).
+        const isFirst = await invoke<boolean>("is_first_launch");
+        if (isFirst) setShowWizard(true);
       } catch {
         // Dev mode fallback
         const defaultConfig: AppConfig = {
@@ -64,6 +92,7 @@ export default function SettingsPanel() {
             failed_retention_days: 7,
             max_cache_size_mb: 500,
           },
+          user_dictionary: [],
         };
         setLocalConfig(defaultConfig);
       }
@@ -97,6 +126,16 @@ export default function SettingsPanel() {
       <div className="flex items-center justify-center h-screen bg-gray-50">
         <div className="text-gray-400">加载配置中...</div>
       </div>
+    );
+  }
+
+  if (showWizard) {
+    return (
+      <SetupWizard
+        config={localConfig}
+        onUpdate={updateConfig}
+        onComplete={() => setShowWizard(false)}
+      />
     );
   }
 
@@ -149,6 +188,8 @@ export default function SettingsPanel() {
         {activeTab === "language" && (
           <LanguageConfig config={localConfig} onUpdate={updateConfig} />
         )}
+        {activeTab === "dictionary" && <DictionaryConfig />}
+        {activeTab === "history" && <HistoryPanel />}
       </div>
     </div>
   );
