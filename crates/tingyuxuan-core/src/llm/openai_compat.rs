@@ -178,3 +178,118 @@ struct Choice {
 struct Usage {
     total_tokens: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::provider::{LLMInput, ProcessingMode};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn success_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "processed text"}}],
+            "usage": {"total_tokens": 42}
+        })
+    }
+
+    fn sample_input() -> LLMInput {
+        LLMInput {
+            mode: ProcessingMode::Dictate,
+            raw_transcript: "hello world".to_string(),
+            target_language: None,
+            selected_text: None,
+            current_app: None,
+            user_dictionary: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&server)
+            .await;
+
+        let provider =
+            OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into());
+        let result = provider.process(&sample_input()).await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r.processed_text, "processed text");
+        assert_eq!(r.tokens_used, Some(42));
+    }
+
+    #[tokio::test]
+    async fn process_auth_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new("bad-key".into(), server.uri(), "m".into());
+        let result = provider.process(&sample_input()).await;
+        assert!(matches!(result, Err(LLMError::AuthFailed)));
+    }
+
+    #[tokio::test]
+    async fn process_rate_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("Rate limited"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let result = provider.process(&sample_input()).await;
+        assert!(matches!(result, Err(LLMError::RateLimited)));
+    }
+
+    #[tokio::test]
+    async fn process_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("ISE"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let result = provider.process(&sample_input()).await;
+        assert!(matches!(result, Err(LLMError::ServerError(500, _))));
+    }
+
+    #[tokio::test]
+    async fn process_invalid_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let result = provider.process(&sample_input()).await;
+        assert!(matches!(result, Err(LLMError::InvalidResponse(_))));
+    }
+
+    #[tokio::test]
+    async fn test_connection_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let result = provider.test_connection().await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+}

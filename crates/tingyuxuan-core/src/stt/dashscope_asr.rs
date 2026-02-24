@@ -251,3 +251,131 @@ impl STTProvider for DashScopeASRProvider {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn dummy_audio_file() -> NamedTempFile {
+        let f = NamedTempFile::new().unwrap();
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(f.path(), spec).unwrap();
+        for _ in 0..160 {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        f
+    }
+
+    fn default_opts() -> STTOptions {
+        STTOptions {
+            language: None,
+            prompt: None,
+        }
+    }
+
+    fn success_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"content": "你好世界"}}]
+        })
+    }
+
+    #[tokio::test]
+    async fn transcribe_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("test-key".into(), Some(server.uri()), None);
+        let audio = dummy_audio_file();
+        let result = provider.transcribe(audio.path(), &default_opts()).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().text, "你好世界");
+    }
+
+    #[tokio::test]
+    async fn transcribe_auth_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("bad-key".into(), Some(server.uri()), None);
+        let audio = dummy_audio_file();
+        let result = provider.transcribe(audio.path(), &default_opts()).await;
+        assert!(matches!(result, Err(STTError::AuthFailed)));
+    }
+
+    #[tokio::test]
+    async fn transcribe_rate_limited() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("Rate limited"))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let audio = dummy_audio_file();
+        let result = provider.transcribe(audio.path(), &default_opts()).await;
+        assert!(matches!(result, Err(STTError::RateLimited)));
+    }
+
+    #[tokio::test]
+    async fn transcribe_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let audio = dummy_audio_file();
+        let result = provider.transcribe(audio.path(), &default_opts()).await;
+        assert!(matches!(result, Err(STTError::ServerError(500, _))));
+    }
+
+    #[tokio::test]
+    async fn transcribe_invalid_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let audio = dummy_audio_file();
+        let result = provider.transcribe(audio.path(), &default_opts()).await;
+        assert!(matches!(result, Err(STTError::InvalidResponse(_))));
+    }
+
+    #[tokio::test]
+    async fn test_connection_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response()))
+            .mount(&server)
+            .await;
+
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let result = provider.test_connection().await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+}
