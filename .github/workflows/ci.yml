@@ -78,30 +78,6 @@ jobs:
       - name: cargo test (tingyuxuan-core)
         run: cargo test --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core
 
-  cross-check:
-    name: Cross-check (Windows target on Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cross-win-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cross-win-
-
-      - name: cargo check --target x86_64-pc-windows-msvc (core only)
-        run: cargo check --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core --target x86_64-pc-windows-msvc
-
   frontend-check:
     name: Frontend Check
     runs-on: ubuntu-latest

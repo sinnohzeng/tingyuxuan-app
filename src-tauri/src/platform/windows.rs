@@ -2,15 +2,13 @@
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HGLOBAL, HWND};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Memory::{
-    GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
@@ -168,9 +166,12 @@ fn clipboard_read() -> Result<Option<String>, PlatformError> {
     let handle = unsafe { GetClipboardData(13) }; // CF_UNICODETEXT = 13
     match handle {
         Ok(h) if !h.0.is_null() => {
+            // SAFETY: HANDLE and HGLOBAL have the same repr (*mut c_void).
+            // GetClipboardData returns a global memory handle as HANDLE.
+            let hglobal = HGLOBAL(h.0);
             // SAFETY: GlobalLock returns a pointer to the clipboard data.
             // We read the UTF-16 string and unlock immediately.
-            let ptr = unsafe { GlobalLock(std::mem::transmute(h.0)) };
+            let ptr = unsafe { GlobalLock(hglobal) };
             if ptr.is_null() {
                 return Ok(None);
             }
@@ -183,7 +184,7 @@ fn clipboard_read() -> Result<Option<String>, PlatformError> {
             let slice = unsafe { std::slice::from_raw_parts(wide, len) };
             let text = String::from_utf16_lossy(slice);
             // SAFETY: Unlock the global memory after reading.
-            unsafe { GlobalUnlock(std::mem::transmute(h.0)) };
+            let _ = unsafe { GlobalUnlock(hglobal) };
             Ok(Some(text))
         }
         _ => Ok(None),
@@ -204,8 +205,6 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
         // SAFETY: GlobalLock returns a pointer to the allocated memory.
         let ptr = unsafe { GlobalLock(hmem) };
         if ptr.is_null() {
-            // SAFETY: Free the memory if lock failed.
-            let _ = unsafe { GlobalFree(hmem) };
             return Err(PlatformError::ClipboardError(
                 "GlobalLock failed".to_string(),
             ));
@@ -215,7 +214,7 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
             std::ptr::copy_nonoverlapping(utf16.as_ptr() as *const u8, ptr as *mut u8, byte_len);
         }
         // SAFETY: Unlock after writing.
-        unsafe { GlobalUnlock(hmem) };
+        let _ = unsafe { GlobalUnlock(hmem) };
     }
 
     let _guard = ClipboardGuard::open()?;
@@ -223,7 +222,8 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
     let _ = unsafe { EmptyClipboard() };
     // SAFETY: SetClipboardData takes ownership of hmem.
     // The system will free it when the clipboard is next emptied.
-    let result = unsafe { SetClipboardData(13, std::mem::transmute(hmem.0)) }; // CF_UNICODETEXT = 13
+    // HANDLE and HGLOBAL have the same repr (*mut c_void).
+    let result = unsafe { SetClipboardData(13, windows::Win32::Foundation::HANDLE(hmem.0)) }; // CF_UNICODETEXT = 13
     if result.is_err() {
         return Err(PlatformError::ClipboardError(
             "SetClipboardData failed".to_string(),
