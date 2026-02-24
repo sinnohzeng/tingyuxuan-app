@@ -1,5 +1,6 @@
 use std::future::Future;
 use tokio::time::{sleep, Duration};
+use tokio_util::sync::CancellationToken;
 
 /// Configuration for retry behaviour with exponential back-off.
 #[derive(Debug, Clone)]
@@ -24,9 +25,10 @@ impl Default for RetryPolicy {
 
 /// Execute an async operation with retries according to the given policy.
 ///
-/// The `operation` closure is called repeatedly until it succeeds or all
-/// retries are exhausted. Between attempts the function sleeps with
-/// exponential back-off.
+/// The `operation` closure is called repeatedly until it succeeds, is
+/// cancelled, or all retries are exhausted.  Between attempts the function
+/// sleeps with exponential back-off, but the sleep is interruptible by the
+/// cancellation token.
 ///
 /// # Type parameters
 ///
@@ -36,6 +38,7 @@ impl Default for RetryPolicy {
 /// * `E`   - The error type.
 pub async fn execute_with_retry<F, Fut, T, E>(
     policy: &RetryPolicy,
+    cancel_token: &CancellationToken,
     mut operation: F,
 ) -> Result<T, E>
 where
@@ -52,13 +55,28 @@ where
                 if attempt == policy.max_retries {
                     return Err(err);
                 }
+
+                // Check cancellation before sleeping.
+                if cancel_token.is_cancelled() {
+                    return Err(err);
+                }
+
                 tracing::warn!(
                     attempt = attempt + 1,
                     max = policy.max_retries,
                     delay_ms = delay_ms,
                     "operation failed, retrying after delay"
                 );
-                sleep(Duration::from_millis(delay_ms)).await;
+
+                // Sleep is interruptible by cancellation.
+                tokio::select! {
+                    _ = sleep(Duration::from_millis(delay_ms)) => {}
+                    _ = cancel_token.cancelled() => {
+                        // Cancelled during retry delay — return last error.
+                        return Err(err);
+                    }
+                }
+
                 delay_ms = (delay_ms as f64 * policy.backoff_factor) as u64;
             }
         }
@@ -74,6 +92,10 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
+    fn token() -> CancellationToken {
+        CancellationToken::new()
+    }
+
     #[tokio::test]
     async fn test_succeeds_first_try() {
         let policy = RetryPolicy {
@@ -85,7 +107,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, || {
+        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -109,7 +131,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, || {
+        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
@@ -137,7 +159,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, || {
+        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -149,6 +171,38 @@ mod tests {
         assert_eq!(result.unwrap_err(), "always fails");
         // initial attempt + 1 retry = 2
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_stops_retries() {
+        let policy = RetryPolicy {
+            max_retries: 10,
+            initial_delay_ms: 50,
+            backoff_factor: 1.0,
+        };
+
+        let cancel = CancellationToken::new();
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let cancel_clone = cancel.clone();
+
+        let result: Result<&str, &str> = execute_with_retry(&policy, &cancel, || {
+            let c = c.clone();
+            let cancel_clone = cancel_clone.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Cancel after first failure, during the retry delay.
+                    cancel_clone.cancel();
+                }
+                Err("fail")
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap_err(), "fail");
+        // Should have stopped after at most 2 attempts (cancelled during delay).
+        assert!(counter.load(Ordering::SeqCst) <= 2);
     }
 
     #[test]

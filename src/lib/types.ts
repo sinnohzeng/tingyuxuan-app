@@ -24,7 +24,10 @@ export type PipelineEvent =
       message: string;
       user_action: UserAction;
       raw_text: string | null;
-    };
+    }
+  | { type: "NetworkStatusChanged"; online: boolean }
+  | { type: "QueuedForLater"; session_id: string }
+  | { type: "RecordingCancelled" };
 
 /** User action to show on error */
 export type UserAction =

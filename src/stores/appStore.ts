@@ -19,6 +19,9 @@ interface AppStore {
   errorAction: UserAction | null;
   rawTranscript: string | null;
 
+  // Network
+  isOnline: boolean;
+
   // Config
   config: AppConfig | null;
 
@@ -34,6 +37,7 @@ interface AppStore {
     rawText?: string | null
   ) => void;
   clearError: () => void;
+  setIsOnline: (online: boolean) => void;
   setConfig: (config: AppConfig) => void;
   reset: () => void;
 }
@@ -48,6 +52,7 @@ export const useAppStore = create<AppStore>((set) => ({
   errorMessage: null,
   errorAction: null,
   rawTranscript: null,
+  isOnline: true,
   config: null,
 
   // Actions
@@ -65,6 +70,7 @@ export const useAppStore = create<AppStore>((set) => ({
     }),
   clearError: () =>
     set({ errorMessage: null, errorAction: null, rawTranscript: null }),
+  setIsOnline: (isOnline) => set({ isOnline }),
   setConfig: (config) => set({ config }),
   reset: () =>
     set({

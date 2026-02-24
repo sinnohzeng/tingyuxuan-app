@@ -21,6 +21,7 @@ export default function FloatingBar() {
     errorAction,
     rawTranscript,
     setRecordingState,
+    setRecordingMode,
     reset,
   } = useAppStore();
 
@@ -67,7 +68,18 @@ export default function FloatingBar() {
     };
   }, [recordingState, reset]);
 
-  // Listen for Tauri events (if running in Tauri context)
+  // Hide the window when idle (window stays alive but becomes invisible)
+  useEffect(() => {
+    if (recordingState === "idle") {
+      import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => {
+          getCurrentWindow().hide().catch(() => {});
+        })
+        .catch(() => {});
+    }
+  }, [recordingState]);
+
+  // Listen for Tauri pipeline events and shortcut actions
   useEffect(() => {
     let unlisteners: Array<() => void> = [];
 
@@ -76,6 +88,7 @@ export default function FloatingBar() {
         const { listen } = await import("@tauri-apps/api/event");
         const store = useAppStore.getState();
 
+        // Pipeline events from the Rust backend
         const u1 = await listen("pipeline-event", (event) => {
           const data = event.payload as Record<string, unknown>;
           switch (data.type) {
@@ -111,9 +124,50 @@ export default function FloatingBar() {
                 data.raw_text as string | null
               );
               break;
+            case "NetworkStatusChanged":
+              store.setIsOnline(data.online as boolean);
+              break;
+            case "QueuedForLater":
+              // Recording was queued for offline processing — show done state.
+              store.setRecordingState("done");
+              break;
+            case "RecordingCancelled":
+              store.setRecordingState("cancelled");
+              break;
           }
         });
         unlisteners.push(u1);
+
+        // Shortcut actions from global shortcuts
+        const u2 = await listen("shortcut-action", async (event) => {
+          const action = event.payload as string;
+          const { invoke } = await import("@tauri-apps/api/core");
+          const currentState = useAppStore.getState().recordingState;
+
+          switch (action) {
+            case "cancel":
+              if (currentState === "recording" || currentState === "processing") {
+                store.setRecordingState("cancelled");
+                invoke("cancel_recording").catch(() => {});
+              }
+              break;
+            case "stop":
+              if (currentState === "recording") {
+                store.setRecordingState("processing");
+                invoke("stop_recording").catch(() => {});
+              }
+              break;
+            case "dictate":
+            case "translate":
+            case "ai_assistant":
+              if (currentState === "idle") {
+                store.setRecordingMode(action as "dictate" | "translate" | "ai_assistant");
+                invoke("start_recording", { mode: action }).catch(() => {});
+              }
+              break;
+          }
+        });
+        unlisteners.push(u2);
       } catch {
         // Not running in Tauri - that's fine for dev mode
       }
@@ -123,32 +177,58 @@ export default function FloatingBar() {
     return () => unlisteners.forEach((fn) => fn());
   }, []);
 
-  const handleCancel = useCallback(() => {
+  const handleCancel = useCallback(async () => {
     setRecordingState("cancelled");
-    // TODO: invoke('cancel_recording')
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("cancel_recording");
+    } catch {
+      /* dev mode */
+    }
   }, [setRecordingState]);
 
-  const handleConfirm = useCallback(() => {
+  const handleConfirm = useCallback(async () => {
     setRecordingState("processing");
-    // TODO: invoke('stop_recording')
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_recording");
+    } catch {
+      /* dev mode */
+    }
   }, [setRecordingState]);
 
-  const handleRetry = useCallback(() => {
+  const handleRetry = useCallback(async () => {
     setRecordingState("processing");
-    // TODO: invoke retry
+    // TODO: implement retry logic (re-process last audio)
   }, [setRecordingState]);
 
-  const handleInsertRaw = useCallback(() => {
-    // TODO: invoke text injection with rawTranscript
+  const handleInsertRaw = useCallback(async () => {
+    if (rawTranscript) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("inject_text", { text: rawTranscript });
+      } catch {
+        /* dev mode */
+      }
+    }
     reset();
-  }, [reset]);
+  }, [rawTranscript, reset]);
 
   const handleDismiss = useCallback(() => {
     reset();
   }, [reset]);
 
-  const handleOpenSettings = useCallback(() => {
-    // TODO: open settings window
+  const handleOpenSettings = useCallback(async () => {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const win = await WebviewWindow.getByLabel("settings");
+      if (win) {
+        await win.show();
+        await win.setFocus();
+      }
+    } catch {
+      /* dev mode */
+    }
     reset();
   }, [reset]);
 

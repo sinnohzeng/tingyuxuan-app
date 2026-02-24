@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { AppConfig, STTProviderType, LLMProviderType } from "../../lib/types";
 import { PROVIDER_PRESETS } from "../../lib/providers";
 
@@ -12,8 +12,52 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
   const [llmApiKey, setLlmApiKey] = useState("");
   const [showSttKey, setShowSttKey] = useState(false);
   const [showLlmKey, setShowLlmKey] = useState(false);
+  const [sttKeyStatus, setSttKeyStatus] = useState<string>("");
+  const [llmKeyStatus, setLlmKeyStatus] = useState<string>("");
   const [sttTestResult, setSttTestResult] = useState<string>("");
   const [llmTestResult, setLlmTestResult] = useState<string>("");
+
+  // Check API key status on mount
+  useEffect(() => {
+    async function checkKeys() {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const sttKey = await invoke<string | null>("get_api_key", { service: "stt" });
+        setSttKeyStatus(sttKey ? "已配置" : "未配置");
+        const llmKey = await invoke<string | null>("get_api_key", { service: "llm" });
+        setLlmKeyStatus(llmKey ? "已配置" : "未配置");
+      } catch {
+        // Dev mode
+      }
+    }
+    checkKeys();
+  }, []);
+
+  const saveSttKey = useCallback(async () => {
+    if (!sttApiKey.trim()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("save_api_key", { service: "stt", key: sttApiKey.trim() });
+      setSttKeyStatus("已配置");
+      setSttApiKey("");
+    } catch {
+      setSttKeyStatus("保存失败");
+    }
+    setTimeout(() => setSttKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
+  }, [sttApiKey]);
+
+  const saveLlmKey = useCallback(async () => {
+    if (!llmApiKey.trim()) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("save_api_key", { service: "llm", key: llmApiKey.trim() });
+      setLlmKeyStatus("已配置");
+      setLlmApiKey("");
+    } catch {
+      setLlmKeyStatus("保存失败");
+    }
+    setTimeout(() => setLlmKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
+  }, [llmApiKey]);
 
   const applyPreset = (presetKey: string) => {
     const preset = PROVIDER_PRESETS[presetKey];
@@ -102,20 +146,36 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">API Key</label>
+          <label className="block text-sm text-gray-600 mb-1">
+            API Key
+            {sttKeyStatus && (
+              <span className={`ml-2 text-xs ${sttKeyStatus === "已配置" ? "text-green-600" : "text-gray-400"}`}>
+                ({sttKeyStatus})
+              </span>
+            )}
+          </label>
           <div className="flex gap-2">
             <input
               type={showSttKey ? "text" : "password"}
               value={sttApiKey}
               onChange={(e) => setSttApiKey(e.target.value)}
-              placeholder="输入 STT API Key"
+              placeholder={sttKeyStatus === "已配置" ? "输入新 Key 以更新" : "输入 STT API Key"}
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+              onKeyDown={(e) => { if (e.key === "Enter") saveSttKey(); }}
             />
             <button
               onClick={() => setShowSttKey(!showSttKey)}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-500 hover:bg-gray-50"
             >
               {showSttKey ? "隐藏" : "显示"}
+            </button>
+            <button
+              onClick={saveSttKey}
+              disabled={!sttApiKey.trim()}
+              className="px-3 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600
+                         disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              保存
             </button>
           </div>
         </div>
@@ -195,20 +255,36 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">API Key</label>
+          <label className="block text-sm text-gray-600 mb-1">
+            API Key
+            {llmKeyStatus && (
+              <span className={`ml-2 text-xs ${llmKeyStatus === "已配置" ? "text-green-600" : "text-gray-400"}`}>
+                ({llmKeyStatus})
+              </span>
+            )}
+          </label>
           <div className="flex gap-2">
             <input
               type={showLlmKey ? "text" : "password"}
               value={llmApiKey}
               onChange={(e) => setLlmApiKey(e.target.value)}
-              placeholder="输入 LLM API Key"
+              placeholder={llmKeyStatus === "已配置" ? "输入新 Key 以更新" : "输入 LLM API Key"}
               className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+              onKeyDown={(e) => { if (e.key === "Enter") saveLlmKey(); }}
             />
             <button
               onClick={() => setShowLlmKey(!showLlmKey)}
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-500 hover:bg-gray-50"
             >
               {showLlmKey ? "隐藏" : "显示"}
+            </button>
+            <button
+              onClick={saveLlmKey}
+              disabled={!llmApiKey.trim()}
+              className="px-3 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600
+                         disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              保存
             </button>
           </div>
         </div>

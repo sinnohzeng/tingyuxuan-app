@@ -17,6 +17,7 @@ pub fn build_prompt(mode: &ProcessingMode, input: &LLMInput) -> (String, String)
 fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
     let dictionary_hint = format_dictionary_hint(&input.user_dictionary);
     let context_hint = format_context_hint(input.current_app.as_deref());
+    let tone_hint = format_tone_hint(input.current_app.as_deref());
 
     let system = format!(
         "你是一个智能语音输入助手。请将以下语音转写的原始文本整理为清晰、规范的书面文字。\n\n\
@@ -26,8 +27,11 @@ fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
          3. 去除不必要的重复词句\n\
          4. 自动补充合适的标点符号\n\
          5. 保持用户原本的表达意图和核心内容，不要添加额外信息\n\
+         6. 如果用户说了「第一」「第二」或「首先」「其次」等顺序词，自动生成有序列表\n\
+         7. 如果用户使用并列结构（如「有以下几点」），自动生成无序列表\n\
          {dictionary_hint}\n\
-         {context_hint}"
+         {context_hint}\n\
+         {tone_hint}"
     );
 
     let user = input.raw_transcript.clone();
@@ -126,6 +130,67 @@ pub fn format_context_hint(app_name: Option<&str>) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// Detect the appropriate tone based on the active application name.
+fn detect_tone(app_name: &str) -> &'static str {
+    let lower = app_name.to_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "slack", "discord", "telegram", "wechat", "微信", "dingtalk", "钉钉", "teams",
+        ],
+    ) {
+        "casual" // IM/chat → conversational
+    } else if contains_any(
+        &lower,
+        &["mail", "outlook", "thunderbird", "邮", "foxmail"],
+    ) {
+        "formal" // Email → formal
+    } else if contains_any(
+        &lower,
+        &[
+            "code", "intellij", "vim", "neovim", "terminal", "iterm", "wezterm", "alacritty",
+            "emacs",
+        ],
+    ) {
+        "technical" // IDE/terminal → preserve technical terms
+    } else if contains_any(
+        &lower,
+        &[
+            "notion", "obsidian", "logseq", "typora", "bear", "joplin",
+        ],
+    ) {
+        "structured" // Note-taking → structured markdown
+    } else {
+        "neutral"
+    }
+}
+
+/// Build a tone-specific hint for the LLM system prompt.
+fn format_tone_hint(app_name: Option<&str>) -> String {
+    let tone = match app_name {
+        Some(name) if !name.is_empty() => detect_tone(name),
+        _ => return String::new(),
+    };
+
+    match tone {
+        "casual" => "语气提示：用户正在聊天应用中，请保持口语化和轻松的表达风格。".to_string(),
+        "formal" => "语气提示：用户正在写邮件，请使用正式、专业的书面表达。".to_string(),
+        "technical" => {
+            "语气提示：用户正在使用开发工具，请保留技术术语和代码相关词汇的原始写法。"
+                .to_string()
+        }
+        "structured" => {
+            "语气提示：用户正在使用笔记应用，适当使用 Markdown 格式（标题、列表、粗体等）来组织内容。"
+                .to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(n))
 }
 
 // ---------------------------------------------------------------------------
@@ -278,5 +343,82 @@ mod tests {
     fn test_format_context_hint_with_app() {
         let hint = format_context_hint(Some("Firefox"));
         assert!(hint.contains("Firefox"));
+    }
+
+    // -- Tone detection tests -------------------------------------------------
+
+    #[test]
+    fn test_detect_tone_chat() {
+        assert_eq!(detect_tone("Slack - general"), "casual");
+        assert_eq!(detect_tone("Discord"), "casual");
+        assert_eq!(detect_tone("微信"), "casual");
+        assert_eq!(detect_tone("DingTalk"), "casual");
+    }
+
+    #[test]
+    fn test_detect_tone_email() {
+        assert_eq!(detect_tone("Outlook"), "formal");
+        assert_eq!(detect_tone("Thunderbird Mail"), "formal");
+        assert_eq!(detect_tone("Foxmail"), "formal");
+    }
+
+    #[test]
+    fn test_detect_tone_dev() {
+        assert_eq!(detect_tone("Visual Studio Code"), "technical");
+        assert_eq!(detect_tone("IntelliJ IDEA"), "technical");
+        assert_eq!(detect_tone("vim"), "technical");
+        assert_eq!(detect_tone("Alacritty"), "technical");
+    }
+
+    #[test]
+    fn test_detect_tone_notes() {
+        assert_eq!(detect_tone("Notion"), "structured");
+        assert_eq!(detect_tone("Obsidian"), "structured");
+        assert_eq!(detect_tone("Logseq"), "structured");
+    }
+
+    #[test]
+    fn test_detect_tone_unknown() {
+        assert_eq!(detect_tone("Firefox"), "neutral");
+        assert_eq!(detect_tone("Random App"), "neutral");
+    }
+
+    #[test]
+    fn test_format_tone_hint_none() {
+        assert_eq!(format_tone_hint(None), "");
+    }
+
+    #[test]
+    fn test_format_tone_hint_chat() {
+        let hint = format_tone_hint(Some("Slack - general"));
+        assert!(hint.contains("口语化"));
+    }
+
+    #[test]
+    fn test_format_tone_hint_formal() {
+        let hint = format_tone_hint(Some("Outlook"));
+        assert!(hint.contains("正式"));
+    }
+
+    #[test]
+    fn test_dictate_prompt_with_list_rules() {
+        let input = make_input(ProcessingMode::Dictate, "test");
+        let (system, _) = build_prompt(&input.mode, &input);
+        assert!(system.contains("有序列表"));
+        assert!(system.contains("无序列表"));
+    }
+
+    #[test]
+    fn test_dictate_prompt_with_tone() {
+        let input = LLMInput {
+            mode: ProcessingMode::Dictate,
+            raw_transcript: "test".to_string(),
+            target_language: None,
+            selected_text: None,
+            current_app: Some("Slack - general".to_string()),
+            user_dictionary: Vec::new(),
+        };
+        let (system, _) = build_prompt(&input.mode, &input);
+        assert!(system.contains("口语化"));
     }
 }

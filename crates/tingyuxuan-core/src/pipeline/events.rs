@@ -42,4 +42,14 @@ pub enum PipelineEvent {
         /// so the user can choose to insert it directly.
         raw_text: Option<String>,
     },
+    /// Network reachability changed.
+    NetworkStatusChanged {
+        online: bool,
+    },
+    /// The recording was saved to the offline queue for later processing.
+    QueuedForLater {
+        session_id: String,
+    },
+    /// The current recording was cancelled by the user.
+    RecordingCancelled,
 }

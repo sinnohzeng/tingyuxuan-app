@@ -179,6 +179,18 @@ impl HistoryManager {
         Ok(())
     }
 
+    /// Update a transcript record with only the processed text and mark as success.
+    ///
+    /// This is a convenience method when the raw text is not available at the
+    /// call site (e.g. when the pipeline only returns the final processed text).
+    pub fn update_result(&self, id: &str, processed_text: &str) -> Result<(), HistoryError> {
+        self.conn.execute(
+            "UPDATE transcripts SET processed_text = ?1, status = 'success' WHERE id = ?2",
+            params![processed_text, id],
+        )?;
+        Ok(())
+    }
+
     /// Delete a transcript record by ID.
     pub fn delete(&self, id: &str) -> Result<(), HistoryError> {
         self.conn

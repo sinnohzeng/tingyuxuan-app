@@ -1,74 +1,433 @@
-use crate::state::AppState;
+use std::path::PathBuf;
 use std::sync::Arc;
+
 use tauri::State;
+use tokio_util::sync::CancellationToken;
+
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::TranscriptRecord;
-use tokio::sync::Mutex;
+use tingyuxuan_core::llm::openai_compat::OpenAICompatProvider;
+use tingyuxuan_core::llm::provider::ProcessingMode;
+use tingyuxuan_core::pipeline::events::PipelineEvent;
+use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
+use tingyuxuan_core::stt;
 
-type AppStateHandle = Arc<Mutex<AppState>>;
+use crate::state::{
+    ActiveSession, ConfigState, EventBus, HistoryState, NetworkState, PipelineState, QueueState,
+    RecorderState, SessionState,
+};
+use crate::text_injector;
+
+// ---------------------------------------------------------------------------
+// API Key management (keyring-based secure storage)
+// ---------------------------------------------------------------------------
+
+/// Save an API key to the OS keychain.
+///
+/// `service` is "stt" or "llm".
+#[tauri::command]
+pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new("tingyuxuan", &service).map_err(|e| format!("Keyring error: {e}"))?;
+    entry
+        .set_password(&key)
+        .map_err(|e| format!("Failed to save key: {e}"))?;
+    tracing::info!("API key saved for service: {}", service);
+    Ok(())
+}
+
+/// Retrieve an API key from the OS keychain.  Returns `None` if no key is stored.
+#[tauri::command]
+pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
+    let entry =
+        keyring::Entry::new("tingyuxuan", &service).map_err(|e| format!("Keyring error: {e}"))?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::PlatformFailure(_)) => {
+            // No keyring backend available (headless server).
+            tracing::warn!("Keyring platform not available — falling back to config.api_key_ref");
+            Ok(None)
+        }
+        Err(e) => Err(format!("Failed to get key: {e}")),
+    }
+}
+
+/// Try to get an API key: first from keyring, then fall back to config's api_key_ref.
+fn resolve_api_key(service: &str, config_key_ref: &str) -> Option<String> {
+    // Try keyring first.
+    if let Ok(entry) = keyring::Entry::new("tingyuxuan", service) {
+        if let Ok(key) = entry.get_password() {
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    // Fall back to config's api_key_ref (for dev/headless environments).
+    if !config_key_ref.is_empty() && !config_key_ref.starts_with("@keyref:") {
+        return Some(config_key_ref.to_string());
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline factory
+// ---------------------------------------------------------------------------
+
+/// Build a Pipeline from the current config and stored API keys.
+/// Returns `None` if API keys are missing or providers can't be created.
+pub fn build_pipeline(
+    config: &AppConfig,
+    event_tx: &tokio::sync::broadcast::Sender<PipelineEvent>,
+) -> Option<Arc<Pipeline>> {
+    let stt_key = resolve_api_key("stt", &config.stt.api_key_ref)?;
+    let llm_key = resolve_api_key("llm", &config.llm.api_key_ref)?;
+
+    let stt_provider = stt::create_stt_provider(&config.stt, stt_key).ok()?;
+
+    let llm_base_url = config
+        .llm
+        .base_url
+        .clone()
+        .unwrap_or_else(|| config.llm_base_url());
+    let llm_provider = Box::new(OpenAICompatProvider::new(
+        llm_key,
+        llm_base_url,
+        config.llm.model.clone(),
+    ));
+
+    Some(Arc::new(Pipeline::new(
+        stt_provider,
+        llm_provider,
+        event_tx.clone(),
+    )))
+}
+
+// ---------------------------------------------------------------------------
+// Recording commands
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn start_recording(
     mode: String,
-    state: State<'_, AppStateHandle>,
+    config_state: State<'_, ConfigState>,
+    event_bus: State<'_, EventBus>,
+    session_state: State<'_, SessionState>,
+    history_state: State<'_, HistoryState>,
+    recorder_state: State<'_, RecorderState>,
 ) -> Result<String, String> {
-    tracing::info!("Starting recording in mode: {}", mode);
-    // TODO: Implement with Pipeline in Step 6
-    Ok(format!("Recording started in {} mode", mode))
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut processing_mode = parse_mode(&mode);
+
+    // Detect context: selected text and active window name.
+    // These are synchronous system calls (xclip/xdotool) — fast enough to inline.
+    let selected_text = crate::context::get_selected_text();
+    let app_context = crate::context::get_active_window_name();
+
+    // Auto-switch to Edit mode when user has selected text and pressed Dictate.
+    // This enables the "speak-to-edit" workflow.
+    if selected_text.is_some() && matches!(processing_mode, ProcessingMode::Dictate) {
+        processing_mode = ProcessingMode::Edit;
+        tracing::info!("Auto-switched to Edit mode (selected text detected)");
+    }
+
+    // Read config for translate target language.
+    let config = config_state.0.read().await;
+    let target_language = if matches!(processing_mode, ProcessingMode::Translate) {
+        Some(config.language.translation_target.clone())
+    } else {
+        None
+    };
+    drop(config);
+
+    // Determine the effective mode string for the recorder filename.
+    let effective_mode = match processing_mode {
+        ProcessingMode::Dictate => "dictate",
+        ProcessingMode::Translate => "translate",
+        ProcessingMode::AiAssistant => "ai_assistant",
+        ProcessingMode::Edit => "edit",
+    };
+
+    // Determine cache directory for audio files.
+    let cache_dir = AppConfig::data_dir()
+        .map(|d| d.join("cache").join("audio"))
+        .map_err(|e| format!("Cannot determine cache directory: {e}"))?;
+
+    // Start the actual recording via the actor.
+    let audio_path = recorder_state
+        .0
+        .start(&session_id, effective_mode, &cache_dir)
+        .await?;
+
+    // Store active session.
+    let cancel_token = CancellationToken::new();
+    let session = ActiveSession {
+        session_id: session_id.clone(),
+        mode: processing_mode,
+        selected_text,
+        target_language,
+        app_context: app_context.clone(),
+        cancel_token,
+    };
+    *session_state.0.lock().await = Some(session);
+
+    // Emit recording started event.
+    let _ = event_bus.0.send(PipelineEvent::RecordingStarted {
+        session_id: session_id.clone(),
+        mode: effective_mode.to_string(),
+    });
+
+    // Create a history record with status "recording".
+    {
+        let history = history_state.0.lock().await;
+        let record = TranscriptRecord {
+            id: session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            mode: effective_mode.to_string(),
+            raw_text: None,
+            processed_text: None,
+            audio_path: Some(audio_path.to_string_lossy().to_string()),
+            status: "recording".to_string(),
+            app_context,
+            duration_ms: None,
+            language: None,
+            error_message: None,
+        };
+        let _ = history.save_transcript(&record);
+    }
+
+    tracing::info!("Recording started: session={}, mode={}", session_id, effective_mode);
+    Ok(session_id)
 }
 
 #[tauri::command]
-pub async fn stop_recording(state: State<'_, AppStateHandle>) -> Result<String, String> {
-    tracing::info!("Stopping recording");
-    // TODO: Implement with Pipeline in Step 6
-    Ok("Recording stopped".to_string())
+pub async fn stop_recording(
+    session_state: State<'_, SessionState>,
+    pipeline_state: State<'_, PipelineState>,
+    event_bus: State<'_, EventBus>,
+    history_state: State<'_, HistoryState>,
+    recorder_state: State<'_, RecorderState>,
+    network_state: State<'_, NetworkState>,
+    queue_state: State<'_, QueueState>,
+) -> Result<String, String> {
+    use tingyuxuan_core::pipeline::queue::QueuedRecording;
+
+    // Stop the actual recording via the actor.
+    let (audio_path, duration_ms) = recorder_state.0.stop().await?;
+
+    // Take the active session.
+    let session = session_state
+        .0
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| "No active recording session".to_string())?;
+
+    let session_id = session.session_id.clone();
+
+    // Emit recording stopped event with real duration.
+    let _ = event_bus.0.send(PipelineEvent::RecordingStopped { duration_ms });
+
+    // Check network status — if offline, queue for later processing.
+    let is_online = network_state
+        .0
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    if !is_online {
+        let queued = QueuedRecording {
+            session_id: session_id.clone(),
+            audio_path,
+            mode: session.mode,
+            target_language: session.target_language,
+            selected_text: session.selected_text,
+            app_context: session.app_context,
+        };
+        queue_state.0.lock().await.enqueue(queued);
+
+        let _ = event_bus.0.send(PipelineEvent::QueuedForLater {
+            session_id: session_id.clone(),
+        });
+
+        // Update history status.
+        if let Ok(history) = history_state.0.try_lock() {
+            let _ = history.update_status(&session_id, "queued");
+        }
+
+        tracing::info!("Recording queued for later (offline): session={}", session_id);
+        return Ok("queued".to_string());
+    }
+
+    // Get pipeline reference.
+    let pipeline = pipeline_state
+        .0
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "Pipeline not configured — check API keys in Settings".to_string())?;
+
+    // Build processing request with the actual recorded audio path.
+    let request = ProcessingRequest {
+        audio_path,
+        mode: session.mode,
+        app_context: session.app_context,
+        target_language: session.target_language,
+        selected_text: session.selected_text,
+        user_dictionary: Vec::new(),
+    };
+
+    let cancel_token = session.cancel_token;
+    let history = history_state.0.clone();
+
+    // Spawn async processing task — does not block the command response.
+    tokio::spawn(async move {
+        match pipeline.process_audio(&request, cancel_token).await {
+            Ok(processed_text) => {
+                // Small delay so the floating bar can hide and focus returns.
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                // Inject text into the active application.
+                // inject_text is synchronous (spawns xdotool/wtype), but fast enough
+                // to call from a tokio task without spawn_blocking.
+                if let Err(e) = text_injector::inject_text(&processed_text) {
+                    tracing::error!("Text injection failed: {}", e);
+                }
+
+                // Update history record.
+                if let Ok(history) = history.try_lock() {
+                    let _ = history.update_result(&session_id, &processed_text);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Pipeline processing failed: {}", e);
+                // Error event already emitted by the Pipeline.
+                if let Ok(history) = history.try_lock() {
+                    let _ = history.update_status(&session_id, "failed");
+                }
+            }
+        }
+    });
+
+    tracing::info!("Recording stopped, processing started");
+    Ok("processing".to_string())
 }
 
 #[tauri::command]
-pub async fn cancel_recording(state: State<'_, AppStateHandle>) -> Result<(), String> {
-    tracing::info!("Cancelling recording");
-    // TODO: Implement with Pipeline in Step 6
+pub async fn cancel_recording(
+    session_state: State<'_, SessionState>,
+    history_state: State<'_, HistoryState>,
+    recorder_state: State<'_, RecorderState>,
+) -> Result<(), String> {
+    // Cancel the recording via the actor (deletes the WAV file).
+    // Ignore errors — recording may have already been stopped.
+    let _ = recorder_state.0.cancel().await;
+
+    let session = session_state.0.lock().await.take();
+    if let Some(session) = session {
+        // Cancel any in-progress STT/LLM operations.
+        session.cancel_token.cancel();
+
+        // Update history.
+        let history = history_state.0.lock().await;
+        let _ = history.update_status(&session.session_id, "cancelled");
+
+        tracing::info!("Recording cancelled: session={}", session.session_id);
+    }
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Text injection
+// ---------------------------------------------------------------------------
+
 #[tauri::command]
-pub async fn get_config(state: State<'_, AppStateHandle>) -> Result<AppConfig, String> {
-    let state = state.lock().await;
-    Ok(state.config.clone())
+pub async fn inject_text(text: String) -> Result<(), String> {
+    text_injector::inject_text(&text).map_err(|e| format!("Text injection failed: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Connection testing
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn test_stt_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
+    let config = config_state.0.read().await;
+    let api_key = resolve_api_key("stt", &config.stt.api_key_ref)
+        .ok_or_else(|| "No STT API key configured".to_string())?;
+
+    let provider = stt::create_stt_provider(&config.stt, api_key).map_err(|e| e.to_string())?;
+
+    provider.test_connection().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
+    let config = config_state.0.read().await;
+    let api_key = resolve_api_key("llm", &config.llm.api_key_ref)
+        .ok_or_else(|| "No LLM API key configured".to_string())?;
+
+    let base_url = config
+        .llm
+        .base_url
+        .clone()
+        .unwrap_or_else(|| config.llm_base_url());
+    let provider = OpenAICompatProvider::new(api_key, base_url, config.llm.model.clone());
+
+    provider.test_connection().await.map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_config(config_state: State<'_, ConfigState>) -> Result<AppConfig, String> {
+    let config = config_state.0.read().await;
+    Ok(config.clone())
 }
 
 #[tauri::command]
 pub async fn save_config(
     config: AppConfig,
-    state: State<'_, AppStateHandle>,
+    config_state: State<'_, ConfigState>,
+    pipeline_state: State<'_, PipelineState>,
+    event_bus: State<'_, EventBus>,
 ) -> Result<(), String> {
-    let mut state = state.lock().await;
-    state.config = config.clone();
+    // Persist to disk.
     config.save().map_err(|e| e.to_string())?;
-    tracing::info!("Configuration saved");
+
+    // Update in-memory config.
+    *config_state.0.write().await = config.clone();
+
+    // Rebuild pipeline with new config (picks up new provider/model/base_url).
+    let new_pipeline = build_pipeline(&config, &event_bus.0);
+    *pipeline_state.0.write().await = new_pipeline;
+
+    tracing::info!("Configuration saved and pipeline rebuilt");
     Ok(())
 }
 
-#[tauri::command]
-pub async fn test_stt_connection(state: State<'_, AppStateHandle>) -> Result<bool, String> {
-    // TODO: Implement with STT providers in Step 4
-    Ok(false)
-}
-
-#[tauri::command]
-pub async fn test_llm_connection(state: State<'_, AppStateHandle>) -> Result<bool, String> {
-    // TODO: Implement with LLM providers in Step 5
-    Ok(false)
-}
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_recent_history(
     limit: u32,
-    state: State<'_, AppStateHandle>,
+    history_state: State<'_, HistoryState>,
 ) -> Result<Vec<TranscriptRecord>, String> {
-    let state = state.lock().await;
-    state
-        .history
-        .get_recent(limit)
-        .map_err(|e| e.to_string())
+    let history = history_state.0.lock().await;
+    history.get_recent(limit).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn parse_mode(mode: &str) -> ProcessingMode {
+    match mode {
+        "translate" => ProcessingMode::Translate,
+        "ai_assistant" => ProcessingMode::AiAssistant,
+        "edit" => ProcessingMode::Edit,
+        _ => ProcessingMode::Dictate,
+    }
 }
