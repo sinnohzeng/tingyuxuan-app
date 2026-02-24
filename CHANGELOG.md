@@ -6,6 +6,27 @@
 
 ---
 
+## [0.3.0] - 2026-02-25
+
+### 新增
+
+**Android 支持**
+- Android 原生输入法（InputMethodService）
+- Rust JNI 桥接层（tingyuxuan-jni crate）+ generation-based handle table
+- Material 3 Compose 键盘 UI（录音按钮、模式切换）
+- Android AudioRecord 16kHz mono WAV 录音
+- EncryptedSharedPreferences API Key 安全存储
+- 设置界面（API Key 配置）
+- commitText() 文本注入（无需剪贴板）
+- 支持架构：arm64-v8a, armeabi-v7a, x86_64
+
+**Core 改进**
+- cpal/hound 设为 optional feature（Android 无需桌面音频）
+- tingyuxuan-core 支持 `--no-default-features` 编译
+- ADR-0007: Android 原生 IME 架构决策
+
+---
+
 ## [0.2.0] - 2026-02-25
 
 ### 新增
