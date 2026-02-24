@@ -11,6 +11,7 @@ use tingyuxuan_core::pipeline::Pipeline;
 
 use tingyuxuan_core::pipeline::queue::OfflineQueue;
 
+use crate::platform::{PlatformDetector, PlatformInjector};
 use crate::recorder_actor::RecorderHandle;
 
 /// Configuration state — reads are frequent, writes are rare.
@@ -39,6 +40,13 @@ pub struct QueueState(pub Arc<Mutex<OfflineQueue>>);
 /// Tracks current network connectivity status (true = online).
 pub struct NetworkState(pub Arc<std::sync::atomic::AtomicBool>);
 
+/// Platform text injector — created once, used for all inject operations.
+/// Wrapped in Arc so it can be cloned into spawned async tasks.
+pub struct InjectorState(pub Arc<PlatformInjector>);
+
+/// Platform context detector — created once, used for all context queries.
+pub struct DetectorState(pub PlatformDetector);
+
 /// Tracks the in-progress recording/processing session.
 pub struct ActiveSession {
     pub session_id: String,
@@ -60,6 +68,8 @@ pub struct AppStates {
     pub recorder: RecorderState,
     pub queue: QueueState,
     pub network: NetworkState,
+    pub injector: InjectorState,
+    pub detector: DetectorState,
 }
 
 impl AppStates {
@@ -73,6 +83,10 @@ impl AppStates {
         // Volume updates are pushed to the event bus automatically.
         let recorder_handle = RecorderHandle::spawn(event_tx.clone());
 
+        // Create platform-specific injector and detector once at startup.
+        let injector = PlatformInjector::new();
+        let detector = PlatformDetector::new();
+
         Ok(Self {
             config: ConfigState(Arc::new(RwLock::new(config))),
             history: HistoryState(Arc::new(Mutex::new(history))),
@@ -82,6 +96,8 @@ impl AppStates {
             recorder: RecorderState(recorder_handle),
             queue: QueueState(Arc::new(Mutex::new(OfflineQueue::new()))),
             network: NetworkState(Arc::new(std::sync::atomic::AtomicBool::new(true))),
+            injector: InjectorState(Arc::new(injector)),
+            detector: DetectorState(detector),
         })
     }
 }

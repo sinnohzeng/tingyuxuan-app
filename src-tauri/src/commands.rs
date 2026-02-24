@@ -12,11 +12,11 @@ use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
 use tingyuxuan_core::stt;
 
+use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
-    ActiveSession, ConfigState, EventBus, HistoryState, NetworkState, PipelineState, QueueState,
-    RecorderState, SessionState,
+    ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState,
+    NetworkState, PipelineState, QueueState, RecorderState, SessionState,
 };
-use crate::text_injector;
 
 // ---------------------------------------------------------------------------
 // Input validation constants
@@ -155,6 +155,7 @@ pub async fn start_recording(
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
     pipeline_state: State<'_, PipelineState>,
+    detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
     // Validate pipeline is available before starting recording.
     if pipeline_state.0.read().await.is_none() {
@@ -165,9 +166,9 @@ pub async fn start_recording(
     let mut processing_mode = parse_mode(&mode);
 
     // Detect context: selected text and active window name.
-    // These are synchronous system calls (xclip/xdotool) — fast enough to inline.
-    let selected_text = crate::context::get_selected_text();
-    let app_context = crate::context::get_active_window_name();
+    // These are synchronous system calls — fast enough to inline.
+    let selected_text = detector_state.0.get_selected_text();
+    let app_context = detector_state.0.get_active_window_name();
 
     // Auto-switch to Edit mode when user has selected text and pressed Dictate.
     // This enables the "speak-to-edit" workflow.
@@ -255,6 +256,7 @@ pub async fn stop_recording(
     network_state: State<'_, NetworkState>,
     queue_state: State<'_, QueueState>,
     config_state: State<'_, ConfigState>,
+    injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
     use tingyuxuan_core::pipeline::queue::QueuedRecording;
 
@@ -332,6 +334,7 @@ pub async fn stop_recording(
 
     // Remember the mode for deciding whether to auto-inject.
     let is_ai_assistant = matches!(request.mode, ProcessingMode::AiAssistant);
+    let injector = injector_state.0.clone();
 
     // Spawn async processing task — does not block the command response.
     tokio::spawn(async move {
@@ -344,7 +347,7 @@ pub async fn stop_recording(
                 } else {
                     // Other modes: auto-inject text into the active application.
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    if let Err(e) = text_injector::inject_text(&processed_text) {
+                    if let Err(e) = injector.inject_text(&processed_text) {
                         tracing::error!("Text injection failed: {}", e);
                     }
                 }
@@ -479,10 +482,16 @@ pub async fn retry_transcription(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn inject_text(text: String) -> Result<(), String> {
+pub async fn inject_text(
+    text: String,
+    injector_state: State<'_, InjectorState>,
+) -> Result<(), String> {
     check_max_len(&text, MAX_INJECT_TEXT_LEN, "注入文本")?;
     check_no_null_bytes(&text, "注入文本")?;
-    text_injector::inject_text(&text).map_err(|e| format!("Text injection failed: {e}"))
+    injector_state
+        .0
+        .inject_text(&text)
+        .map_err(|e| format!("Text injection failed: {e}"))
 }
 
 // ---------------------------------------------------------------------------

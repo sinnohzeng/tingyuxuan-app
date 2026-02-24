@@ -1,8 +1,7 @@
 mod commands;
-mod context;
+mod platform;
 mod recorder_actor;
 mod state;
-mod text_injector;
 mod tray;
 
 use state::AppStates;
@@ -192,6 +191,8 @@ pub fn run() {
             app.manage(states.recorder);
             app.manage(states.queue);
             app.manage(states.network);
+            app.manage(states.injector);
+            app.manage(states.detector);
 
             // Set up system tray.
             tray::create_tray(app.handle())?;
@@ -234,12 +235,15 @@ pub fn run() {
 fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-    let display = text_injector::detect_display_server();
-    if display == text_injector::DisplayServer::Wayland {
-        tracing::warn!(
-            "Running on Wayland — global shortcuts may not work. \
-             Consider using the system tray or in-app buttons."
-        );
+    #[cfg(target_os = "linux")]
+    {
+        let display = platform::linux::detect_display_server();
+        if display == platform::linux::DisplayServer::Wayland {
+            tracing::warn!(
+                "Running on Wayland — global shortcuts may not work. \
+                 Consider using the system tray or in-app buttons."
+            );
+        }
     }
 
     // Define shortcuts: (shortcut, action_name, mode)
