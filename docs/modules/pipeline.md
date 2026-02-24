@@ -79,7 +79,7 @@ pub enum PipelineEvent {
 }
 ```
 
-### OfflineQueue
+### OfflineQueue（SQLite 持久化）
 
 ```rust
 /// A recording that was captured while the device was offline and is waiting
@@ -94,11 +94,15 @@ pub struct QueuedRecording {
     pub app_context: Option<String>,
 }
 
-/// A simple in-memory FIFO queue of recordings captured while offline.
+/// A persistent FIFO queue of recordings captured while offline, backed by SQLite.
+/// Queued recordings survive application crashes and restarts.
 pub struct OfflineQueue {
-    items: Vec<QueuedRecording>,
+    conn: Connection,  // rusqlite::Connection
 }
 ```
+
+**SQLite 存储**: 队列数据持久化到 `~/.config/tingyuxuan/TingYuXuan/queue/offline_queue.db`。
+应用崩溃后重启时，未处理的录音会自动恢复。初始化失败时自动降级为内存模式。
 
 ### RetryPolicy
 
@@ -181,13 +185,14 @@ pub enum PipelineError {
 |------|------|------|
 | `dictate()` | `fn dictate(audio_path: impl Into<PathBuf>) -> Self` | 创建 Dictate 模式的最简请求 |
 
-### OfflineQueue
+### OfflineQueue（SQLite 持久化）
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `new()` | `fn new() -> Self` | 创建空队列 |
-| `enqueue()` | `fn enqueue(&mut self, recording: QueuedRecording)` | 添加录音到队列末尾 |
-| `drain()` | `fn drain(&mut self) -> Vec<QueuedRecording>` | 取出所有待处理录音（FIFO 顺序），清空队列 |
+| `new()` | `fn new() -> Self` | 创建持久化队列（自动降级为内存模式） |
+| `new_in_memory()` | `fn new_in_memory() -> Self` | 创建内存队列（测试用） |
+| `enqueue()` | `fn enqueue(&mut self, recording: QueuedRecording)` | 添加录音到队列（INSERT OR REPLACE） |
+| `drain()` | `fn drain(&mut self) -> Vec<QueuedRecording>` | 事务内取出所有待处理录音（FIFO）并清空 |
 | `len()` | `fn len(&self) -> usize` | 队列中的录音数量 |
 | `is_empty()` | `fn is_empty(&self) -> bool` | 队列是否为空 |
 
@@ -320,7 +325,7 @@ impl PipelineError {
 | `test_subscribe` | 订阅事件通道编译和运行验证 |
 | MockSTT / MockLLM / FailingSTT / FailingLLM | 测试用 mock provider 实现 |
 
-### Queue 测试（5 个）
+### Queue 测试（8 个，SQLite 持久化）
 
 | 测试名称 | 覆盖场景 |
 |----------|----------|
@@ -329,6 +334,9 @@ impl PipelineError {
 | `drain_returns_all_items_in_order` | drain 按 FIFO 顺序返回并清空 |
 | `drain_on_empty_queue_returns_empty_vec` | 空队列 drain 返回空 Vec |
 | `enqueue_after_drain_works` | drain 后可继续 enqueue |
+| `duplicate_session_id_replaces` | 重复 session_id 替换而非追加 |
+| `mode_roundtrip` | 所有 ProcessingMode 序列化/反序列化往返一致 |
+| `persistence_across_operations` | 多轮 enqueue/drain 操作数据一致性 |
 
 ### Retry 测试（5 个）
 
@@ -362,7 +370,7 @@ impl PipelineError {
 
 ## 已知限制
 
-1. **内存离线队列** -- `OfflineQueue` 为纯内存 `Vec<QueuedRecording>`，应用崩溃或重启时队列内容丢失。计划在 Phase 4 Step 4 替换为 SQLite 持久化
+1. ~~**内存离线队列**~~ -- **已修复 (Phase 4 Step 4)**：`OfflineQueue` 现在使用 SQLite 持久化，队列录音在崩溃/重启后自动恢复
 2. **硬编码重试策略** -- `RetryPolicy::default()` 的参数（1 次重试、3s 延迟、2.0 退避）固定在代码中，不可通过配置文件调整
 3. **无流式处理** -- STT 和 LLM 均为一次性调用，不支持流式转录或 SSE 输出
 4. **Recovery sidecar 路径不一致** -- `recovery.rs` 使用 `.with_extension("json")`（即 `session1.json`），而 `cache.rs` 使用 `.wav.json` 后缀（即 `test.wav.json`），两种命名约定在同一项目中共存

@@ -32,7 +32,8 @@ pub struct RecorderState(pub RecorderHandle);
 /// Currently active recording session.
 pub struct SessionState(pub Arc<Mutex<Option<ActiveSession>>>);
 
-/// Offline recording queue — recordings captured while network is down.
+/// Offline recording queue — persistent SQLite-backed queue for recordings
+/// captured while the network is down.  Survives application restarts.
 pub struct QueueState(pub Arc<Mutex<OfflineQueue>>);
 
 /// Tracks current network connectivity status (true = online).
