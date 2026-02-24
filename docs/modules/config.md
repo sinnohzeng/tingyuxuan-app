@@ -166,7 +166,7 @@ pub enum ConfigError {
 
 ## 测试覆盖
 
-共 **7 个单元测试**，位于 `config.rs` 的 `#[cfg(test)] mod tests`：
+共 **12 个单元测试**，位于 `config.rs` 的 `#[cfg(test)] mod tests`：
 
 | 测试 | 覆盖内容 |
 |------|---------|
@@ -177,13 +177,37 @@ pub enum ConfigError {
 | `test_config_backward_compat_no_dictionary` | 旧格式 JSON（无 `user_dictionary` 字段）能正常反序列化 |
 | `test_config_with_dictionary` | 包含 `user_dictionary` 的配置能正确序列化/反序列化 |
 | `test_provider_presets` | 验证预设数量（3 个）和名称正确性 |
+| `test_default_config_version` | 默认配置版本号为 CURRENT_CONFIG_VERSION |
+| `test_old_config_deserializes_with_version_zero` | 无 config_version 字段的旧 JSON 反序列化为 version=0 |
+| `test_serialization_includes_version` | 序列化输出包含 config_version 字段 |
+| `test_migration_v0_to_v1` | v0→v1 迁移正确设置版本号且保留所有原始值 |
+| `test_config_version_roundtrip` | 版本号序列化/反序列化往返一致 |
+
+---
+
+## 配置版本管理（Phase 4 Step 5）
+
+### 机制
+
+- `config_version` 字段（`#[serde(default)]`）：旧配置文件无此字段时默认为 0
+- `load_with_migration()` 方法：检测版本 → 逐版本迁移 → 备份旧配置 → 保存
+- 备份文件命名：`config.v0.json.bak`
+- 当前版本：1
+
+### 迁移链
+
+| 迁移 | 说明 |
+|------|------|
+| v0 → v1 | 基线迁移：设置 `config_version = 1`。新字段由 `#[serde(default)]` 处理 |
+
+后续版本升级时只需添加 `migrate_vN_to_vN+1()` 函数并更新 `CURRENT_CONFIG_VERSION` 常量。
 
 ---
 
 ## 已知局限性
 
-1. **无配置版本管理**: 没有 `version` 字段，无法检测配置文件版本。计划在 Phase 4 Step 5 实现
-2. **无迁移框架**: 配置结构变更时没有自动迁移机制。当前仅通过 `#[serde(default)]` 处理新增字段的向后兼容
+1. ~~**无配置版本管理**~~ -- **已修复 (Phase 4 Step 5)**：添加 `config_version` 字段和增量迁移框架
+2. ~~**无迁移框架**~~ -- **已修复 (Phase 4 Step 5)**：`load_with_migration()` 提供增量迁移和自动备份
 3. **保存时无验证**: `save()` 不验证配置值的合法性（如快捷键格式、URL 格式、数值范围等）
 4. **无文件锁**: 多进程同时读写配置文件时可能产生竞争条件
 5. **Custom provider fallback**: `LLMProviderType::Custom` 在 `base_url` 为 `None` 时 fallback 到 `http://localhost:11434/v1`（Ollama 默认地址），`STTProviderType::Custom` fallback 到 `http://localhost:8080`，这些 fallback 值是硬编码的

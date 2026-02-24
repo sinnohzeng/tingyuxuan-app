@@ -3,9 +3,16 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Current config version.  Bump this when the config schema changes.
+const CURRENT_CONFIG_VERSION: u32 = 1;
+
 /// Main application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// Schema version — used to detect and migrate old config files.
+    /// Defaults to 0 for configs written before version tracking existed.
+    #[serde(default)]
+    pub config_version: u32,
     pub general: GeneralConfig,
     pub shortcuts: ShortcutConfig,
     pub language: LanguageConfig,
@@ -99,6 +106,7 @@ pub struct CacheConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            config_version: CURRENT_CONFIG_VERSION,
             general: GeneralConfig {
                 auto_launch: true,
                 sound_feedback: true,
@@ -170,6 +178,52 @@ impl AppConfig {
         let contents = std::fs::read_to_string(&path)?;
         let config: Self = serde_json::from_str(&contents)?;
         Ok(config)
+    }
+
+    /// Load config with automatic migration from older versions.
+    ///
+    /// If the config file has an older `config_version`, this method applies
+    /// incremental migrations (v0→v1, v1→v2, …), backs up the old file, and
+    /// saves the migrated config.  Returns `Ok(Self::default())` if no config
+    /// file exists yet.
+    pub fn load_with_migration() -> Result<Self, ConfigError> {
+        let path = Self::config_path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        let mut config: Self = serde_json::from_str(&contents)?;
+
+        if config.config_version < CURRENT_CONFIG_VERSION {
+            // Back up the old config before migrating.
+            let backup_path = path.with_extension(format!("v{}.json.bak", config.config_version));
+            let _ = std::fs::copy(&path, &backup_path);
+            tracing::info!(
+                "Config migration: v{} → v{} (backup at {})",
+                config.config_version,
+                CURRENT_CONFIG_VERSION,
+                backup_path.display()
+            );
+
+            // Apply incremental migrations.
+            if config.config_version < 1 {
+                Self::migrate_v0_to_v1(&mut config);
+            }
+            // Future migrations: if config.config_version < 2 { migrate_v1_to_v2(&mut config); }
+
+            config.save()?;
+        }
+
+        Ok(config)
+    }
+
+    /// Migrate from v0 (no version field) to v1.
+    ///
+    /// v0 → v1 is a baseline migration — the only change is setting the
+    /// version number.  All new fields added since v0 are handled by
+    /// `#[serde(default)]`.
+    fn migrate_v0_to_v1(config: &mut Self) {
+        config.config_version = 1;
     }
 
     /// Save config to file.
@@ -358,5 +412,71 @@ mod tests {
         assert_eq!(presets[0].name, "阿里云 DashScope");
         assert_eq!(presets[1].name, "火山引擎 (豆包)");
         assert_eq!(presets[2].name, "OpenAI");
+    }
+
+    #[test]
+    fn test_default_config_version() {
+        let config = AppConfig::default();
+        assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn test_old_config_deserializes_with_version_zero() {
+        // Simulate a config file from before version tracking.
+        let json = r#"{
+            "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
+            "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
+            "language": { "primary": "auto", "translation_target": "en", "variant": null },
+            "stt": { "provider": "whisper", "api_key_ref": "", "base_url": null, "model": "whisper-1" },
+            "llm": { "provider": "openai", "api_key_ref": "", "base_url": null, "model": "gpt-4o-mini" },
+            "cache": { "audio_retention_hours": 24, "failed_retention_days": 7, "max_cache_size_mb": 500 }
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.config_version, 0);
+    }
+
+    #[test]
+    fn test_serialization_includes_version() {
+        let config = AppConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"config_version\":1"));
+    }
+
+    #[test]
+    fn test_migration_v0_to_v1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        // Write a v0 config (no config_version field).
+        let v0_json = serde_json::to_string_pretty(&serde_json::json!({
+            "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
+            "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
+            "language": { "primary": "zh", "translation_target": "en", "variant": null },
+            "stt": { "provider": "whisper", "api_key_ref": "test-key", "base_url": null, "model": "whisper-1" },
+            "llm": { "provider": "openai", "api_key_ref": "test-key", "base_url": null, "model": "gpt-4o" },
+            "cache": { "audio_retention_hours": 48, "failed_retention_days": 7, "max_cache_size_mb": 500 }
+        })).unwrap();
+        std::fs::write(&path, &v0_json).unwrap();
+
+        // Manually load and migrate (can't use load_with_migration because it
+        // uses config_path() which depends on ProjectDirs).
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let mut config: AppConfig = serde_json::from_str(&contents).unwrap();
+        assert_eq!(config.config_version, 0);
+
+        AppConfig::migrate_v0_to_v1(&mut config);
+        assert_eq!(config.config_version, 1);
+        // Original values preserved.
+        assert_eq!(config.language.primary, "zh");
+        assert_eq!(config.llm.model, "gpt-4o");
+        assert_eq!(config.cache.audio_retention_hours, 48);
+    }
+
+    #[test]
+    fn test_config_version_roundtrip() {
+        let config = AppConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.config_version, config.config_version);
     }
 }

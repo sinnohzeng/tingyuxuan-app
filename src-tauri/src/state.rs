@@ -65,7 +65,7 @@ pub struct AppStates {
 impl AppStates {
     /// Build all application states from the persisted configuration.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let config = AppConfig::load().unwrap_or_default();
+        let config = AppConfig::load_with_migration().unwrap_or_default();
         let history = HistoryManager::new()?;
         let (event_tx, _) = broadcast::channel::<PipelineEvent>(64);
 
