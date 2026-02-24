@@ -7,15 +7,15 @@ use tokio_util::sync::CancellationToken;
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::TranscriptRecord;
 use tingyuxuan_core::llm::openai_compat::OpenAICompatProvider;
-use tingyuxuan_core::llm::provider::ProcessingMode;
+use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
 use tingyuxuan_core::stt;
 
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
-    ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState,
-    NetworkState, PipelineState, QueueState, RecorderState, SessionState,
+    ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState, NetworkState,
+    PipelineState, QueueState, RecorderState, SessionState,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +147,7 @@ pub fn build_pipeline(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_recording(
     mode: String,
     config_state: State<'_, ConfigState>,
@@ -242,11 +243,16 @@ pub async fn start_recording(
         let _ = history.save_transcript(&record);
     }
 
-    tracing::info!("Recording started: session={}, mode={}", session_id, effective_mode);
+    tracing::info!(
+        "Recording started: session={}, mode={}",
+        session_id,
+        effective_mode
+    );
     Ok(session_id)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn stop_recording(
     session_state: State<'_, SessionState>,
     pipeline_state: State<'_, PipelineState>,
@@ -274,12 +280,12 @@ pub async fn stop_recording(
     let session_id = session.session_id.clone();
 
     // Emit recording stopped event with real duration.
-    let _ = event_bus.0.send(PipelineEvent::RecordingStopped { duration_ms });
+    let _ = event_bus
+        .0
+        .send(PipelineEvent::RecordingStopped { duration_ms });
 
     // Check network status — if offline, queue for later processing.
-    let is_online = network_state
-        .0
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let is_online = network_state.0.load(std::sync::atomic::Ordering::Relaxed);
 
     if !is_online {
         let queued = QueuedRecording {
@@ -301,7 +307,10 @@ pub async fn stop_recording(
             let _ = history.update_status(&session_id, "queued");
         }
 
-        tracing::info!("Recording queued for later (offline): session={}", session_id);
+        tracing::info!(
+            "Recording queued for later (offline): session={}",
+            session_id
+        );
         return Ok("queued".to_string());
     }
 
@@ -530,9 +539,7 @@ pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn is_first_launch(
-    pipeline_state: State<'_, PipelineState>,
-) -> Result<bool, String> {
+pub async fn is_first_launch(pipeline_state: State<'_, PipelineState>) -> Result<bool, String> {
     Ok(pipeline_state.0.read().await.is_none())
 }
 
@@ -617,9 +624,7 @@ pub async fn delete_history_batch(
 }
 
 #[tauri::command]
-pub async fn clear_history(
-    history_state: State<'_, HistoryState>,
-) -> Result<u64, String> {
+pub async fn clear_history(history_state: State<'_, HistoryState>) -> Result<u64, String> {
     let history = history_state.0.lock().await;
     history.clear_all().map_err(|e| e.to_string())
 }

@@ -56,10 +56,7 @@ pub fn scan_unfinished_recordings(cache_dir: &Path) -> Vec<RecoveryInfo> {
         let path = entry.path();
 
         // We only care about audio files (.wav).
-        let is_audio = path
-            .extension()
-            .map(|ext| ext == "wav")
-            .unwrap_or(false);
+        let is_audio = path.extension().map(|ext| ext == "wav").unwrap_or(false);
         if !is_audio {
             continue;
         }
@@ -86,13 +83,9 @@ pub fn scan_unfinished_recordings(cache_dir: &Path) -> Vec<RecoveryInfo> {
 
         results.push(RecoveryInfo {
             audio_path: path,
-            timestamp: sidecar_meta
-                .timestamp
-                .unwrap_or_default(),
+            timestamp: sidecar_meta.timestamp.unwrap_or_default(),
             duration_estimate: sidecar_meta.duration_estimate,
-            mode: sidecar_meta
-                .mode
-                .unwrap_or_else(|| "dictate".to_string()),
+            mode: sidecar_meta.mode.unwrap_or_else(|| "dictate".to_string()),
         });
     }
 

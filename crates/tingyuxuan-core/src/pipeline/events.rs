@@ -10,30 +10,19 @@ use crate::error::UserAction;
 #[serde(tag = "type")]
 pub enum PipelineEvent {
     /// Recording has started for a new session.
-    RecordingStarted {
-        session_id: String,
-        mode: String,
-    },
+    RecordingStarted { session_id: String, mode: String },
     /// Real-time microphone volume levels (for waveform visualization).
-    VolumeUpdate {
-        levels: Vec<f32>,
-    },
+    VolumeUpdate { levels: Vec<f32> },
     /// Recording stopped; includes the total duration.
-    RecordingStopped {
-        duration_ms: u64,
-    },
+    RecordingStopped { duration_ms: u64 },
     /// STT transcription has been submitted.
     TranscriptionStarted,
     /// STT transcription completed successfully.
-    TranscriptionComplete {
-        raw_text: String,
-    },
+    TranscriptionComplete { raw_text: String },
     /// LLM processing has started.
     ProcessingStarted,
     /// LLM processing completed successfully.
-    ProcessingComplete {
-        processed_text: String,
-    },
+    ProcessingComplete { processed_text: String },
     /// An error occurred at some pipeline stage.
     Error {
         message: String,
@@ -43,13 +32,9 @@ pub enum PipelineEvent {
         raw_text: Option<String>,
     },
     /// Network reachability changed.
-    NetworkStatusChanged {
-        online: bool,
-    },
+    NetworkStatusChanged { online: bool },
     /// The recording was saved to the offline queue for later processing.
-    QueuedForLater {
-        session_id: String,
-    },
+    QueuedForLater { session_id: String },
     /// The current recording was cancelled by the user.
     RecordingCancelled,
 }

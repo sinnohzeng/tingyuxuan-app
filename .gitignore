@@ -25,9 +25,7 @@ Thumbs.db
 # Tauri
 src-tauri/target/
 src-tauri/WixTools/
-src-tauri/icons/*.png
-src-tauri/icons/*.ico
-src-tauri/icons/*.icns
+src-tauri/gen/
 
 # Audio cache
 .tingyuxuan/

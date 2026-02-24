@@ -183,11 +183,11 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use async_trait::async_trait;
     use crate::error::{LLMError, STTError};
     use crate::llm::provider::LLMResult;
     use crate::stt::provider::STTResult;
+    use async_trait::async_trait;
+    use std::path::Path;
 
     // -- Mock STT provider --------------------------------------------------
 
@@ -322,11 +322,7 @@ mod tests {
         // Drain events and find the Error event.
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
-            if let PipelineEvent::Error {
-                raw_text,
-                ..
-            } = event
-            {
+            if let PipelineEvent::Error { raw_text, .. } = event {
                 // STT failure should not include raw_text.
                 assert!(raw_text.is_none());
                 found_error = true;
@@ -353,11 +349,7 @@ mod tests {
         // Drain events and find the Error event.
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
-            if let PipelineEvent::Error {
-                raw_text,
-                ..
-            } = event
-            {
+            if let PipelineEvent::Error { raw_text, .. } = event {
                 // LLM failure should include the raw transcript.
                 assert_eq!(raw_text, Some("raw transcript".to_string()));
                 found_error = true;

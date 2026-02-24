@@ -208,7 +208,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/audio/transcriptions"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "Hello world"})),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"text": "Hello world"})),
             )
             .mount(&server)
             .await;

@@ -143,10 +143,7 @@ impl AudioRecorder {
         }
         inner.is_recording = false;
 
-        let wav_writer = inner
-            .wav_writer
-            .take()
-            .ok_or(AudioError::NotRecording)?;
+        let wav_writer = inner.wav_writer.take().ok_or(AudioError::NotRecording)?;
         wav_writer.finalize()?;
 
         Ok(inner.audio_path.clone())
@@ -265,9 +262,9 @@ impl AudioRecorder {
             }
         };
 
-        stream.play().map_err(|e| {
-            AudioError::StreamError(format!("Failed to start audio stream: {}", e))
-        })?;
+        stream
+            .play()
+            .map_err(|e| AudioError::StreamError(format!("Failed to start audio stream: {}", e)))?;
 
         self.stream = Some(stream);
         Ok(())

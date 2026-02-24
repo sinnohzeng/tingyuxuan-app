@@ -8,7 +8,9 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
@@ -76,7 +78,8 @@ fn make_unicode_input(code_unit: u16, flags: u32) -> INPUT {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(0),
                 wScan: code_unit,
-                dwFlags: KEYEVENTF_UNICODE | windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
+                dwFlags: KEYEVENTF_UNICODE
+                    | windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -195,9 +198,7 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
 
     // SAFETY: GlobalAlloc returns a valid HGLOBAL for the requested size.
     let hmem = unsafe { GlobalAlloc(GMEM_MOVEABLE, byte_len) };
-    let hmem = hmem.map_err(|_| {
-        PlatformError::ClipboardError("GlobalAlloc failed".to_string())
-    })?;
+    let hmem = hmem.map_err(|_| PlatformError::ClipboardError("GlobalAlloc failed".to_string()))?;
 
     {
         // SAFETY: GlobalLock returns a pointer to the allocated memory.
@@ -235,8 +236,8 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
 #[cfg(target_os = "windows")]
 fn simulate_paste() -> Result<(), PlatformError> {
     let inputs = [
-        make_vk_input(VK_CONTROL, 0),     // Ctrl down
-        make_vk_input(VK_V, 0),           // V down
+        make_vk_input(VK_CONTROL, 0),                 // Ctrl down
+        make_vk_input(VK_V, 0),                       // V down
         make_vk_input(VK_V, KEYEVENTF_KEYUP.0),       // V up
         make_vk_input(VK_CONTROL, KEYEVENTF_KEYUP.0), // Ctrl up
     ];
@@ -343,10 +344,7 @@ fn copy_selection_via_clipboard() -> Option<String> {
             VIRTUAL_KEY(0x43), // VK_C
             0,
         ),
-        make_vk_input(
-            VIRTUAL_KEY(0x43),
-            KEYEVENTF_KEYUP.0,
-        ),
+        make_vk_input(VIRTUAL_KEY(0x43), KEYEVENTF_KEYUP.0),
         make_vk_input(VK_CONTROL, KEYEVENTF_KEYUP.0),
     ];
     // SAFETY: inputs is a valid INPUT array.

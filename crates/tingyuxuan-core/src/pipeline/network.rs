@@ -33,10 +33,7 @@ impl NetworkMonitor {
     ///
     /// Returns a [`CancellationToken`] — drop it or call `.cancel()` to
     /// stop the background task.
-    pub fn start(
-        &self,
-        event_tx: broadcast::Sender<PipelineEvent>,
-    ) -> CancellationToken {
+    pub fn start(&self, event_tx: broadcast::Sender<PipelineEvent>) -> CancellationToken {
         let token = CancellationToken::new();
         let child = token.child_token();
 
@@ -157,7 +154,10 @@ mod tests {
             .await
             .expect("timed out")
             .expect("channel error");
-        assert!(matches!(first, PipelineEvent::NetworkStatusChanged { online: true }));
+        assert!(matches!(
+            first,
+            PipelineEvent::NetworkStatusChanged { online: true }
+        ));
 
         // Wait long enough for several ticks — should NOT get another event
         // because the status has not changed.

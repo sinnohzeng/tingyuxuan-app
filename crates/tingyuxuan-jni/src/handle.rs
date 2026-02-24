@@ -39,14 +39,7 @@ pub fn get_handle(id: u64) -> Result<Arc<Pipeline>, String> {
 /// Remove a pipeline handle. Returns `true` if the handle existed.
 pub fn remove_handle(id: u64) -> bool {
     let mut map = HANDLES.lock().unwrap();
-    map.as_mut().map_or(false, |m| m.remove(&id).is_some())
-}
-
-/// Returns the number of active handles (for testing/debugging).
-#[cfg(test)]
-pub fn active_handle_count() -> usize {
-    let map = HANDLES.lock().unwrap();
-    map.as_ref().map_or(0, |m| m.len())
+    map.as_mut().is_some_and(|m| m.remove(&id).is_some())
 }
 
 // ---------------------------------------------------------------------------

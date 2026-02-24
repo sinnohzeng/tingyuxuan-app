@@ -45,9 +45,9 @@ impl WavFileWriter {
     /// Writes a slice of 16-bit PCM samples to the WAV file.
     pub fn write_samples(&mut self, samples: &[i16]) -> Result<(), AudioError> {
         for &sample in samples {
-            self.writer.write_sample(sample).map_err(|e| {
-                AudioError::WavWriteError(format!("Failed to write sample: {}", e))
-            })?;
+            self.writer
+                .write_sample(sample)
+                .map_err(|e| AudioError::WavWriteError(format!("Failed to write sample: {}", e)))?;
         }
         self.sample_count += samples.len() as u64;
         Ok(())
@@ -65,9 +65,9 @@ impl WavFileWriter {
     /// This must be called when recording is complete. After calling `finalize`,
     /// the writer is consumed and no further writes are possible.
     pub fn finalize(self) -> Result<(), AudioError> {
-        self.writer.finalize().map_err(|e| {
-            AudioError::WavWriteError(format!("Failed to finalize WAV file: {}", e))
-        })
+        self.writer
+            .finalize()
+            .map_err(|e| AudioError::WavWriteError(format!("Failed to finalize WAV file: {}", e)))
     }
 
     /// Returns the total number of samples written so far.

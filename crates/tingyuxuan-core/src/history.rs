@@ -27,7 +27,10 @@ impl HistoryManager {
     /// Create a new HistoryManager with a file-based SQLite database.
     pub fn new() -> Result<Self, HistoryError> {
         let data_dir = AppConfig::data_dir().map_err(|e| {
-            HistoryError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
+            HistoryError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                e.to_string(),
+            ))
         })?;
         let db_dir = data_dir.join("history");
         std::fs::create_dir_all(&db_dir)?;
@@ -271,11 +274,7 @@ impl HistoryManager {
     }
 
     /// Paginated query with LIMIT and OFFSET.
-    pub fn get_page(
-        &self,
-        limit: u32,
-        offset: u32,
-    ) -> Result<Vec<TranscriptRecord>, HistoryError> {
+    pub fn get_page(&self, limit: u32, offset: u32) -> Result<Vec<TranscriptRecord>, HistoryError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
                     status, app_context, duration_ms, language, error_message
@@ -316,8 +315,10 @@ impl HistoryManager {
             "DELETE FROM transcripts WHERE id IN ({})",
             placeholders.join(", ")
         );
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let deleted = self.conn.execute(&sql, params.as_slice())?;
         Ok(deleted as u64)
     }

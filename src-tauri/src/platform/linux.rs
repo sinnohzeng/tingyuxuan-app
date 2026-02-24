@@ -58,9 +58,9 @@ fn clipboard_write_x11(text: &str) -> Result<(), PlatformError> {
 
     if let Some(stdin) = child.stdin.as_mut() {
         use std::io::Write;
-        stdin.write_all(text.as_bytes()).map_err(|e| {
-            PlatformError::ClipboardError(format!("Failed to write to xclip: {e}"))
-        })?;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| PlatformError::ClipboardError(format!("Failed to write to xclip: {e}")))?;
     }
     child
         .wait()
@@ -77,16 +77,13 @@ fn simulate_paste_x11() -> Result<(), PlatformError> {
 }
 
 fn clipboard_read_wayland() -> Result<Option<String>, PlatformError> {
-    let output = Command::new("wl-paste")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).to_string())
-            } else {
-                None
-            }
-        });
+    let output = Command::new("wl-paste").output().ok().and_then(|o| {
+        if o.status.success() {
+            Some(String::from_utf8_lossy(&o.stdout).to_string())
+        } else {
+            None
+        }
+    });
     Ok(output)
 }
 
@@ -291,10 +288,7 @@ impl ContextDetector for LinuxContextDetector {
                 }
             }
             DisplayServer::Wayland => {
-                let output = Command::new("wl-paste")
-                    .args(["--primary"])
-                    .output()
-                    .ok()?;
+                let output = Command::new("wl-paste").args(["--primary"]).output().ok()?;
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout).to_string();
                     if text.is_empty() {

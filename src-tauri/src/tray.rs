@@ -1,13 +1,31 @@
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let dictate_item = MenuItem::with_id(app, "dictate", "开始听写   Ctrl+Shift+D", true, None::<&str>)?;
-    let translate_item = MenuItem::with_id(app, "translate", "开始翻译   Ctrl+Shift+T", true, None::<&str>)?;
-    let ai_item = MenuItem::with_id(app, "ai_assistant", "AI 助手    Ctrl+Shift+A", true, None::<&str>)?;
+    let dictate_item = MenuItem::with_id(
+        app,
+        "dictate",
+        "开始听写   Ctrl+Shift+D",
+        true,
+        None::<&str>,
+    )?;
+    let translate_item = MenuItem::with_id(
+        app,
+        "translate",
+        "开始翻译   Ctrl+Shift+T",
+        true,
+        None::<&str>,
+    )?;
+    let ai_item = MenuItem::with_id(
+        app,
+        "ai_assistant",
+        "AI 助手    Ctrl+Shift+A",
+        true,
+        None::<&str>,
+    )?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
     let history_item = MenuItem::with_id(app, "history", "历史记录...", true, None::<&str>)?;

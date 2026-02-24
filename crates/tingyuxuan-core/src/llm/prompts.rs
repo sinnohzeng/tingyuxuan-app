@@ -43,10 +43,7 @@ fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
 // ---------------------------------------------------------------------------
 
 fn build_translate_prompt(input: &LLMInput) -> (String, String) {
-    let target = input
-        .target_language
-        .as_deref()
-        .unwrap_or("en");
+    let target = input.target_language.as_deref().unwrap_or("en");
 
     let system = format!(
         "你是一个专业翻译助手。请将用户的语音转写文本翻译为{target}。\n\n\
@@ -85,10 +82,7 @@ fn build_ai_assistant_prompt(input: &LLMInput) -> (String, String) {
 // ---------------------------------------------------------------------------
 
 fn build_edit_prompt(input: &LLMInput) -> (String, String) {
-    let selected = input
-        .selected_text
-        .as_deref()
-        .unwrap_or("");
+    let selected = input.selected_text.as_deref().unwrap_or("");
 
     let system = "你是一个文本编辑助手。用户选中了一段文本，并通过语音给出了修改指令。\n\n\
          规则：\n\
@@ -142,24 +136,26 @@ fn detect_tone(app_name: &str) -> &'static str {
         ],
     ) {
         "casual" // IM/chat → conversational
-    } else if contains_any(
-        &lower,
-        &["mail", "outlook", "thunderbird", "邮", "foxmail"],
-    ) {
+    } else if contains_any(&lower, &["mail", "outlook", "thunderbird", "邮", "foxmail"]) {
         "formal" // Email → formal
     } else if contains_any(
         &lower,
         &[
-            "code", "intellij", "vim", "neovim", "terminal", "iterm", "wezterm", "alacritty",
+            "code",
+            "intellij",
+            "vim",
+            "neovim",
+            "terminal",
+            "iterm",
+            "wezterm",
+            "alacritty",
             "emacs",
         ],
     ) {
         "technical" // IDE/terminal → preserve technical terms
     } else if contains_any(
         &lower,
-        &[
-            "notion", "obsidian", "logseq", "typora", "bear", "joplin",
-        ],
+        &["notion", "obsidian", "logseq", "typora", "bear", "joplin"],
     ) {
         "structured" // Note-taking → structured markdown
     } else {

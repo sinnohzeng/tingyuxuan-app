@@ -247,9 +247,7 @@ impl AppConfig {
             LLMProviderType::DashScope => {
                 "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
             }
-            LLMProviderType::Volcengine => {
-                "https://ark.cn-beijing.volces.com/api/v3".to_string()
-            }
+            LLMProviderType::Volcengine => "https://ark.cn-beijing.volces.com/api/v3".to_string(),
             LLMProviderType::Custom => self
                 .llm
                 .base_url
@@ -300,9 +298,7 @@ impl ProviderPreset {
                     "qwen-max".to_string(),
                 ],
                 stt_provider: STTProviderType::DashScopeASR,
-                stt_base_url: Some(
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-                ),
+                stt_base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
                 stt_model: Some("qwen2-audio-instruct".to_string()),
             },
             ProviderPreset {
@@ -319,10 +315,7 @@ impl ProviderPreset {
             ProviderPreset {
                 name: "OpenAI".to_string(),
                 llm_base_url: "https://api.openai.com/v1".to_string(),
-                llm_models: vec![
-                    "gpt-4o".to_string(),
-                    "gpt-4o-mini".to_string(),
-                ],
+                llm_models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()],
                 stt_provider: STTProviderType::Whisper,
                 stt_base_url: Some("https://api.openai.com/v1".to_string()),
                 stt_model: Some("whisper-1".to_string()),

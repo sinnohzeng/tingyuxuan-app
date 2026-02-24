@@ -102,9 +102,8 @@ impl AudioCache {
     pub fn update_status(&self, audio_path: &Path, status: &str) -> Result<(), AudioError> {
         let meta_path = sidecar_path(audio_path);
         let contents = std::fs::read_to_string(&meta_path)?;
-        let mut meta: AudioMetadata = serde_json::from_str(&contents).map_err(|e| {
-            AudioError::WavWriteError(format!("Failed to parse metadata: {}", e))
-        })?;
+        let mut meta: AudioMetadata = serde_json::from_str(&contents)
+            .map_err(|e| AudioError::WavWriteError(format!("Failed to parse metadata: {}", e)))?;
 
         meta.status = status.to_string();
         meta.updated_at = chrono::Utc::now().to_rfc3339();
@@ -380,9 +379,7 @@ mod tests {
 
         let p = dir.path().join("perms.wav");
         std::fs::write(&p, b"dummy").unwrap();
-        cache
-            .write_metadata(&p, "dictate", "recording", 0)
-            .unwrap();
+        cache.write_metadata(&p, "dictate", "recording", 0).unwrap();
 
         let meta_path = sidecar_path(&p);
         let perms = std::fs::metadata(&meta_path).unwrap().permissions();

@@ -6,7 +6,7 @@ description = "TingYuXuan - AI-powered voice input tool"
 
 [dependencies]
 tingyuxuan-core = { path = "../crates/tingyuxuan-core" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }

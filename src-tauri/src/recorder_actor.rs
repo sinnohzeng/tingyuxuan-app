@@ -186,10 +186,13 @@ fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
             let _ = reply.send(result);
         }
         RecorderCommand::Stop { reply } => {
-            let result = recorder.stop().map(|path| {
-                let duration_ms = compute_duration_ms(&path);
-                (path, duration_ms)
-            }).map_err(|e| e.to_string());
+            let result = recorder
+                .stop()
+                .map(|path| {
+                    let duration_ms = compute_duration_ms(&path);
+                    (path, duration_ms)
+                })
+                .map_err(|e| e.to_string());
             let _ = reply.send(result);
         }
         RecorderCommand::Cancel { reply } => {

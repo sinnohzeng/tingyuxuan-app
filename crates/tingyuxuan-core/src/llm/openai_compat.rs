@@ -213,8 +213,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into());
         let result = provider.process(&sample_input()).await;
         assert!(result.is_ok());
         let r = result.unwrap();

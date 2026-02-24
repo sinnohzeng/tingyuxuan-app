@@ -92,9 +92,8 @@ impl DashScopeASRProvider {
         Self {
             client,
             api_key,
-            base_url: base_url.unwrap_or_else(|| {
-                "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
-            }),
+            base_url: base_url
+                .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             model: model.unwrap_or_else(|| "qwen2-audio-instruct".to_string()),
         }
     }
@@ -194,9 +193,7 @@ impl STTProvider for DashScopeASRProvider {
             .choices
             .first()
             .map(|c| c.message.content.clone())
-            .ok_or_else(|| {
-                STTError::InvalidResponse("No choices in response".to_string())
-            })?;
+            .ok_or_else(|| STTError::InvalidResponse("No choices in response".to_string()))?;
 
         let language = options
             .language

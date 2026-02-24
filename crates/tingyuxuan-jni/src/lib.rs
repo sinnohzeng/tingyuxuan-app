@@ -106,7 +106,11 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_processAudio<'local>(
     };
     let selected_text_opt: Option<String> = env.get_string(&selected_text).ok().and_then(|s| {
         let s: String = s.into();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     });
 
     let pipeline = match get_handle(handle as u64) {
@@ -140,16 +144,15 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_processAudio<'local>(
     let result = rt.block_on(pipeline.process_audio(&request, cancel));
 
     let json_str = match result {
-        Ok(text) => {
-            serde_json::json!({ "success": true, "text": text }).to_string()
-        }
+        Ok(text) => serde_json::json!({ "success": true, "text": text }).to_string(),
         Err(e) => {
             tracing::error!("Pipeline processing failed: {e}");
             serde_json::json!({ "success": false, "error": e.to_string() }).to_string()
         }
     };
 
-    env.new_string(json_str).expect("Failed to create result string")
+    env.new_string(json_str)
+        .expect("Failed to create result string")
 }
 
 /// Destroy a pipeline handle, releasing the associated resources.
@@ -177,12 +180,14 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_destroyPipeline(
 
 #[cfg(test)]
 mod tests {
-    use super::handle::*;
+    use super::handle::{get_handle, remove_handle};
 
     #[test]
     fn test_handle_register_get_remove() {
         // We can't easily create a real Pipeline in tests without API keys,
-        // so we test the handle table mechanics directly.
+        // so we test the handle table mechanics via the get/remove interface.
         // Note: handle module tests cover the core logic.
+        assert!(get_handle(0).is_err());
+        assert!(!remove_handle(0));
     }
 }

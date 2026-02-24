@@ -5,7 +5,7 @@ mod state;
 mod tray;
 
 use state::AppStates;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::ProcessingRequest;
 
@@ -96,9 +96,11 @@ pub fn run() {
                                             let cancel = tokio_util::sync::CancellationToken::new();
                                             match p.process_audio(&request, cancel).await {
                                                 Ok(processed_text) => {
-                                                    let _ = tx.send(PipelineEvent::ProcessingComplete {
-                                                        processed_text: processed_text.clone(),
-                                                    });
+                                                    let _ = tx.send(
+                                                        PipelineEvent::ProcessingComplete {
+                                                            processed_text: processed_text.clone(),
+                                                        },
+                                                    );
                                                     if let Ok(h) = h.try_lock() {
                                                         let _ = h.update_result(
                                                             &item.session_id,
@@ -153,8 +155,7 @@ pub fn run() {
                     .unwrap_or_else(|| "https://api.openai.com".to_string());
                 drop(config);
 
-                let monitor =
-                    tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
+                let monitor = tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
                 let _monitor_token = monitor.start(states.event_bus.0.clone());
                 // _monitor_token is dropped when the app exits, stopping the monitor.
             }
@@ -233,7 +234,9 @@ pub fn run() {
 /// on Wayland where global shortcuts may not work), we log a warning but do NOT
 /// abort startup.
 fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
 
     #[cfg(target_os = "linux")]
     {
@@ -260,10 +263,7 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
             Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA),
             "ai_assistant",
         ),
-        (
-            Shortcut::new(None, Code::Escape),
-            "cancel",
-        ),
+        (Shortcut::new(None, Code::Escape), "cancel"),
     ];
 
     let handle = app.handle().clone();
@@ -272,16 +272,19 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
         let h = handle.clone();
         let action_name = action.to_string();
 
-        if let Err(e) = app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            let h2 = h.clone();
-            let mode = action_name.clone();
-            tauri::async_runtime::spawn(async move {
-                handle_shortcut_action(&h2, &mode).await;
-            });
-        }) {
+        if let Err(e) = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _sc, event| {
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                let h2 = h.clone();
+                let mode = action_name.clone();
+                tauri::async_runtime::spawn(async move {
+                    handle_shortcut_action(&h2, &mode).await;
+                });
+            })
+        {
             tracing::warn!(
                 "Failed to register shortcut for '{}': {}. Another app may have claimed it.",
                 action,
@@ -295,7 +298,7 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
 
 /// Handle a global shortcut action by invoking the appropriate recording command.
 async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
-    use crate::state::{RecorderState, SessionState};
+    use crate::state::RecorderState;
 
     match action {
         "cancel" => {

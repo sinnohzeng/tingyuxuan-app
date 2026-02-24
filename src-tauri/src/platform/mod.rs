@@ -62,7 +62,10 @@ mod tests {
 
     #[test]
     fn sanitize_preserves_newlines_and_tabs() {
-        assert_eq!(sanitize_for_typing("line1\nline2\tend"), "line1\nline2\tend");
+        assert_eq!(
+            sanitize_for_typing("line1\nline2\tend"),
+            "line1\nline2\tend"
+        );
     }
 
     #[test]
