@@ -1,0 +1,19 @@
+[package]
+name = "tingyuxuan-jni"
+version = "0.3.0"
+edition = "2021"
+description = "JNI bridge for TingYuXuan Android IME"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tingyuxuan-core = { path = "../tingyuxuan-core", default-features = false }
+jni = "0.21"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = "0.7"
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

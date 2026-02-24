@@ -4,10 +4,14 @@ version = "0.2.0"
 edition = "2021"
 description = "Cross-platform core engine for TingYuXuan voice input tool"
 
+[features]
+default = ["audio"]
+audio = ["dep:cpal", "dep:hound"]
+
 [dependencies]
-# Audio
-cpal = "0.15"
-hound = "3.5"
+# Audio (optional — disabled for Android JNI builds)
+cpal = { version = "0.15", optional = true }
+hound = { version = "3.5", optional = true }
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
@@ -33,6 +37,7 @@ async-trait = "0.1"
 base64 = "0.22"
 
 [dev-dependencies]
+hound = "3.5"
 wiremock = "0.6"
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
