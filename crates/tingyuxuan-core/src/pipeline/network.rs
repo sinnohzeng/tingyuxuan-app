@@ -55,7 +55,7 @@ impl NetworkMonitor {
             loop {
                 let online = client.head(&url).send().await.is_ok();
 
-                let changed = was_online.map_or(true, |prev| prev != online);
+                let changed = was_online != Some(online);
                 if changed {
                     debug!(online, "network status changed");
                     let _ = event_tx.send(PipelineEvent::NetworkStatusChanged { online });

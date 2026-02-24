@@ -25,9 +25,28 @@ pub fn detect_display_server() -> DisplayServer {
     DisplayServer::Unknown
 }
 
+/// Strip dangerous control characters from text that will be typed directly.
+///
+/// Retains `\n` (newline) and `\t` (tab) which are legitimate in typed text.
+/// Removes all other ASCII control characters (0x00–0x1F except 0x0A and 0x09,
+/// plus 0x7F DEL) that could cause unintended behaviour in target applications
+/// (e.g. backspace deleting content, escape triggering shortcuts).
+fn sanitize_for_typing(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            // Keep newline and tab
+            if *c == '\n' || *c == '\t' {
+                return true;
+            }
+            // Remove other control characters
+            !c.is_control()
+        })
+        .collect()
+}
+
 /// Injects text at the current cursor position.
 ///
-/// For short text (<200 chars), types directly.
+/// For short text (<200 chars), types directly (with control-char sanitization).
 /// For long text, uses clipboard paste with save/restore.
 pub fn inject_text(text: &str) -> Result<(), String> {
     let display = detect_display_server();
@@ -100,9 +119,10 @@ fn inject_x11(text: &str, use_clipboard: bool) -> Result<(), String> {
 
         Ok(())
     } else {
-        // Direct typing for short text
+        // Direct typing for short text — sanitize control characters first
+        let safe = sanitize_for_typing(text);
         Command::new("xdotool")
-            .args(["type", "--clearmodifiers", "--", text])
+            .args(["type", "--clearmodifiers", "--", &safe])
             .output()
             .map_err(|e| format!("xdotool type failed: {}", e))?;
         Ok(())
@@ -163,8 +183,10 @@ fn inject_wayland(text: &str, use_clipboard: bool) -> Result<(), String> {
 
         Ok(())
     } else {
+        // Direct typing — sanitize control characters first
+        let safe = sanitize_for_typing(text);
         Command::new("wtype")
-            .args(["--", text])
+            .args(["--", &safe])
             .output()
             .map_err(|e| format!("wtype failed: {}", e))?;
         Ok(())
@@ -172,9 +194,73 @@ fn inject_wayland(text: &str, use_clipboard: bool) -> Result<(), String> {
 }
 
 fn inject_ydotool(text: &str) -> Result<(), String> {
+    // ydotool always types directly — sanitize control characters
+    let safe = sanitize_for_typing(text);
     Command::new("ydotool")
-        .args(["type", "--", text])
+        .args(["type", "--", &safe])
         .output()
         .map_err(|e| format!("ydotool type failed: {}", e))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_preserves_normal_text() {
+        assert_eq!(sanitize_for_typing("Hello, 世界!"), "Hello, 世界!");
+    }
+
+    #[test]
+    fn sanitize_preserves_newlines_and_tabs() {
+        assert_eq!(sanitize_for_typing("line1\nline2\tend"), "line1\nline2\tend");
+    }
+
+    #[test]
+    fn sanitize_strips_null_and_backspace() {
+        assert_eq!(sanitize_for_typing("abc\0def\x08ghi"), "abcdefghi");
+    }
+
+    #[test]
+    fn sanitize_strips_escape_and_del() {
+        assert_eq!(sanitize_for_typing("ab\x1bcd\x7fef"), "abcdef");
+    }
+
+    #[test]
+    fn sanitize_strips_bell_and_form_feed() {
+        assert_eq!(sanitize_for_typing("a\x07b\x0cc"), "abc");
+    }
+
+    #[test]
+    fn detect_display_unknown_without_env() {
+        // Clear display-related env vars for this test.
+        // Note: this test may interfere with other tests if run in parallel,
+        // but is safe in the cargo test single-threaded default.
+        let saved_session = std::env::var("XDG_SESSION_TYPE").ok();
+        let saved_wayland = std::env::var("WAYLAND_DISPLAY").ok();
+        let saved_display = std::env::var("DISPLAY").ok();
+
+        std::env::remove_var("XDG_SESSION_TYPE");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("DISPLAY");
+
+        let result = detect_display_server();
+        assert_eq!(result, DisplayServer::Unknown);
+
+        // Restore env vars.
+        if let Some(v) = saved_session {
+            std::env::set_var("XDG_SESSION_TYPE", v);
+        }
+        if let Some(v) = saved_wayland {
+            std::env::set_var("WAYLAND_DISPLAY", v);
+        }
+        if let Some(v) = saved_display {
+            std::env::set_var("DISPLAY", v);
+        }
+    }
 }

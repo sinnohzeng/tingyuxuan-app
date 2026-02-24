@@ -341,8 +341,10 @@ mod tests {
 
     #[test]
     fn test_config_with_dictionary() {
-        let mut config = AppConfig::default();
-        config.user_dictionary = vec!["TingYuXuan".to_string(), "Rust".to_string()];
+        let config = AppConfig {
+            user_dictionary: vec!["TingYuXuan".to_string(), "Rust".to_string()],
+            ..Default::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.user_dictionary.len(), 2);

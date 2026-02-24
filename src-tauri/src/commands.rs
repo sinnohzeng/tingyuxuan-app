@@ -19,6 +19,38 @@ use crate::state::{
 use crate::text_injector;
 
 // ---------------------------------------------------------------------------
+// Input validation constants
+// ---------------------------------------------------------------------------
+
+const MAX_INJECT_TEXT_LEN: usize = 50_000;
+const MAX_API_KEY_LEN: usize = 512;
+const MAX_SEARCH_QUERY_LEN: usize = 500;
+const MAX_DICT_WORD_LEN: usize = 100;
+const VALID_KEY_SERVICES: &[&str] = &["stt", "llm"];
+
+/// Reject strings that contain null bytes — these can cause undefined behaviour
+/// when passed to C libraries or shell commands.
+fn check_no_null_bytes(s: &str, field_name: &str) -> Result<(), String> {
+    if s.contains('\0') {
+        Err(format!("{field_name} 不能包含 null 字节"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Reject strings exceeding a maximum byte length.
+fn check_max_len(s: &str, max: usize, field_name: &str) -> Result<(), String> {
+    if s.len() > max {
+        Err(format!(
+            "{field_name} 超过最大长度限制（最大 {max} 字节，实际 {} 字节）",
+            s.len()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // API Key management (keyring-based secure storage)
 // ---------------------------------------------------------------------------
 
@@ -27,6 +59,13 @@ use crate::text_injector;
 /// `service` is "stt" or "llm".
 #[tauri::command]
 pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
+    // Validate service name against whitelist.
+    if !VALID_KEY_SERVICES.contains(&service.as_str()) {
+        return Err(format!("无效的服务名称: {service}（允许: stt, llm）"));
+    }
+    check_max_len(&key, MAX_API_KEY_LEN, "API Key")?;
+    check_no_null_bytes(&key, "API Key")?;
+
     let entry =
         keyring::Entry::new("tingyuxuan", &service).map_err(|e| format!("Keyring error: {e}"))?;
     entry
@@ -441,6 +480,8 @@ pub async fn retry_transcription(
 
 #[tauri::command]
 pub async fn inject_text(text: String) -> Result<(), String> {
+    check_max_len(&text, MAX_INJECT_TEXT_LEN, "注入文本")?;
+    check_no_null_bytes(&text, "注入文本")?;
     text_injector::inject_text(&text).map_err(|e| format!("Text injection failed: {e}"))
 }
 
@@ -532,6 +573,8 @@ pub async fn search_history(
     limit: u32,
     history_state: State<'_, HistoryState>,
 ) -> Result<Vec<TranscriptRecord>, String> {
+    check_max_len(&query, MAX_SEARCH_QUERY_LEN, "搜索关键词")?;
+    check_no_null_bytes(&query, "搜索关键词")?;
     let history = history_state.0.lock().await;
     history.search(&query, limit).map_err(|e| e.to_string())
 }
@@ -587,11 +630,14 @@ pub async fn add_dictionary_word(
     word: String,
     config_state: State<'_, ConfigState>,
 ) -> Result<(), String> {
-    let mut config = config_state.0.write().await;
     let trimmed = word.trim().to_string();
     if trimmed.is_empty() {
         return Err("词汇不能为空".to_string());
     }
+    check_max_len(&trimmed, MAX_DICT_WORD_LEN, "词汇")?;
+    check_no_null_bytes(&trimmed, "词汇")?;
+
+    let mut config = config_state.0.write().await;
     if config.user_dictionary.contains(&trimmed) {
         return Ok(()); // Already exists, no-op.
     }

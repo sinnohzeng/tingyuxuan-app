@@ -288,14 +288,14 @@ impl AudioRecorder {
         let target_rate = cpal::SampleRate(16_000);
         for cfg in &configs {
             if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
-                return Ok(cfg.clone().with_sample_rate(target_rate));
+                return Ok((*cfg).with_sample_rate(target_rate));
             }
         }
 
         // Fall back to the config with the highest max sample rate.
         configs.sort_by_key(|c| c.max_sample_rate().0);
         let best = configs.last().unwrap();
-        Ok(best.clone().with_max_sample_rate())
+        Ok((*best).with_max_sample_rate())
     }
 
     /// Starts a mock stream that writes silence on a background thread.
