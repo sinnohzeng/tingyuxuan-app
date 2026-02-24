@@ -85,7 +85,25 @@ dbus-send --session --print-reply \
 
 **使用「测试连接」功能**：在设置中点击 STT / LLM 的测试连接按钮，快速诊断问题。
 
-### 6. 应用启动后白屏
+### 6. Windows：文本注入到部分应用无效
+
+**症状**：文本注入在大多数应用正常工作，但在某些管理员权限运行的程序中无效。
+
+**原因**：Windows UIPI（User Interface Privilege Isolation）阻止低权限进程向高权限窗口发送输入事件。
+
+**解决方案**：
+- 以管理员身份运行听语轩
+- 或避免在管理员权限的应用中使用文本注入
+
+### 7. Windows：WebView2 未安装
+
+**症状**：Windows 10 上启动应用后出现错误提示。
+
+**解决方案**：
+- 下载安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+- Windows 11 自带 WebView2，无需安装
+
+### 8. 应用启动后白屏
 
 **可能原因**：前端渲染崩溃。
 
@@ -96,7 +114,7 @@ dbus-send --session --print-reply \
   rm ~/.config/tingyuxuan/TingYuXuan/config.json
   ```
 
-### 7. ydotool 文本注入需要权限
+### 9. ydotool 文本注入需要权限
 
 如果使用 `ydotool` 作为备用输入工具：
 
@@ -122,10 +140,19 @@ RUST_LOG=debug tingyuxuan-app
 
 ## 数据目录
 
+### Linux
+
 | 目录 | 内容 |
 |------|------|
 | `~/.config/tingyuxuan/TingYuXuan/` | 配置文件 |
 | `~/.local/share/tingyuxuan/TingYuXuan/` | 历史数据库、离线队列、音频缓存 |
+
+### Windows
+
+| 目录 | 内容 |
+|------|------|
+| `%APPDATA%\com.tingyuxuan.app\` | 配置文件 |
+| `%LOCALAPPDATA%\com.tingyuxuan.app\` | 历史数据库、离线队列、音频缓存 |
 
 ---
 
@@ -136,6 +163,6 @@ RUST_LOG=debug tingyuxuan-app
 https://github.com/sinnohzeng/tingyuxuan-app/issues
 
 提交时请附带：
-- 操作系统版本和桌面环境
-- 显示服务器类型（X11 / Wayland）
+- 操作系统版本（Windows 10/11 版本号 或 Linux 发行版）
+- 显示服务器类型（X11 / Wayland，仅 Linux）
 - 错误信息截图或日志输出

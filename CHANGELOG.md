@@ -6,6 +6,29 @@
 
 ---
 
+## [0.2.0] - 2026-02-25
+
+### 新增
+
+**Windows 支持**
+- 平台抽象层：TextInjector / ContextDetector trait + 编译时类型别名（零开销）
+- Windows 文本注入：SendInput 批量提交 + 剪贴板 Ctrl+V（>200 字符自动切换）
+- Windows 上下文检测：GetForegroundWindow 活动窗口 + Ctrl+C 选中文本
+- Windows 安装包：MSI + NSIS 双格式（NSIS 支持中英文语言选择）
+- Windows CI/CD：GitHub Actions windows-latest 构建 + 测试
+- Windows Keyring：Credential Manager 原生支持
+
+**工程改进**
+- PlatformError 结构化错误（thiserror），替代 Result<_, String>
+- InjectorState / DetectorState 作为 Tauri Managed State（总计 10 个）
+- 剪贴板 save/write/paste/restore DRY 抽象（primitive 函数 + 组合）
+- 所有 unsafe 块配 // SAFETY: 注释
+- 平台操作添加 tracing info_span
+- 交叉编译检查：Linux CI 运行 cargo check --target x86_64-pc-windows-msvc
+- ADR-0006: 平台抽象层设计决策
+
+---
+
 ## [0.1.0] - 2026-02-24
 
 ### 新增

@@ -12,7 +12,7 @@ env:
 
 jobs:
   rust-check:
-    name: Rust Check
+    name: Rust Check (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +51,57 @@ jobs:
       - name: cargo test (tingyuxuan-core)
         run: cargo test --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core
 
+  rust-check-windows:
+    name: Rust Check (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: cargo clippy (Windows)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: cargo test (tingyuxuan-core)
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core
+
+  cross-check:
+    name: Cross-check (Windows target on Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cross-win-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cross-win-
+
+      - name: cargo check --target x86_64-pc-windows-msvc (core only)
+        run: cargo check --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core --target x86_64-pc-windows-msvc
+
   frontend-check:
     name: Frontend Check
     runs-on: ubuntu-latest
@@ -70,8 +121,8 @@ jobs:
       - name: Run tests
         run: npm test
 
-  build:
-    name: Build
+  build-linux:
+    name: Build (Linux)
     needs: [rust-check, frontend-check]
     runs-on: ubuntu-latest
     steps:
@@ -93,6 +144,39 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Rust backend
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release -p tingyuxuan-app
+
+  build-windows:
+    name: Build (Windows)
+    needs: [rust-check-windows, frontend-check]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
       - uses: actions/cache@v4
         with:

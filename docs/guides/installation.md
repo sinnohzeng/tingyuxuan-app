@@ -2,7 +2,16 @@
 
 ## 系统要求
 
-- **操作系统**：Linux（Ubuntu 22.04+、Fedora 38+ 或其他支持 WebKitGTK 的发行版）
+### Windows
+
+- **操作系统**：Windows 10 (1809+) 或 Windows 11
+- **架构**：x86_64
+- **运行时**：WebView2（Windows 11 自带；Windows 10 需安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)）
+- **音频**：Windows 兼容的麦克风
+
+### Linux
+
+- **操作系统**：Ubuntu 22.04+、Fedora 38+ 或其他支持 WebKitGTK 的发行版
 - **架构**：x86_64
 - **音频**：ALSA 兼容的麦克风
 - **显示**：X11 或 Wayland
@@ -34,23 +43,43 @@ sudo dnf install wtype wl-clipboard
 
 ## 安装方式
 
-### 方式一：.deb 包（推荐 — Ubuntu/Debian）
+### Windows
+
+#### 方式一：NSIS 安装程序（推荐）
+
+从 [Releases 页面](https://github.com/sinnohzeng/tingyuxuan-app/releases) 下载最新 `.exe` 安装程序：
+
+1. 运行 `TingYuXuan_0.2.0_x64-setup.exe`
+2. 选择安装语言（简体中文 / English）
+3. 按向导完成安装
+
+#### 方式二：MSI 安装包
+
+适合企业部署和组策略分发：
+
+```powershell
+msiexec /i TingYuXuan_0.2.0_x64_en-US.msi
+```
+
+### Linux
+
+#### 方式一：.deb 包（推荐 — Ubuntu/Debian）
 
 从 [Releases 页面](https://github.com/sinnohzeng/tingyuxuan-app/releases) 下载最新 `.deb` 文件：
 
 ```bash
-sudo dpkg -i tingyuxuan_0.1.0_amd64.deb
+sudo dpkg -i tingyuxuan_0.2.0_amd64.deb
 sudo apt-get install -f  # 安装缺失的依赖
 ```
 
-### 方式二：AppImage（通用 Linux）
+#### 方式二：AppImage（通用 Linux）
 
 ```bash
-chmod +x TingYuXuan_0.1.0_amd64.AppImage
-./TingYuXuan_0.1.0_amd64.AppImage
+chmod +x TingYuXuan_0.2.0_amd64.AppImage
+./TingYuXuan_0.2.0_amd64.AppImage
 ```
 
-### 方式三：从源码编译
+### 从源码编译
 
 **前置要求**：
 
