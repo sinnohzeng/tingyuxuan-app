@@ -1,0 +1,268 @@
+import { useState } from "react";
+import type { AppConfig, STTProviderType, LLMProviderType } from "../../lib/types";
+import { PROVIDER_PRESETS } from "../../lib/providers";
+
+interface ApiConfigProps {
+  config: AppConfig;
+  onUpdate: (updater: (prev: AppConfig) => AppConfig) => void;
+}
+
+export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
+  const [sttApiKey, setSttApiKey] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [showSttKey, setShowSttKey] = useState(false);
+  const [showLlmKey, setShowLlmKey] = useState(false);
+  const [sttTestResult, setSttTestResult] = useState<string>("");
+  const [llmTestResult, setLlmTestResult] = useState<string>("");
+
+  const applyPreset = (presetKey: string) => {
+    const preset = PROVIDER_PRESETS[presetKey];
+    if (!preset) return;
+
+    onUpdate((c) => ({
+      ...c,
+      llm: {
+        ...c.llm,
+        provider: presetKey === "openai" ? "openai" : presetKey === "dashscope" ? "dashscope" : "volcengine" as LLMProviderType,
+        base_url: preset.llm_base_url,
+        model: preset.llm_models[0],
+      },
+      stt: {
+        ...c.stt,
+        provider: preset.stt_provider,
+        base_url: preset.stt_base_url,
+        model: preset.stt_model,
+      },
+    }));
+  };
+
+  const testSttConnection = async () => {
+    setSttTestResult("测试中...");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const ok = await invoke<boolean>("test_stt_connection");
+      setSttTestResult(ok ? "连接成功" : "连接失败");
+    } catch {
+      setSttTestResult("测试失败（开发模式）");
+    }
+    setTimeout(() => setSttTestResult(""), 3000);
+  };
+
+  const testLlmConnection = async () => {
+    setLlmTestResult("测试中...");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const ok = await invoke<boolean>("test_llm_connection");
+      setLlmTestResult(ok ? "连接成功" : "连接失败");
+    } catch {
+      setLlmTestResult("测试失败（开发模式）");
+    }
+    setTimeout(() => setLlmTestResult(""), 3000);
+  };
+
+  return (
+    <div className="space-y-8 max-w-lg">
+      {/* Provider presets */}
+      <div>
+        <h2 className="text-base font-medium text-gray-700 mb-3">快速配置</h2>
+        <div className="flex gap-2 flex-wrap">
+          {Object.entries(PROVIDER_PRESETS).map(([key, preset]) => (
+            <button
+              key={key}
+              onClick={() => applyPreset(key)}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg
+                         hover:bg-blue-50 hover:border-blue-300 transition-colors"
+            >
+              {preset.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* STT Configuration */}
+      <div className="space-y-3">
+        <h2 className="text-base font-medium text-gray-700">语音识别 (STT)</h2>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Provider</label>
+          <select
+            value={config.stt.provider}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                stt: { ...c.stt, provider: e.target.value as STTProviderType },
+              }))
+            }
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="whisper">OpenAI Whisper（兼容格式）</option>
+            <option value="dashscope_asr">阿里云 Qwen-ASR</option>
+            <option value="custom">自定义</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">API Key</label>
+          <div className="flex gap-2">
+            <input
+              type={showSttKey ? "text" : "password"}
+              value={sttApiKey}
+              onChange={(e) => setSttApiKey(e.target.value)}
+              placeholder="输入 STT API Key"
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => setShowSttKey(!showSttKey)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-500 hover:bg-gray-50"
+            >
+              {showSttKey ? "隐藏" : "显示"}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Base URL</label>
+          <input
+            type="text"
+            value={config.stt.base_url ?? ""}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                stt: { ...c.stt, base_url: e.target.value || null },
+              }))
+            }
+            placeholder="默认值由 Provider 决定"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Model</label>
+          <input
+            type="text"
+            value={config.stt.model ?? ""}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                stt: { ...c.stt, model: e.target.value || null },
+              }))
+            }
+            placeholder="默认值由 Provider 决定"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={testSttConnection}
+            className="px-4 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            测试连接
+          </button>
+          {sttTestResult && (
+            <span
+              className={`text-sm ${
+                sttTestResult.includes("成功") ? "text-green-600" : "text-gray-500"
+              }`}
+            >
+              {sttTestResult}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* LLM Configuration */}
+      <div className="space-y-3">
+        <h2 className="text-base font-medium text-gray-700">大语言模型 (LLM)</h2>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Provider</label>
+          <select
+            value={config.llm.provider}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                llm: { ...c.llm, provider: e.target.value as LLMProviderType },
+              }))
+            }
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="openai">OpenAI</option>
+            <option value="dashscope">阿里云 DashScope</option>
+            <option value="volcengine">火山引擎 (豆包)</option>
+            <option value="custom">自定义（OpenAI 兼容）</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">API Key</label>
+          <div className="flex gap-2">
+            <input
+              type={showLlmKey ? "text" : "password"}
+              value={llmApiKey}
+              onChange={(e) => setLlmApiKey(e.target.value)}
+              placeholder="输入 LLM API Key"
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => setShowLlmKey(!showLlmKey)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-500 hover:bg-gray-50"
+            >
+              {showLlmKey ? "隐藏" : "显示"}
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Base URL</label>
+          <input
+            type="text"
+            value={config.llm.base_url ?? ""}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                llm: { ...c.llm, base_url: e.target.value || null },
+              }))
+            }
+            placeholder="默认值由 Provider 决定"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm text-gray-600 mb-1">Model</label>
+          <input
+            type="text"
+            value={config.llm.model}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                llm: { ...c.llm, model: e.target.value },
+              }))
+            }
+            placeholder="例如 gpt-4o-mini"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={testLlmConnection}
+            className="px-4 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            测试连接
+          </button>
+          {llmTestResult && (
+            <span
+              className={`text-sm ${
+                llmTestResult.includes("成功") ? "text-green-600" : "text-gray-500"
+              }`}
+            >
+              {llmTestResult}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

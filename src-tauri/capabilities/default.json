@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasrice/tauri/feat/permissions-schema/crates/tauri-utils/schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for TingYuXuan",
+  "windows": ["floating-bar", "settings"],
+  "permissions": [
+    "core:default",
+    "global-shortcut:default",
+    "shell:default"
+  ]
+}
