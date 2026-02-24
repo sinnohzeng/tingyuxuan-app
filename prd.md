@@ -427,12 +427,12 @@
 - 语言变体选择（如英语-美国 vs 英语-英国）
 
 **API 配置**：
-- STT 服务商选择（Whisper / Deepgram / Azure / 自定义）
+- STT 服务商选择（阿里云、字节跳动火山引擎）
 - STT API Key
 - STT API 自定义地址（Base URL）
-- LLM 服务商选择（OpenAI / Claude / 自定义）
+- LLM 服务商选择（阿里云、字节跳动火山引擎）
 - LLM API Key
-- LLM 模型选择（gpt-4o / claude-sonnet / 自定义）
+- LLM 模型选择（阿里云 Qwen3、字节跳动火山引擎豆包 2.0）
 - LLM API 自定义地址（Base URL）
 - API 连接测试按钮
 
