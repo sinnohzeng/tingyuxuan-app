@@ -42,7 +42,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": ["deb", "appimage", "msi", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -57,6 +57,15 @@
         "depends": ["libasound2", "libwebkit2gtk-4.1-0"],
         "section": "utils"
       }
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "nsis": {
+      "displayLanguageSelector": true,
+      "languages": ["SimpChinese", "English"]
     }
   }
 }
