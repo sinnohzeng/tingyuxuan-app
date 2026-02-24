@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import ErrorBoundary from "./components/ErrorBoundary";
 import FloatingBar from "./components/FloatingBar";
 import SettingsPanel from "./components/Settings/SettingsPanel";
 
-function App() {
+function AppContent() {
   const [route, setRoute] = useState<string>("");
 
   useEffect(() => {
@@ -45,6 +46,14 @@ function App() {
         </div>
       );
   }
+}
+
+function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
 }
 
 export default App;
