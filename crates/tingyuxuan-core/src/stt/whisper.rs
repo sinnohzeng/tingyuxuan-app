@@ -1,7 +1,8 @@
-use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
 use crate::error::STTError;
@@ -52,122 +53,124 @@ impl WhisperProvider {
     }
 }
 
-#[async_trait]
 impl STTProvider for WhisperProvider {
     fn name(&self) -> &str {
         "whisper"
     }
 
-    async fn transcribe(
-        &self,
-        audio_path: &Path,
-        options: &STTOptions,
-    ) -> Result<STTResult, STTError> {
-        // Read the audio file
-        let file_bytes = tokio::fs::read(audio_path)
-            .await
-            .map_err(|e| STTError::NetworkError(format!("Failed to read audio file: {}", e)))?;
+    fn transcribe<'a>(
+        &'a self,
+        audio_path: &'a Path,
+        options: &'a STTOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Read the audio file
+            let file_bytes = tokio::fs::read(audio_path)
+                .await
+                .map_err(|e| STTError::NetworkError(format!("Failed to read audio file: {}", e)))?;
 
-        let file_name = audio_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("audio.wav")
-            .to_string();
+            let file_name = audio_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("audio.wav")
+                .to_string();
 
-        // Build multipart form
-        let file_part = reqwest::multipart::Part::bytes(file_bytes)
-            .file_name(file_name)
-            .mime_str("audio/wav")
-            .map_err(|e| STTError::NetworkError(format!("Failed to set MIME type: {}", e)))?;
+            // Build multipart form
+            let file_part = reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(file_name)
+                .mime_str("audio/wav")
+                .map_err(|e| STTError::NetworkError(format!("Failed to set MIME type: {}", e)))?;
 
-        let mut form = reqwest::multipart::Form::new()
-            .part("file", file_part)
-            .text("model", self.model.clone())
-            .text("response_format", "json");
+            let mut form = reqwest::multipart::Form::new()
+                .part("file", file_part)
+                .text("model", self.model.clone())
+                .text("response_format", "json");
 
-        if let Some(ref lang) = options.language {
-            if lang != "auto" {
+            if let Some(ref lang) = options.language
+                && lang != "auto"
+            {
                 form = form.text("language", lang.clone());
             }
-        }
 
-        if let Some(ref prompt) = options.prompt {
-            form = form.text("prompt", prompt.clone());
-        }
+            if let Some(ref prompt) = options.prompt {
+                form = form.text("prompt", prompt.clone());
+            }
 
-        let url = format!("{}/audio/transcriptions", self.base_url);
+            let url = format!("{}/audio/transcriptions", self.base_url);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    STTError::Timeout(15)
-                } else {
-                    STTError::NetworkError(e.to_string())
-                }
+            let response = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .multipart(form)
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        STTError::Timeout(15)
+                    } else {
+                        STTError::NetworkError(e.to_string())
+                    }
+                })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| String::from("(failed to read response body)"));
+                return Err(Self::map_http_error(status, &body));
+            }
+
+            let body = response.text().await.map_err(|e| {
+                STTError::InvalidResponse(format!("Failed to read response: {}", e))
             })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| String::from("(failed to read response body)"));
-            return Err(Self::map_http_error(status, &body));
-        }
+            let whisper_resp: WhisperResponse = serde_json::from_str(&body)
+                .map_err(|e| STTError::InvalidResponse(format!("Failed to parse JSON: {}", e)))?;
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| STTError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+            let language = options
+                .language
+                .clone()
+                .unwrap_or_else(|| "auto".to_string());
 
-        let whisper_resp: WhisperResponse = serde_json::from_str(&body)
-            .map_err(|e| STTError::InvalidResponse(format!("Failed to parse JSON: {}", e)))?;
-
-        let language = options
-            .language
-            .clone()
-            .unwrap_or_else(|| "auto".to_string());
-
-        Ok(STTResult {
-            text: whisper_resp.text,
-            language,
-            duration_seconds: 0.0, // Whisper API does not return duration in the basic response
+            Ok(STTResult {
+                text: whisper_resp.text,
+                language,
+                duration_seconds: 0.0, // Whisper API does not return duration in the basic response
+            })
         })
     }
 
-    async fn test_connection(&self) -> Result<bool, STTError> {
-        let url = format!("{}/models", self.base_url);
+    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
+        Box::pin(async move {
+            let url = format!("{}/models", self.base_url);
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    STTError::Timeout(15)
-                } else {
-                    STTError::NetworkError(e.to_string())
-                }
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
+            let response = self
+                .client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .send()
                 .await
-                .unwrap_or_else(|_| String::from("(failed to read response body)"));
-            return Err(Self::map_http_error(status, &body));
-        }
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        STTError::Timeout(15)
+                    } else {
+                        STTError::NetworkError(e.to_string())
+                    }
+                })?;
 
-        Ok(true)
+            let status = response.status();
+            if !status.is_success() {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| String::from("(failed to read response body)"));
+                return Err(Self::map_http_error(status, &body));
+            }
+
+            Ok(true)
+        })
     }
 }
 

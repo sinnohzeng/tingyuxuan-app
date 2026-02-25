@@ -1,6 +1,7 @@
-use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use crate::error::LLMError;
@@ -98,51 +99,57 @@ impl OpenAICompatProvider {
     }
 }
 
-#[async_trait]
 impl LLMProvider for OpenAICompatProvider {
     fn name(&self) -> &str {
         "OpenAI-compatible"
     }
 
-    async fn process(&self, input: &LLMInput) -> Result<LLMResult, LLMError> {
-        let (system_msg, user_msg) = build_prompt(&input.mode, input);
+    fn process<'a>(
+        &'a self,
+        input: &'a LLMInput,
+    ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (system_msg, user_msg) = build_prompt(&input.mode, input);
 
-        let messages = vec![
-            ChatMessage {
-                role: "system".to_string(),
-                content: system_msg,
-            },
-            ChatMessage {
-                role: "user".to_string(),
-                content: user_msg,
-            },
-        ];
+            let messages = vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: system_msg,
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: user_msg,
+                },
+            ];
 
-        let resp = self.send_request(messages).await?;
+            let resp = self.send_request(messages).await?;
 
-        let text = resp
-            .choices
-            .first()
-            .and_then(|c| c.message.as_ref())
-            .map(|m| m.content.clone())
-            .ok_or_else(|| LLMError::InvalidResponse("no choices in response".to_string()))?;
+            let text = resp
+                .choices
+                .first()
+                .and_then(|c| c.message.as_ref())
+                .map(|m| m.content.clone())
+                .ok_or_else(|| LLMError::InvalidResponse("no choices in response".to_string()))?;
 
-        let tokens_used = resp.usage.map(|u| u.total_tokens);
+            let tokens_used = resp.usage.map(|u| u.total_tokens);
 
-        Ok(LLMResult {
-            processed_text: text,
-            tokens_used,
+            Ok(LLMResult {
+                processed_text: text,
+                tokens_used,
+            })
         })
     }
 
-    async fn test_connection(&self) -> Result<bool, LLMError> {
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: "Say hi.".to_string(),
-        }];
+    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>> {
+        Box::pin(async move {
+            let messages = vec![ChatMessage {
+                role: "user".to_string(),
+                content: "Say hi.".to_string(),
+            }];
 
-        self.send_request(messages).await?;
-        Ok(true)
+            self.send_request(messages).await?;
+            Ok(true)
+        })
     }
 }
 

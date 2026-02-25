@@ -1,8 +1,9 @@
-use async_trait::async_trait;
 use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
 use crate::error::STTError;
@@ -109,143 +110,145 @@ impl DashScopeASRProvider {
     }
 }
 
-#[async_trait]
 impl STTProvider for DashScopeASRProvider {
     fn name(&self) -> &str {
         "dashscope_asr"
     }
 
-    async fn transcribe(
-        &self,
-        audio_path: &Path,
-        options: &STTOptions,
-    ) -> Result<STTResult, STTError> {
-        // Read the audio file and base64-encode it
-        let file_bytes = tokio::fs::read(audio_path)
-            .await
-            .map_err(|e| STTError::NetworkError(format!("Failed to read audio file: {}", e)))?;
+    fn transcribe<'a>(
+        &'a self,
+        audio_path: &'a Path,
+        options: &'a STTOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Read the audio file and base64-encode it
+            let file_bytes = tokio::fs::read(audio_path)
+                .await
+                .map_err(|e| STTError::NetworkError(format!("Failed to read audio file: {}", e)))?;
 
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
 
-        // Build the transcription prompt
-        let prompt_text = if let Some(ref prompt) = options.prompt {
-            format!(
-                "Please transcribe this audio accurately. Vocabulary hints: {}. Output only the transcription text, nothing else.",
-                prompt
-            )
-        } else {
-            "Please transcribe this audio accurately. Output only the transcription text, nothing else.".to_string()
-        };
+            // Build the transcription prompt
+            let prompt_text = if let Some(ref prompt) = options.prompt {
+                format!(
+                    "Please transcribe this audio accurately. Vocabulary hints: {}. Output only the transcription text, nothing else.",
+                    prompt
+                )
+            } else {
+                "Please transcribe this audio accurately. Output only the transcription text, nothing else.".to_string()
+            };
 
-        // Build the request body
-        let request = ChatCompletionRequest {
-            model: self.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: vec![
-                    ContentPart::InputAudio {
-                        input_audio: AudioData {
-                            data: encoded,
-                            format: "wav".to_string(),
+            // Build the request body
+            let request = ChatCompletionRequest {
+                model: self.model.clone(),
+                messages: vec![Message {
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentPart::InputAudio {
+                            input_audio: AudioData {
+                                data: encoded,
+                                format: "wav".to_string(),
+                            },
                         },
-                    },
-                    ContentPart::Text { text: prompt_text },
-                ],
-            }],
-        };
+                        ContentPart::Text { text: prompt_text },
+                    ],
+                }],
+            };
 
-        let url = format!("{}/chat/completions", self.base_url);
+            let url = format!("{}/chat/completions", self.base_url);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    STTError::Timeout(15)
-                } else {
-                    STTError::NetworkError(e.to_string())
-                }
+            let response = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        STTError::Timeout(15)
+                    } else {
+                        STTError::NetworkError(e.to_string())
+                    }
+                })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| String::from("(failed to read response body)"));
+                return Err(Self::map_http_error(status, &body));
+            }
+
+            let body = response.text().await.map_err(|e| {
+                STTError::InvalidResponse(format!("Failed to read response: {}", e))
             })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| String::from("(failed to read response body)"));
-            return Err(Self::map_http_error(status, &body));
-        }
+            let chat_resp: ChatCompletionResponse = serde_json::from_str(&body)
+                .map_err(|e| STTError::InvalidResponse(format!("Failed to parse JSON: {}", e)))?;
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| STTError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+            let text = chat_resp
+                .choices
+                .first()
+                .map(|c| c.message.content.clone())
+                .ok_or_else(|| STTError::InvalidResponse("No choices in response".to_string()))?;
 
-        let chat_resp: ChatCompletionResponse = serde_json::from_str(&body)
-            .map_err(|e| STTError::InvalidResponse(format!("Failed to parse JSON: {}", e)))?;
+            let language = options
+                .language
+                .clone()
+                .unwrap_or_else(|| "auto".to_string());
 
-        let text = chat_resp
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .ok_or_else(|| STTError::InvalidResponse("No choices in response".to_string()))?;
-
-        let language = options
-            .language
-            .clone()
-            .unwrap_or_else(|| "auto".to_string());
-
-        Ok(STTResult {
-            text,
-            language,
-            duration_seconds: 0.0,
+            Ok(STTResult {
+                text,
+                language,
+                duration_seconds: 0.0,
+            })
         })
     }
 
-    async fn test_connection(&self) -> Result<bool, STTError> {
-        // Send a simple text-only chat completion to verify the API key.
-        let request = SimpleTextRequest {
-            model: self.model.clone(),
-            messages: vec![SimpleMessage {
-                role: "user".to_string(),
-                content: "Hi".to_string(),
-            }],
-            max_tokens: 1,
-        };
+    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
+        Box::pin(async move {
+            // Send a simple text-only chat completion to verify the API key.
+            let request = SimpleTextRequest {
+                model: self.model.clone(),
+                messages: vec![SimpleMessage {
+                    role: "user".to_string(),
+                    content: "Hi".to_string(),
+                }],
+                max_tokens: 1,
+            };
 
-        let url = format!("{}/chat/completions", self.base_url);
+            let url = format!("{}/chat/completions", self.base_url);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    STTError::Timeout(15)
-                } else {
-                    STTError::NetworkError(e.to_string())
-                }
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
+            let response = self
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request)
+                .send()
                 .await
-                .unwrap_or_else(|_| String::from("(failed to read response body)"));
-            return Err(Self::map_http_error(status, &body));
-        }
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        STTError::Timeout(15)
+                    } else {
+                        STTError::NetworkError(e.to_string())
+                    }
+                })?;
 
-        Ok(true)
+            let status = response.status();
+            if !status.is_success() {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| String::from("(failed to read response body)"));
+                return Err(Self::map_http_error(status, &body));
+            }
+
+            Ok(true)
+        })
     }
 }
 

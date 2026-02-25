@@ -8,10 +8,10 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput,
     VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 #[cfg(target_os = "windows")]

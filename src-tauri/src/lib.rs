@@ -6,8 +6,8 @@ mod tray;
 
 use state::AppStates;
 use tauri::{Emitter, Manager};
-use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::ProcessingRequest;
+use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

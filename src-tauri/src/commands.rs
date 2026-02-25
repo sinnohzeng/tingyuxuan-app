@@ -95,12 +95,11 @@ pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
 /// Try to get an API key: first from keyring, then fall back to config's api_key_ref.
 fn resolve_api_key(service: &str, config_key_ref: &str) -> Option<String> {
     // Try keyring first.
-    if let Ok(entry) = keyring::Entry::new("tingyuxuan", service) {
-        if let Ok(key) = entry.get_password() {
-            if !key.is_empty() {
-                return Some(key);
-            }
-        }
+    if let Ok(entry) = keyring::Entry::new("tingyuxuan", service)
+        && let Ok(key) = entry.get_password()
+        && !key.is_empty()
+    {
+        return Some(key);
     }
     // Fall back to config's api_key_ref (for dev/headless environments).
     if !config_key_ref.is_empty() && !config_key_ref.starts_with("@keyref:") {

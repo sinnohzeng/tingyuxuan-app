@@ -237,11 +237,7 @@ impl ContextDetector for LinuxContextDetector {
                     .ok()?;
                 if output.status.success() {
                     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if name.is_empty() {
-                        None
-                    } else {
-                        Some(name)
-                    }
+                    if name.is_empty() { None } else { Some(name) }
                 } else {
                     None
                 }
@@ -253,11 +249,7 @@ impl ContextDetector for LinuxContextDetector {
                     .ok()?;
                 if output.status.success() {
                     let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if name.is_empty() {
-                        None
-                    } else {
-                        Some(name)
-                    }
+                    if name.is_empty() { None } else { Some(name) }
                 } else {
                     None
                 }
@@ -278,11 +270,7 @@ impl ContextDetector for LinuxContextDetector {
                     .ok()?;
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout).to_string();
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text)
-                    }
+                    if text.is_empty() { None } else { Some(text) }
                 } else {
                     None
                 }
@@ -291,11 +279,7 @@ impl ContextDetector for LinuxContextDetector {
                 let output = Command::new("wl-paste").args(["--primary"]).output().ok()?;
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout).to_string();
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(text)
-                    }
+                    if text.is_empty() { None } else { Some(text) }
                 } else {
                     None
                 }
@@ -322,22 +306,28 @@ mod tests {
         let saved_wayland = std::env::var("WAYLAND_DISPLAY").ok();
         let saved_display = std::env::var("DISPLAY").ok();
 
-        std::env::remove_var("XDG_SESSION_TYPE");
-        std::env::remove_var("WAYLAND_DISPLAY");
-        std::env::remove_var("DISPLAY");
+        // SAFETY: This test runs single-threaded; no concurrent env access.
+        unsafe {
+            std::env::remove_var("XDG_SESSION_TYPE");
+            std::env::remove_var("WAYLAND_DISPLAY");
+            std::env::remove_var("DISPLAY");
+        }
 
         let result = detect_display_server();
         assert_eq!(result, DisplayServer::Unknown);
 
         // Restore env vars.
-        if let Some(v) = saved_session {
-            std::env::set_var("XDG_SESSION_TYPE", v);
-        }
-        if let Some(v) = saved_wayland {
-            std::env::set_var("WAYLAND_DISPLAY", v);
-        }
-        if let Some(v) = saved_display {
-            std::env::set_var("DISPLAY", v);
+        // SAFETY: This test runs single-threaded; no concurrent env access.
+        unsafe {
+            if let Some(v) = saved_session {
+                std::env::set_var("XDG_SESSION_TYPE", v);
+            }
+            if let Some(v) = saved_wayland {
+                std::env::set_var("WAYLAND_DISPLAY", v);
+            }
+            if let Some(v) = saved_display {
+                std::env::set_var("DISPLAY", v);
+            }
         }
     }
 }

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::PipelineError;
 use crate::llm::provider::{LLMInput, LLMProvider, ProcessingMode};
 use crate::pipeline::events::PipelineEvent;
-use crate::pipeline::retry::{execute_with_retry, RetryPolicy};
+use crate::pipeline::retry::{RetryPolicy, execute_with_retry};
 use crate::stt::provider::{STTOptions, STTProvider};
 
 /// Extensible request struct for pipeline processing.
@@ -186,8 +186,9 @@ mod tests {
     use crate::error::{LLMError, STTError};
     use crate::llm::provider::LLMResult;
     use crate::stt::provider::STTResult;
-    use async_trait::async_trait;
+    use std::future::Future;
     use std::path::Path;
+    use std::pin::Pin;
 
     // -- Mock STT provider --------------------------------------------------
 
@@ -195,43 +196,47 @@ mod tests {
         text: String,
     }
 
-    #[async_trait]
     impl STTProvider for MockSTT {
         fn name(&self) -> &str {
             "mock-stt"
         }
-        async fn transcribe(
-            &self,
-            _audio_path: &Path,
-            _options: &STTOptions,
-        ) -> Result<STTResult, STTError> {
-            Ok(STTResult {
-                text: self.text.clone(),
-                language: "zh".to_string(),
-                duration_seconds: 3.0,
+        fn transcribe<'a>(
+            &'a self,
+            _audio_path: &'a Path,
+            _options: &'a STTOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(STTResult {
+                    text: self.text.clone(),
+                    language: "zh".to_string(),
+                    duration_seconds: 3.0,
+                })
             })
         }
-        async fn test_connection(&self) -> Result<bool, STTError> {
-            Ok(true)
+        fn test_connection(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
+            Box::pin(async { Ok(true) })
         }
     }
 
     struct FailingSTT;
 
-    #[async_trait]
     impl STTProvider for FailingSTT {
         fn name(&self) -> &str {
             "failing-stt"
         }
-        async fn transcribe(
-            &self,
-            _audio_path: &Path,
-            _options: &STTOptions,
-        ) -> Result<STTResult, STTError> {
-            Err(STTError::Timeout(15))
+        fn transcribe<'a>(
+            &'a self,
+            _audio_path: &'a Path,
+            _options: &'a STTOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
+            Box::pin(async { Err(STTError::Timeout(15)) })
         }
-        async fn test_connection(&self) -> Result<bool, STTError> {
-            Ok(false)
+        fn test_connection(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
+            Box::pin(async { Ok(false) })
         }
     }
 
@@ -241,34 +246,44 @@ mod tests {
         response: String,
     }
 
-    #[async_trait]
     impl LLMProvider for MockLLM {
         fn name(&self) -> &str {
             "mock-llm"
         }
-        async fn process(&self, _input: &LLMInput) -> Result<LLMResult, LLMError> {
-            Ok(LLMResult {
-                processed_text: self.response.clone(),
-                tokens_used: Some(42),
+        fn process<'a>(
+            &'a self,
+            _input: &'a LLMInput,
+        ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(LLMResult {
+                    processed_text: self.response.clone(),
+                    tokens_used: Some(42),
+                })
             })
         }
-        async fn test_connection(&self) -> Result<bool, LLMError> {
-            Ok(true)
+        fn test_connection(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>> {
+            Box::pin(async { Ok(true) })
         }
     }
 
     struct FailingLLM;
 
-    #[async_trait]
     impl LLMProvider for FailingLLM {
         fn name(&self) -> &str {
             "failing-llm"
         }
-        async fn process(&self, _input: &LLMInput) -> Result<LLMResult, LLMError> {
-            Err(LLMError::Timeout)
+        fn process<'a>(
+            &'a self,
+            _input: &'a LLMInput,
+        ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
+            Box::pin(async { Err(LLMError::Timeout) })
         }
-        async fn test_connection(&self) -> Result<bool, LLMError> {
-            Ok(false)
+        fn test_connection(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>> {
+            Box::pin(async { Ok(false) })
         }
     }
 

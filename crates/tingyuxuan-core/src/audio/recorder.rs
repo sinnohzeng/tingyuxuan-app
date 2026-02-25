@@ -1,7 +1,7 @@
 use crate::audio::wav_writer::WavFileWriter;
 use crate::error::AudioError;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -211,7 +211,7 @@ impl AudioRecorder {
 
         let inner = Arc::clone(&self.inner);
         let channels = stream_config.channels as usize;
-        let device_sample_rate = stream_config.sample_rate.0;
+        let device_sample_rate = stream_config.sample_rate;
 
         let err_callback = |err: cpal::StreamError| {
             tracing::error!("cpal stream error: {}", err);
@@ -282,7 +282,7 @@ impl AudioRecorder {
         }
 
         // Prefer a config that includes 16 kHz.
-        let target_rate = cpal::SampleRate(16_000);
+        let target_rate = 16_000u32;
         for cfg in &configs {
             if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
                 return Ok((*cfg).with_sample_rate(target_rate));
@@ -290,7 +290,7 @@ impl AudioRecorder {
         }
 
         // Fall back to the config with the highest max sample rate.
-        configs.sort_by_key(|c| c.max_sample_rate().0);
+        configs.sort_by_key(|c| c.max_sample_rate());
         let best = configs.last().unwrap();
         Ok((*best).with_max_sample_rate())
     }
@@ -418,11 +418,11 @@ impl AudioRecorder {
         }
 
         // Write PCM to WAV.
-        if let Some(ref mut writer) = guard.wav_writer {
-            if writer.write_samples(&pcm).is_err() {
-                tracing::error!("Failed to write audio samples to WAV");
-                return;
-            }
+        if let Some(ref mut writer) = guard.wav_writer
+            && writer.write_samples(&pcm).is_err()
+        {
+            tracing::error!("Failed to write audio samples to WAV");
+            return;
         }
         guard.sample_count += pcm.len() as u64;
 
@@ -458,13 +458,15 @@ mod tests {
 
     /// Helper: create a recorder in mock mode for testing.
     fn mock_recorder() -> AudioRecorder {
-        std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1");
+        // SAFETY: Tests run with TINGYUXUAN_MOCK_AUDIO already set; no concurrent reads race.
+        unsafe { std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1") };
         AudioRecorder::new().expect("mock recorder should succeed")
     }
 
     #[test]
     fn test_new_mock_mode() {
-        std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1");
+        // SAFETY: Tests run with TINGYUXUAN_MOCK_AUDIO already set; no concurrent reads race.
+        unsafe { std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1") };
         let recorder = AudioRecorder::new();
         assert!(recorder.is_ok());
         assert!(recorder.unwrap().mock_mode);

@@ -33,12 +33,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
     kotlinOptions {
-        jvmTarget = "17"
+        jvmTarget = "21"
     }
 
     buildFeatures {
@@ -48,23 +48,23 @@ android {
 
 dependencies {
     // AndroidX
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
 
     // Compose
-    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.01.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.activity:activity-compose:1.9.1")
+    implementation("androidx.activity:activity-compose:1.10.1")
 
     // Security (EncryptedSharedPreferences)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

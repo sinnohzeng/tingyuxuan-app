@@ -77,7 +77,7 @@ impl NetworkMonitor {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     /// Helper: build a monitor with short intervals so tests finish quickly.
     fn fast_monitor(url: String) -> NetworkMonitor {

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::HistoryManager;
 use tingyuxuan_core::llm::provider::ProcessingMode;
-use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::Pipeline;
+use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 use tingyuxuan_core::pipeline::queue::OfflineQueue;
 

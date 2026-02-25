@@ -1,5 +1,6 @@
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::LLMError;
 
@@ -43,14 +44,16 @@ pub struct LLMResult {
 }
 
 /// Trait that all LLM providers must implement.
-#[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Human-readable name of this provider (e.g. "OpenAI", "DashScope").
     fn name(&self) -> &str;
 
     /// Process the input through the LLM and return the result.
-    async fn process(&self, input: &LLMInput) -> Result<LLMResult, LLMError>;
+    fn process<'a>(
+        &'a self,
+        input: &'a LLMInput,
+    ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>>;
 
     /// Verify that the provider's credentials and endpoint are reachable.
-    async fn test_connection(&self) -> Result<bool, LLMError>;
+    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>>;
 }

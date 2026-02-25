@@ -1,6 +1,7 @@
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use crate::error::STTError;
 
@@ -25,18 +26,17 @@ pub struct STTResult {
 }
 
 /// Trait for speech-to-text providers.
-#[async_trait]
 pub trait STTProvider: Send + Sync {
     /// Returns the name of this provider.
     fn name(&self) -> &str;
 
     /// Transcribe the audio file at the given path.
-    async fn transcribe(
-        &self,
-        audio_path: &Path,
-        options: &STTOptions,
-    ) -> Result<STTResult, STTError>;
+    fn transcribe<'a>(
+        &'a self,
+        audio_path: &'a Path,
+        options: &'a STTOptions,
+    ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>>;
 
     /// Test that the provider connection and credentials are valid.
-    async fn test_connection(&self) -> Result<bool, STTError>;
+    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>>;
 }

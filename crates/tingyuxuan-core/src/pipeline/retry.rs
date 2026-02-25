@@ -1,5 +1,5 @@
 use std::future::Future;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 
 /// Configuration for retry behaviour with exponential back-off.
@@ -89,8 +89,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     fn token() -> CancellationToken {
         CancellationToken::new()
@@ -135,11 +135,7 @@ mod tests {
             let c = c.clone();
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
-                if n < 2 {
-                    Err("fail")
-                } else {
-                    Ok("recovered")
-                }
+                if n < 2 { Err("fail") } else { Ok("recovered") }
             }
         })
         .await;

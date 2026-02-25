@@ -1,7 +1,7 @@
 [package]
 name = "tingyuxuan-core"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 description = "Cross-platform core engine for TingYuXuan voice input tool"
 
 [features]
@@ -10,11 +10,11 @@ audio = ["dep:cpal", "dep:hound"]
 
 [dependencies]
 # Audio (optional — disabled for Android JNI builds)
-cpal = { version = "0.15", optional = true }
+cpal = { version = "0.17", optional = true }
 hound = { version = "3.5", optional = true }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -25,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Database
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -33,7 +33,6 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 tracing = "0.1"
 directories = "6"
-async-trait = "0.1"
 base64 = "0.22"
 
 [dev-dependencies]

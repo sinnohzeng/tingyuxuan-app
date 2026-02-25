@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::error::HistoryError;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 /// A single transcript record.

@@ -1,19 +1,19 @@
 [package]
 name = "tingyuxuan-app"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
 
 [dependencies]
 tingyuxuan-core = { path = "../crates/tingyuxuan-core" }
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-shell = "2"
+tauri = { version = "2.10", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.3"
+tauri-plugin-shell = "2.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 thiserror = "2"
@@ -21,7 +21,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_DataExchange",
@@ -30,7 +30,7 @@ windows = { version = "0.58", features = [
 ] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.5", features = [] }
 
 [lib]
 name = "tingyuxuan_app_lib"

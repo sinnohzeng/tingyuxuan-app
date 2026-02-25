@@ -136,12 +136,11 @@ impl AudioCache {
                 continue;
             }
 
-            if let Ok(contents) = std::fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<AudioMetadata>(&contents) {
-                    if meta.status == "recording" || meta.status == "failed" {
-                        pending.push(path);
-                    }
-                }
+            if let Ok(contents) = std::fs::read_to_string(&meta_path)
+                && let Ok(meta) = serde_json::from_str::<AudioMetadata>(&contents)
+                && (meta.status == "recording" || meta.status == "failed")
+            {
+                pending.push(path);
             }
         }
 
@@ -172,12 +171,12 @@ impl AudioCache {
                 .modified()
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
 
-            if let Ok(age) = now.duration_since(modified) {
-                if age > max_age {
-                    let _ = std::fs::remove_file(&path);
-                    let _ = std::fs::remove_file(sidecar_path(&path));
-                    removed += 1;
-                }
+            if let Ok(age) = now.duration_since(modified)
+                && age > max_age
+            {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(sidecar_path(&path));
+                removed += 1;
             }
         }
 
