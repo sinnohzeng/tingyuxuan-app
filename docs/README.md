@@ -25,6 +25,7 @@
 - [使用指南](guides/usage.md)
 - [配置指南](guides/configuration.md)
 - [故障排查](guides/troubleshooting.md)
+- [CI/Release 构建踩坑记录](guides/ci-release-notes.md) — AGP 9.0 迁移、Tauri target 路径、OOM 等
 
 ### 开发计划
 - [Phase 1: MVP 核心骨架](plan/phase-1-mvp.md)
