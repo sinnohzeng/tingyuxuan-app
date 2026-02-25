@@ -138,7 +138,7 @@ impl ClipboardGuard {
     fn open() -> Result<Self, PlatformError> {
         // SAFETY: OpenClipboard(None) opens the clipboard for the current thread.
         // We ensure CloseClipboard is called via Drop.
-        let ok = unsafe { OpenClipboard(HWND::default()) };
+        let ok = unsafe { OpenClipboard(None) };
         if ok.is_err() {
             return Err(PlatformError::ClipboardError(
                 "OpenClipboard failed".to_string(),
@@ -223,7 +223,7 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
     // SAFETY: SetClipboardData takes ownership of hmem.
     // The system will free it when the clipboard is next emptied.
     // HANDLE and HGLOBAL have the same repr (*mut c_void).
-    let result = unsafe { SetClipboardData(13, windows::Win32::Foundation::HANDLE(hmem.0)) }; // CF_UNICODETEXT = 13
+    let result = unsafe { SetClipboardData(13, Some(windows::Win32::Foundation::HANDLE(hmem.0))) }; // CF_UNICODETEXT = 13
     if result.is_err() {
         return Err(PlatformError::ClipboardError(
             "SetClipboardData failed".to_string(),
