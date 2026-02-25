@@ -48,9 +48,9 @@ pub enum FloatingBarPosition {
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `dictate` | `String` | `"ctrl+shift+d"` | 听写快捷键 |
-| `translate` | `String` | `"ctrl+shift+t"` | 翻译快捷键 |
-| `ai_assistant` | `String` | `"ctrl+shift+a"` | AI 助手快捷键 |
+| `dictate` | `String` | `"alt_right"` | 听写快捷键 |
+| `translate` | `String` | `"shift+alt_right"` | 翻译快捷键 |
+| `ai_assistant` | `String` | `"alt+space"` | AI 助手快捷键 |
 | `cancel` | `String` | `"escape"` | 取消快捷键 |
 
 ### LanguageConfig

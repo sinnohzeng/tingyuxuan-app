@@ -3,7 +3,7 @@
 ## 核心处理流程
 
 ```
-用户按下快捷键 (Ctrl+Shift+D)
+用户按下快捷键 (RAlt)
         │
         ▼
 [Global Shortcut Handler] ──emit──> "shortcut-action"

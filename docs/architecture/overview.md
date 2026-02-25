@@ -85,7 +85,7 @@
 
 | 模式 | 快捷键 | 管线行为 |
 |------|--------|---------|
-| Dictate（听写） | Ctrl+Shift+D | STT → LLM 润色 → 自动注入 |
-| Translate（翻译） | Ctrl+Shift+T | STT → LLM 翻译 → 自动注入 |
-| Edit（编辑） | 选中文本后 Ctrl+Shift+D | STT → LLM 编辑选中文本 → 自动注入 |
-| AI Assistant | Ctrl+Shift+A | STT → LLM 自由回答 → 结果面板（不自动注入） |
+| Dictate（听写） | RAlt | STT → LLM 润色 → 自动注入 |
+| Translate（翻译） | Shift+RAlt | STT → LLM 翻译 → 自动注入 |
+| Edit（编辑） | 选中文本后 RAlt | STT → LLM 编辑选中文本 → 自动注入 |
+| AI Assistant | Alt+Space | STT → LLM 自由回答 → 结果面板（不自动注入） |

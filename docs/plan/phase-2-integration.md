@@ -22,7 +22,7 @@
 - 窗口可见性管理（RecordingStarted → show，done → auto-hide）
 
 ### 全局快捷键
-- Ctrl+Shift+D（听写）、T（翻译）、A（AI 助手）、Esc（取消）
+- RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）
 - Toggle 行为：录音中再按同一快捷键 → 停止并处理
 - Wayland 兼容性警告
 

@@ -18,10 +18,12 @@ AI 驱动的智能语音输入工具 —— 将口语化的语音自动转为规
 
 | 快捷键 | 功能 |
 |-------|------|
-| `Ctrl+Shift+D` | 听写模式 |
-| `Ctrl+Shift+T` | 翻译模式 |
-| `Ctrl+Shift+A` | AI 助手 |
+| `RAlt` | 听写模式 |
+| `Shift+RAlt` | 翻译模式 |
+| `Alt+Space` | AI 助手 |
 | `Esc` | 取消录音 |
+
+> **注意**: `Alt+Space` 在 Windows 上是系统快捷键（窗口菜单），如被系统拦截可在设置中自定义。Linux 下 RAlt 可能被配置为 Compose 键，需在系统设置中调整。
 
 ## 安装
 
@@ -31,6 +33,8 @@ AI 驱动的智能语音输入工具 —— 将口语化的语音自动转为规
 
 - `.deb` — Ubuntu / Debian
 - `.AppImage` — 通用 Linux
+- `.msi` / `.exe` — Windows
+- `.apk` — Android
 
 ### 从源码编译
 
@@ -71,4 +75,4 @@ npx tauri build
 
 ## 许可证
 
-私有项目，保留所有权利。
+Source-Available，保留所有权利。详见 [LICENSE](LICENSE)。

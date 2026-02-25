@@ -304,20 +304,21 @@
 
 ### 4.1 快捷键体系
 
-| 功能 | macOS 默认快捷键 | Windows 默认快捷键 | 说明 |
-|------|-----------------|-------------------|------|
-| 听写/停止 | `Fn`（单按） | `Ctrl + Shift + D` | 按下开始，再按停止 |
-| 翻译模式 | `Fn + Shift` | `Ctrl + Shift + T` | 启动翻译模式录音 |
-| AI 助手 | `Fn + 空格` | `Ctrl + Shift + A` | 启动 AI 助手模式 |
-| Speak to Edit | 先选中文本 → 按 `Fn` | 先选中文本 → 按 `Ctrl+Shift+D` | 自动检测选中文本进入编辑模式 |
+| 功能 | macOS 默认快捷键 | Windows/Linux 默认快捷键 | 说明 |
+|------|-----------------|-------------------------|------|
+| 听写/停止 | `Fn`（单按） | `RAlt`（右 Alt 单按） | 按下开始，再按停止 |
+| 翻译模式 | `Fn + Shift` | `Shift + RAlt` | 启动翻译模式录音 |
+| AI 助手 | `Fn + 空格` | `Alt + Space` | 启动 AI 助手模式 |
+| Speak to Edit | 先选中文本 → 按 `Fn` | 先选中文本 → 按 `RAlt` | 自动检测选中文本进入编辑模式 |
 | 取消录音 | `Esc` 或点击浮动条"✕" | `Esc` 或点击浮动条"✕" | 取消当前录音，不进行转写 |
 
 **快捷键设计原则**：
 - 所有快捷键可在设置中自定义
-- macOS 基于 `Fn` 键为核心（参考 Typeless），Windows 使用 `Ctrl+Shift` 组合
+- macOS 基于 `Fn` 键为核心（参考 Typeless），Windows/Linux 使用右 Alt 为核心
 - 不同模式通过组合键区分
-- 避免与系统原生快捷键冲突
+- 避免与系统原生快捷键冲突（`Alt+Space` 在 Windows 上是窗口菜单快捷键，如被拦截可自定义）
 - macOS 上需提示用户在"系统设置 → 键盘"中将 Fn 键行为从"更改输入法"改为"无操作"
+- Linux 下 RAlt 可能被配置为 Compose 键，需在系统设置中调整
 
 ### 4.2 浮动状态条（核心 UI 组件）
 
@@ -1039,9 +1040,9 @@ interface AppSettings {
     floatingBarPosition: 'bottom_center' | 'follow_cursor' | 'fixed';
   };
   shortcuts: {
-    dictate: string;               // 默认 "fn" (macOS) / "ctrl+shift+d" (Windows)
-    translate: string;             // 默认 "fn+shift" / "ctrl+shift+t"
-    aiAssistant: string;           // 默认 "fn+space" / "ctrl+shift+a"
+    dictate: string;               // 默认 "fn" (macOS) / "alt_right" (Windows/Linux)
+    translate: string;             // 默认 "fn+shift" / "shift+alt_right"
+    aiAssistant: string;           // 默认 "fn+space" / "alt+space"
     cancel: string;                // 默认 "escape"
   };
   language: {
