@@ -5,13 +5,7 @@ use tauri::{
 };
 
 pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let dictate_item = MenuItem::with_id(
-        app,
-        "dictate",
-        "开始听写   RAlt",
-        true,
-        None::<&str>,
-    )?;
+    let dictate_item = MenuItem::with_id(app, "dictate", "开始听写   RAlt", true, None::<&str>)?;
     let translate_item = MenuItem::with_id(
         app,
         "translate",
