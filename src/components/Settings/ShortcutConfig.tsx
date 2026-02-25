@@ -17,7 +17,7 @@ export default function ShortcutConfig({ config, onUpdate }: ShortcutConfigProps
     <div className="space-y-6 max-w-lg">
       <h2 className="text-base font-medium text-gray-700">键盘快捷键</h2>
       <p className="text-sm text-gray-500">
-        自定义快捷键绑定。使用格式如 <code className="bg-gray-100 px-1 rounded">ctrl+shift+d</code>
+        自定义快捷键绑定。使用格式如 <code className="bg-gray-100 px-1 rounded">alt_right</code>、<code className="bg-gray-100 px-1 rounded">shift+alt_right</code>
       </p>
 
       <div className="space-y-4">

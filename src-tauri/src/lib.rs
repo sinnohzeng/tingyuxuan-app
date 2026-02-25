@@ -249,18 +249,18 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
         }
     }
 
-    // Define shortcuts: (shortcut, action_name, mode)
+    // Default shortcuts: RAlt (dictate), Shift+RAlt (translate), Alt+Space (AI assistant).
+    // NOTE: RAlt-alone may conflict with RAlt+key combos on some platforms.
+    // Alt+Space is a Windows system shortcut (window menu); if intercepted by the OS,
+    // users can remap via Settings → Shortcuts.
     let shortcuts = [
+        (Shortcut::new(None, Code::AltRight), "dictate"),
         (
-            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyD),
-            "dictate",
-        ),
-        (
-            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT),
+            Shortcut::new(Some(Modifiers::SHIFT), Code::AltRight),
             "translate",
         ),
         (
-            Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA),
+            Shortcut::new(Some(Modifiers::ALT), Code::Space),
             "ai_assistant",
         ),
         (Shortcut::new(None, Code::Escape), "cancel"),

@@ -8,21 +8,21 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let dictate_item = MenuItem::with_id(
         app,
         "dictate",
-        "开始听写   Ctrl+Shift+D",
+        "开始听写   RAlt",
         true,
         None::<&str>,
     )?;
     let translate_item = MenuItem::with_id(
         app,
         "translate",
-        "开始翻译   Ctrl+Shift+T",
+        "开始翻译   Shift+RAlt",
         true,
         None::<&str>,
     )?;
     let ai_item = MenuItem::with_id(
         app,
         "ai_assistant",
-        "AI 助手    Ctrl+Shift+A",
+        "AI 助手    Alt+Space",
         true,
         None::<&str>,
     )?;

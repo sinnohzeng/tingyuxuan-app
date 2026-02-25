@@ -65,9 +65,9 @@ export default function SettingsPanel() {
             floating_bar_position: "bottom_center",
           },
           shortcuts: {
-            dictate: "ctrl+shift+d",
-            translate: "ctrl+shift+t",
-            ai_assistant: "ctrl+shift+a",
+            dictate: "alt_right",
+            translate: "shift+alt_right",
+            ai_assistant: "alt+space",
             cancel: "escape",
           },
           language: {

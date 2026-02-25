@@ -113,9 +113,9 @@ impl Default for AppConfig {
                 floating_bar_position: FloatingBarPosition::BottomCenter,
             },
             shortcuts: ShortcutConfig {
-                dictate: "ctrl+shift+d".to_string(),
-                translate: "ctrl+shift+t".to_string(),
-                ai_assistant: "ctrl+shift+a".to_string(),
+                dictate: "alt_right".to_string(),
+                translate: "shift+alt_right".to_string(),
+                ai_assistant: "alt+space".to_string(),
                 cancel: "escape".to_string(),
             },
             language: LanguageConfig {
@@ -332,7 +332,7 @@ mod tests {
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.llm.model, "gpt-4o-mini");
-        assert_eq!(config.shortcuts.dictate, "ctrl+shift+d");
+        assert_eq!(config.shortcuts.dictate, "alt_right");
         assert_eq!(config.cache.audio_retention_hours, 24);
     }
 
