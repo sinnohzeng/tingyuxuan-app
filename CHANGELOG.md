@@ -6,6 +6,36 @@
 
 ---
 
+## [0.4.0] - 2026-02-25
+
+### 变更
+
+**快捷键重设计**
+- 默认快捷键从 `Ctrl+Shift+D/T/A` 改为以右 Alt 为核心的方案
+  - 听写：`RAlt`（右 Alt 单按）
+  - 翻译：`Shift+RAlt`
+  - AI 助手：`Alt+Space`
+- 更新托盘菜单、前端设置面板、所有文档
+
+### 新增
+
+**Release 工作流重构**
+- Fan-out / fan-in 架构：build jobs → create-release（消除并发竞态）
+- 新增 Android APK 构建（cargo-ndk + Gradle assembleRelease）
+- 添加 SHA256SUMS.txt 校验文件
+- 所有 release 文件名添加版本号前缀
+- 移除 release 构建中的重复测试（CI workflow 已覆盖）
+
+**许可证**
+- 添加 Source-Available 许可证（代码公开仅供参考和学习）
+
+**工程**
+- 生成 Gradle wrapper（8.12，兼容 AGP 9.0.1）
+- 版本号统一为 0.4.0（package.json, Cargo.toml, tauri.conf.json, build.gradle.kts）
+- 补打 v0.1.0 ~ v0.3.0 历史标签
+
+---
+
 ## [0.3.0] - 2026-02-25
 
 ### 新增
@@ -60,7 +90,7 @@
 - LLM 智能润色（支持 OpenAI、DashScope、火山引擎、自定义 Provider）
 - 四种输入模式：听写、翻译、AI 助手、编辑
 - Linux 文本注入（X11: xdotool/xclip, Wayland: wtype/wl-clipboard）
-- 全局快捷键：Ctrl+Shift+D/T/A, Esc
+- 全局快捷键：RAlt / Shift+RAlt / Alt+Space / Esc
 
 **管线与可靠性**
 - 管线编排：录音 → STT → LLM → 文本注入
