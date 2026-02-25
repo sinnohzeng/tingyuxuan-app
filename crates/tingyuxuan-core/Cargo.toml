@@ -3,6 +3,7 @@ name = "tingyuxuan-core"
 version = "0.2.0"
 edition = "2024"
 description = "Cross-platform core engine for TingYuXuan voice input tool"
+license = "LicenseRef-Proprietary"
 
 [features]
 default = ["audio"]

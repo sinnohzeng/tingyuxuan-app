@@ -3,6 +3,7 @@ name = "tingyuxuan-app"
 version = "0.2.0"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
+license = "LicenseRef-Proprietary"
 
 [dependencies]
 tingyuxuan-core = { path = "../crates/tingyuxuan-core" }
