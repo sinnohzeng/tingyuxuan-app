@@ -2,7 +2,7 @@
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{HGLOBAL, HWND};
+use windows::Win32::Foundation::HGLOBAL;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
