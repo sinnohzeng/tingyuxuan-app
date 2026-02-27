@@ -19,27 +19,32 @@ static HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Global handle table. Lazily initialized on first use.
 static HANDLES: Mutex<Option<HashMap<u64, Arc<Pipeline>>>> = Mutex::new(None);
 
+/// Mutex 中毒时的错误信息。
+const MUTEX_POISONED: &str = "Handle table mutex poisoned";
+
 /// Register a pipeline instance and return its handle ID.
-pub fn register_handle(pipeline: Arc<Pipeline>) -> u64 {
+///
+/// 即使 Mutex 中毒也能恢复（通过 `into_inner`），不会 panic。
+pub fn register_handle(pipeline: Arc<Pipeline>) -> Result<u64, String> {
     let id = HANDLE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut map = HANDLES.lock().unwrap();
+    let mut map = HANDLES.lock().map_err(|_| MUTEX_POISONED.to_string())?;
     let map = map.get_or_insert_with(HashMap::new);
     map.insert(id, pipeline);
-    id
+    Ok(id)
 }
 
 /// Look up a pipeline by handle ID. Returns an error if the handle is invalid.
 pub fn get_handle(id: u64) -> Result<Arc<Pipeline>, String> {
-    let map = HANDLES.lock().unwrap();
+    let map = HANDLES.lock().map_err(|_| MUTEX_POISONED.to_string())?;
     map.as_ref()
         .and_then(|m| m.get(&id).cloned())
         .ok_or_else(|| format!("Invalid pipeline handle: {id}"))
 }
 
 /// Remove a pipeline handle. Returns `true` if the handle existed.
-pub fn remove_handle(id: u64) -> bool {
-    let mut map = HANDLES.lock().unwrap();
-    map.as_mut().is_some_and(|m| m.remove(&id).is_some())
+pub fn remove_handle(id: u64) -> Result<bool, String> {
+    let mut map = HANDLES.lock().map_err(|_| MUTEX_POISONED.to_string())?;
+    Ok(map.as_mut().is_some_and(|m| m.remove(&id).is_some()))
 }
 
 // ---------------------------------------------------------------------------
@@ -63,7 +68,7 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_handle() {
-        assert!(!remove_handle(999_999_999));
+        assert!(!remove_handle(999_999_999).unwrap());
     }
 
     #[test]
@@ -92,7 +97,7 @@ mod tests {
     #[test]
     fn test_double_remove_is_safe() {
         // Removing the same handle twice should return false the second time.
-        assert!(!remove_handle(888_888_888));
-        assert!(!remove_handle(888_888_888));
+        assert!(!remove_handle(888_888_888).unwrap());
+        assert!(!remove_handle(888_888_888).unwrap());
     }
 }

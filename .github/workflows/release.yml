@@ -147,9 +147,41 @@ jobs:
           cp target/x86_64-linux-android/release/libtingyuxuan_jni.so \
              android/app/src/main/jniLibs/x86_64/
 
+      - name: Verify .so files
+        run: |
+          echo "=== Verifying native libraries ==="
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            SO="android/app/src/main/jniLibs/$abi/libtingyuxuan_jni.so"
+            if [ ! -f "$SO" ]; then
+              echo "ERROR: Missing $SO"
+              exit 1
+            fi
+            SIZE=$(stat -c%s "$SO")
+            echo "$abi: $(( SIZE / 1024 ))KB"
+            if [ "$SIZE" -lt 102400 ]; then
+              echo "ERROR: $SO is suspiciously small (${SIZE} bytes < 100KB)"
+              exit 1
+            fi
+          done
+          echo "All .so files verified"
+
       - name: Build APK (debug signing)
         working-directory: android
         run: ./gradlew assembleRelease
+
+      - name: Verify APK contains .so
+        run: |
+          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "APK: $APK"
+          echo "APK size: $(( $(stat -c%s "$APK") / 1024 ))KB"
+          # Check .so is packaged inside APK
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            if ! unzip -l "$APK" | grep -q "lib/$abi/libtingyuxuan_jni.so"; then
+              echo "ERROR: APK missing lib/$abi/libtingyuxuan_jni.so"
+              exit 1
+            fi
+            echo "OK: lib/$abi/libtingyuxuan_jni.so found in APK"
+          done
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4

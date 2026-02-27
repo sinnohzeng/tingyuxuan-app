@@ -8,7 +8,8 @@
         android:allowBackup="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.TingYuXuan">
+        android:theme="@style/Theme.TingYuXuan"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- IME Service -->
         <service
@@ -24,15 +25,21 @@
                 android:resource="@xml/method" />
         </service>
 
-        <!-- Settings Activity -->
+        <!-- Onboarding / Launcher -->
         <activity
-            android:name=".ime.SettingsActivity"
-            android:label="@string/settings_title"
+            android:name=".ime.OnboardingActivity"
+            android:label="@string/app_name"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Settings Activity (内部页面，从 Onboarding 或键盘跳转) -->
+        <activity
+            android:name=".ime.SettingsActivity"
+            android:label="@string/settings_title"
+            android:exported="false" />
     </application>
 </manifest>

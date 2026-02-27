@@ -1,19 +1,25 @@
 package com.tingyuxuan.ime.audio
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.sqrt
 
 /**
- * Audio recorder that captures 16kHz mono 16-bit WAV files.
+ * 音频录制器 — 生成 16kHz mono 16-bit WAV 文件。
  *
- * Outputs WAV format matching the Rust tingyuxuan-core expectations:
- * - Sample rate: 16000 Hz
- * - Channels: 1 (mono)
- * - Bit depth: 16-bit signed PCM
+ * 输出格式与 Rust tingyuxuan-core 一致：
+ * - 采样率: 16000 Hz
+ * - 声道: 1 (mono)
+ * - 位深: 16-bit signed PCM
+ *
+ * 在录音前会校验 RECORD_AUDIO 权限，未授权时抛出 [SecurityException]。
  */
 class AudioRecorder {
 
@@ -31,11 +37,29 @@ class AudioRecorder {
     @Volatile
     private var currentAmplitude: Float = 0f
 
+    /** 当前是否正在录音 */
+    val recording: Boolean get() = isRecording
+
     /**
-     * Start recording audio to a WAV file in the given cache directory.
+     * 检查录音权限是否已授予。
      */
-    fun start(cacheDir: File) {
+    fun hasPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * 开始录音。录音文件保存在指定的缓存目录。
+     *
+     * @throws SecurityException 如果 RECORD_AUDIO 权限未授予
+     * @throws IllegalStateException 如果已在录音中
+     */
+    fun start(context: Context, cacheDir: File) {
         if (isRecording) throw IllegalStateException("Already recording")
+        if (!hasPermission(context)) {
+            throw SecurityException("RECORD_AUDIO permission not granted")
+        }
 
         val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
         val record = AudioRecord(
@@ -58,7 +82,9 @@ class AudioRecorder {
     }
 
     /**
-     * Stop recording and return the path to the WAV file.
+     * 停止录音并返回 WAV 文件路径。
+     *
+     * @throws IllegalStateException 如果未在录音中
      */
     fun stop(): String {
         if (!isRecording) throw IllegalStateException("Not recording")
@@ -75,7 +101,31 @@ class AudioRecorder {
     }
 
     /**
-     * Get the current RMS amplitude (0.0 to 1.0) for UI visualization.
+     * 强制取消录音（不返回文件路径）。
+     * 如果未在录音中则忽略。
+     */
+    fun cancel() {
+        if (!isRecording) return
+
+        isRecording = false
+        recordingThread?.join(3000)
+        recordingThread = null
+
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioRecord = null
+
+        // 删除录音文件
+        if (outputPath.isNotEmpty()) {
+            File(outputPath).delete()
+            outputPath = ""
+        }
+
+        currentAmplitude = 0f
+    }
+
+    /**
+     * 获取当前 RMS 振幅 (0.0 到 1.0)，用于 UI 波形展示。
      */
     fun getAmplitude(): Float = currentAmplitude
 
@@ -132,8 +182,8 @@ class AudioRecorder {
         raf.writeShortLE(1)         // AudioFormat (PCM = 1)
         raf.writeShortLE(1)         // NumChannels (mono)
         raf.writeIntLE(SAMPLE_RATE) // SampleRate
-        raf.writeIntLE(SAMPLE_RATE * 2) // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
-        raf.writeShortLE(2)         // BlockAlign (NumChannels * BitsPerSample/8)
+        raf.writeIntLE(SAMPLE_RATE * 2) // ByteRate
+        raf.writeShortLE(2)         // BlockAlign
         raf.writeShortLE(16)        // BitsPerSample
 
         // data subchunk

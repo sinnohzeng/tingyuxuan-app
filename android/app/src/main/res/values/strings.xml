@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">听语轩</string>
     <string name="settings_title">听语轩 设置</string>
+    <string name="onboarding_title">听语轩 - AI 智能语音输入</string>
 </resources>

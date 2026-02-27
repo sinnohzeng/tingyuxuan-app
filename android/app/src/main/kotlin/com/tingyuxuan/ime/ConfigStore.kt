@@ -4,11 +4,14 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
- * Encrypted configuration store for API keys and settings.
+ * 加密配置存储 — 使用 EncryptedSharedPreferences 保护 API Key。
  *
- * Uses EncryptedSharedPreferences (AndroidX Security) to protect API keys at rest.
+ * 所有配置项通过类型安全的属性访问，JSON 构建使用 [JSONObject]
+ * 而非字符串模板（防止 JSON 注入）。
  */
 class ConfigStore(context: Context) {
 
@@ -24,6 +27,8 @@ class ConfigStore(context: Context) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
+    // --- STT 配置 ---
+
     var sttProvider: String
         get() = prefs.getString("stt_provider", "whisper") ?: "whisper"
         set(value) = prefs.edit().putString("stt_provider", value).apply()
@@ -35,6 +40,16 @@ class ConfigStore(context: Context) {
     var sttBaseUrl: String?
         get() = prefs.getString("stt_base_url", null)
         set(value) = prefs.edit().putString("stt_base_url", value).apply()
+
+    var sttModel: String?
+        get() = prefs.getString("stt_model", null)
+        set(value) = prefs.edit().putString("stt_model", value).apply()
+
+    // --- LLM 配置 ---
+
+    var llmProvider: String
+        get() = prefs.getString("llm_provider", "openai") ?: "openai"
+        set(value) = prefs.edit().putString("llm_provider", value).apply()
 
     var llmApiKey: String
         get() = prefs.getString("llm_api_key", "") ?: ""
@@ -48,30 +63,59 @@ class ConfigStore(context: Context) {
         get() = prefs.getString("llm_model", "gpt-4o-mini") ?: "gpt-4o-mini"
         set(value) = prefs.edit().putString("llm_model", value).apply()
 
+    // --- 语言配置 ---
+
+    var translationTarget: String
+        get() = prefs.getString("translation_target", "en") ?: "en"
+        set(value) = prefs.edit().putString("translation_target", value).apply()
+
+    var primaryLanguage: String
+        get() = prefs.getString("primary_language", "zh") ?: "zh"
+        set(value) = prefs.edit().putString("primary_language", value).apply()
+
+    // --- Onboarding 状态 ---
+
+    var onboardingCompleted: Boolean
+        get() = prefs.getBoolean("onboarding_completed", false)
+        set(value) = prefs.edit().putBoolean("onboarding_completed", value).apply()
+
+    /** API Key 是否已配置（STT + LLM 都有值） */
+    val isConfigured: Boolean
+        get() = sttApiKey.isNotEmpty() && llmApiKey.isNotEmpty()
+
     /**
-     * Build a config JSON string matching tingyuxuan-core's AppConfig schema.
-     * Returns null if required keys are missing.
+     * 构建符合 tingyuxuan-core AppConfig 格式的 JSON。
+     *
+     * 使用 [JSONObject] 确保特殊字符正确转义，防止 JSON 注入。
+     * 如果必填的 API Key 缺失，返回 null。
      */
     fun buildConfigJson(): String? {
-        if (sttApiKey.isEmpty() || llmApiKey.isEmpty()) return null
+        if (!isConfigured) return null
 
-        return """
-        {
-            "stt": {
-                "provider": "$sttProvider",
-                "api_key_ref": "$sttApiKey"
-                ${sttBaseUrl?.let { """, "base_url": "$it"""" } ?: ""}
-            },
-            "llm": {
-                "api_key_ref": "$llmApiKey",
-                "model": "$llmModel"
-                ${llmBaseUrl?.let { """, "base_url": "$it"""" } ?: ""}
-            },
-            "user_dictionary": [],
-            "language": {
-                "translation_target": "en"
-            }
+        val sttObj = JSONObject().apply {
+            put("provider", sttProvider)
+            put("api_key_ref", sttApiKey)
+            sttBaseUrl?.let { put("base_url", it) }
+            sttModel?.let { put("model", it) }
         }
-        """.trimIndent()
+
+        val llmObj = JSONObject().apply {
+            put("api_key_ref", llmApiKey)
+            put("model", llmModel)
+            llmBaseUrl?.let { put("base_url", it) }
+        }
+
+        val languageObj = JSONObject().apply {
+            put("translation_target", translationTarget)
+        }
+
+        val config = JSONObject().apply {
+            put("stt", sttObj)
+            put("llm", llmObj)
+            put("user_dictionary", JSONArray())
+            put("language", languageObj)
+        }
+
+        return config.toString()
     }
 }
