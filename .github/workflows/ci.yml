@@ -91,6 +91,9 @@ jobs:
 
       - run: npm ci
 
+      - name: ESLint
+        run: npm run lint
+
       - name: TypeScript type check
         run: npx tsc --noEmit
 
@@ -172,3 +175,27 @@ jobs:
 
       - name: Build Rust backend
         run: cargo build --manifest-path src-tauri/Cargo.toml --release -p tingyuxuan-app
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Audit Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high

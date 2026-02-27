@@ -13,19 +13,16 @@ const MODE_LABELS: Record<string, string> = {
 };
 
 export default function FloatingBar() {
-  const {
-    recordingState,
-    recordingMode,
-    volumeLevels,
-    recordingDuration,
-    errorMessage,
-    errorAction,
-    rawTranscript,
-    aiResult,
-    setRecordingState,
-    setRecordingMode,
-    reset,
-  } = useAppStore();
+  const recordingState = useAppStore((s) => s.recordingState);
+  const recordingMode = useAppStore((s) => s.recordingMode);
+  const volumeLevels = useAppStore((s) => s.volumeLevels);
+  const recordingDuration = useAppStore((s) => s.recordingDuration);
+  const errorMessage = useAppStore((s) => s.errorMessage);
+  const errorAction = useAppStore((s) => s.errorAction);
+  const rawTranscript = useAppStore((s) => s.rawTranscript);
+  const aiResult = useAppStore((s) => s.aiResult);
+  const setRecordingState = useAppStore((s) => s.setRecordingState);
+  const reset = useAppStore((s) => s.reset);
 
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,7 +81,7 @@ export default function FloatingBar() {
 
   // Listen for Tauri pipeline events and shortcut actions
   useEffect(() => {
-    let unlisteners: Array<() => void> = [];
+    const unlisteners: Array<() => void> = [];
 
     async function setupListeners() {
       try {
@@ -281,6 +278,7 @@ export default function FloatingBar() {
                          text-gray-400 hover:text-red-400 hover:bg-red-900/30
                          rounded-xl ml-2 transition-colors"
               title="取消 (Esc)"
+              aria-label="取消录制"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -306,6 +304,7 @@ export default function FloatingBar() {
                          text-gray-400 hover:text-green-400 hover:bg-green-900/30
                          rounded-xl mr-2 transition-colors"
               title="完成"
+              aria-label="停止录制"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />

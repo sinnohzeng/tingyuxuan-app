@@ -50,6 +50,14 @@ jobs:
       - name: Build Tauri app
         run: npx tauri build
 
+      # ── Code Signing (Linux) ──────────────────────────────────
+      # Linux packages (.deb, .AppImage) typically don't require code signing,
+      # but GPG signing can be added here for package repository distribution.
+      # Steps:
+      #   1. Store GPG private key as GitHub Secret: GPG_PRIVATE_KEY
+      #   2. Import key: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+      #   3. Sign: dpkg-sig --sign builder *.deb
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -86,6 +94,15 @@ jobs:
 
       - name: Build Tauri app
         run: npx tauri build
+
+      # ── Code Signing (Windows) ────────────────────────────────
+      # Windows executables and MSI installers should be signed with an
+      # Authenticode certificate to avoid SmartScreen warnings.
+      # Steps:
+      #   1. Store certificate as GitHub Secret: WINDOWS_CERTIFICATE (base64-encoded .pfx)
+      #   2. Store password as: WINDOWS_CERTIFICATE_PASSWORD
+      #   3. Decode: echo "$WINDOWS_CERTIFICATE" | base64 -d > cert.pfx
+      #   4. Sign: signtool sign /f cert.pfx /p "$WINDOWS_CERTIFICATE_PASSWORD" /tr http://timestamp.digicert.com /td sha256 /fd sha256 *.exe *.msi
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -182,6 +199,19 @@ jobs:
             fi
             echo "OK: lib/$abi/libtingyuxuan_jni.so found in APK"
           done
+
+      # ── Code Signing (Android) ────────────────────────────────
+      # Production APKs must be signed with a release keystore.
+      # Steps:
+      #   1. Generate keystore: keytool -genkey -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000
+      #   2. Store as GitHub Secrets:
+      #      - ANDROID_KEYSTORE (base64-encoded .jks)
+      #      - ANDROID_KEYSTORE_PASSWORD
+      #      - ANDROID_KEY_ALIAS
+      #      - ANDROID_KEY_PASSWORD
+      #   3. Decode: echo "$ANDROID_KEYSTORE" | base64 -d > android/release.jks
+      #   4. Configure signing in android/app/build.gradle.kts signingConfigs block
+      #   5. Use: ./gradlew assembleRelease (with signing config applied)
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4

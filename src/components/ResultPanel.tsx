@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import DOMPurify from "dompurify";
 import { renderMarkdown } from "../lib/markdown";
 
 interface ResultPanelProps {
@@ -43,17 +44,18 @@ export default function ResultPanel({
     setTimeout(() => setCopied(false), 1000);
   }, [onCopy]);
 
-  const renderedHtml = renderMarkdown(result);
+  const renderedHtml = useMemo(() => DOMPurify.sanitize(renderMarkdown(result)), [result]);
 
   return (
     <div className="flex flex-col w-full h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-700/50">
-        <span className="text-sm font-medium text-gray-300">AI 助手</span>
+        <h2 className="text-sm font-medium text-gray-300">AI 助手</h2>
         <button
           onClick={onDismiss}
           className="text-gray-400 hover:text-gray-200 transition-colors"
           title="关闭"
+          aria-label="关闭结果面板"
         >
           <svg
             className="w-4 h-4"

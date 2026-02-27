@@ -2,6 +2,8 @@ use crate::audio::wav_writer::WavFileWriter;
 use crate::error::AudioError;
 use cpal::Stream;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -23,7 +25,7 @@ struct RecorderInner {
     /// Accumulator for the current RMS window.
     rms_accumulator: Vec<f32>,
     /// Recent RMS levels for waveform rendering in the UI.
-    rms_levels: Vec<f32>,
+    rms_levels: VecDeque<f32>,
     /// Timestamp of the last flush to disk.
     last_flush: Instant,
 }
@@ -72,7 +74,7 @@ impl AudioRecorder {
             audio_path: PathBuf::new(),
             sample_count: 0,
             rms_accumulator: Vec::with_capacity(RMS_WINDOW_SAMPLES),
-            rms_levels: Vec::with_capacity(MAX_RMS_LEVELS),
+            rms_levels: VecDeque::with_capacity(MAX_RMS_LEVELS),
             last_flush: Instant::now(),
         };
 
@@ -177,7 +179,7 @@ impl AudioRecorder {
     /// full scale.
     pub fn get_volume_levels(&self) -> Vec<f32> {
         let inner = self.inner.lock().unwrap();
-        inner.rms_levels.clone()
+        inner.rms_levels.iter().copied().collect()
     }
 
     /// Returns `true` if the recorder is currently recording.
@@ -304,7 +306,13 @@ impl AudioRecorder {
             let chunk = vec![0i16; RMS_WINDOW_SAMPLES];
             loop {
                 {
-                    let mut guard = inner.lock().unwrap();
+                    let mut guard = match inner.lock() {
+                        Ok(g) => g,
+                        Err(poisoned) => {
+                            tracing::error!("Audio buffer lock poisoned, recovering");
+                            poisoned.into_inner()
+                        }
+                    };
                     if !guard.is_recording {
                         break;
                     }
@@ -316,9 +324,9 @@ impl AudioRecorder {
                     }
                     // Push a zero-level RMS entry.
                     if guard.rms_levels.len() >= MAX_RMS_LEVELS {
-                        guard.rms_levels.remove(0);
+                        guard.rms_levels.pop_front();
                     }
-                    guard.rms_levels.push(0.0);
+                    guard.rms_levels.push_back(0.0);
 
                     // Periodic flush.
                     if guard.last_flush.elapsed().as_millis() >= FLUSH_INTERVAL_MS as u128 {
@@ -359,7 +367,11 @@ impl AudioRecorder {
         device_sample_rate: u32,
         inner: &Arc<Mutex<RecorderInner>>,
     ) {
-        let mono_f32: Vec<f32> = data.chunks(channels).map(|frame| frame[0]).collect();
+        let mono_f32: Cow<'_, [f32]> = if channels == 1 {
+            Cow::Borrowed(data)
+        } else {
+            Cow::Owned(data.chunks(channels).map(|frame| frame[0]).collect())
+        };
         Self::process_mono_f32(&mono_f32, device_sample_rate, inner);
     }
 
@@ -386,17 +398,20 @@ impl AudioRecorder {
     ) {
         // Simple nearest-neighbour resample when the device rate differs from
         // 16 kHz.  This is good enough for voice dictation.
-        let resampled: Vec<f32> = if device_sample_rate == 16_000 {
-            samples.to_vec()
+        let resampled: Cow<'_, [f32]> = if device_sample_rate == 16_000 {
+            Cow::Borrowed(samples)
         } else {
             let ratio = 16_000.0 / device_sample_rate as f64;
             let out_len = (samples.len() as f64 * ratio).ceil() as usize;
-            (0..out_len)
-                .map(|i| {
-                    let src_idx = ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
-                    samples[src_idx]
-                })
-                .collect()
+            Cow::Owned(
+                (0..out_len)
+                    .map(|i| {
+                        let src_idx =
+                            ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
+                        samples[src_idx]
+                    })
+                    .collect(),
+            )
         };
 
         // Convert to i16 for WAV writing.
@@ -410,7 +425,10 @@ impl AudioRecorder {
 
         let mut guard = match inner.lock() {
             Ok(g) => g,
-            Err(_) => return, // poisoned lock – nothing we can do
+            Err(poisoned) => {
+                tracing::error!("Audio buffer lock poisoned, recovering");
+                poisoned.into_inner()
+            }
         };
 
         if !guard.is_recording {
@@ -427,7 +445,7 @@ impl AudioRecorder {
         guard.sample_count += pcm.len() as u64;
 
         // RMS computation over ~30ms windows.
-        for &sample in &resampled {
+        for &sample in resampled.as_ref() {
             guard.rms_accumulator.push(sample);
             if guard.rms_accumulator.len() >= RMS_WINDOW_SAMPLES {
                 let sum_sq: f32 = guard.rms_accumulator.iter().map(|s| s * s).sum();
@@ -435,9 +453,9 @@ impl AudioRecorder {
                 guard.rms_accumulator.clear();
 
                 if guard.rms_levels.len() >= MAX_RMS_LEVELS {
-                    guard.rms_levels.remove(0);
+                    guard.rms_levels.pop_front();
                 }
-                guard.rms_levels.push(rms);
+                guard.rms_levels.push_back(rms);
             }
         }
 
@@ -569,7 +587,7 @@ mod tests {
             audio_path: PathBuf::new(),
             sample_count: 0,
             rms_accumulator: Vec::new(),
-            rms_levels: Vec::new(),
+            rms_levels: VecDeque::new(),
             last_flush: Instant::now(),
         }));
 

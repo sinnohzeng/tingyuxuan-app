@@ -4,8 +4,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::api_key::ApiKey;
 use crate::error::LLMError;
-use crate::llm::prompts::build_prompt;
+use crate::llm::prompts::{build_prompt, validate_input};
 use crate::llm::provider::{LLMInput, LLMProvider, LLMResult};
 
 /// Request timeout for LLM API calls.
@@ -19,7 +20,7 @@ pub struct OpenAICompatProvider {
     /// Shared HTTP client with connection pooling and keep-alive.
     client: Client,
     /// Bearer token for the `Authorization` header.
-    api_key: String,
+    api_key: ApiKey,
     /// Base URL **without** a trailing slash, e.g. `https://api.openai.com/v1`.
     base_url: String,
     /// Model identifier, e.g. `gpt-4o-mini`, `qwen-turbo`.
@@ -29,19 +30,19 @@ pub struct OpenAICompatProvider {
 impl OpenAICompatProvider {
     /// Create a new provider with a shared `reqwest::Client` that enables
     /// connection pooling and keep-alive across requests.
-    pub fn new(api_key: String, base_url: String, model: String) -> Self {
+    pub fn new(api_key: String, base_url: String, model: String) -> Result<Self, LLMError> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .pool_max_idle_per_host(4)
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(|e| LLMError::HttpClientError(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             client,
-            api_key,
+            api_key: ApiKey::new(api_key),
             base_url: base_url.trim_end_matches('/').to_string(),
             model,
-        }
+        })
     }
 
     /// Build the full endpoint URL for chat completions.
@@ -64,7 +65,7 @@ impl OpenAICompatProvider {
         let response = self
             .client
             .post(self.completions_url())
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key.expose_secret())
             .json(&body)
             .send()
             .await
@@ -109,6 +110,7 @@ impl LLMProvider for OpenAICompatProvider {
         input: &'a LLMInput,
     ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
         Box::pin(async move {
+            validate_input(input)?;
             let (system_msg, user_msg) = build_prompt(&input.mode, input);
 
             let messages = vec![
@@ -220,7 +222,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(result.is_ok());
         let r = result.unwrap();
@@ -237,7 +239,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("bad-key".into(), server.uri(), "m".into());
+        let provider = OpenAICompatProvider::new("bad-key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(matches!(result, Err(LLMError::AuthFailed)));
     }
@@ -251,7 +253,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(matches!(result, Err(LLMError::RateLimited)));
     }
@@ -265,7 +267,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(matches!(result, Err(LLMError::ServerError(500, _))));
     }
@@ -279,7 +281,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(matches!(result, Err(LLMError::InvalidResponse(_))));
     }
@@ -293,7 +295,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into());
+        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.test_connection().await;
         assert!(result.is_ok());
         assert!(result.unwrap());

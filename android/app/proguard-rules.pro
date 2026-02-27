@@ -16,8 +16,12 @@
 }
 
 # --- Compose ---
-# Compose runtime 需要的反射
--keep class androidx.compose.** { *; }
+# Compose runtime 和 platform 反射（精确规则，避免保留全部 Compose 类）
+-keep class androidx.compose.runtime.** { *; }
+-keep class androidx.compose.ui.platform.** { *; }
+-keepclassmembers class * {
+    @androidx.compose.runtime.Composable <methods>;
+}
 -dontwarn androidx.compose.**
 
 # --- EncryptedSharedPreferences ---

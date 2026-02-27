@@ -185,11 +185,12 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
 
             {/* STT API Key */}
             <div>
-              <label className="block text-sm text-gray-600 mb-1">
+              <label htmlFor="wizard-stt-key" className="block text-sm text-gray-600 mb-1">
                 {isSameKey ? "API Key" : "语音识别 (STT) API Key"}
               </label>
               <div className="relative">
                 <input
+                  id="wizard-stt-key"
                   type={showSttKey ? "text" : "password"}
                   value={sttApiKey}
                   onChange={(e) => setSttApiKey(e.target.value)}
@@ -210,11 +211,12 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
             {/* LLM API Key (only shown if different from STT) */}
             {!isSameKey && (
               <div>
-                <label className="block text-sm text-gray-600 mb-1">
+                <label htmlFor="wizard-llm-key" className="block text-sm text-gray-600 mb-1">
                   大语言模型 (LLM) API Key
                 </label>
                 <div className="relative">
                   <input
+                    id="wizard-llm-key"
                     type={showLlmKey ? "text" : "password"}
                     value={llmApiKey}
                     onChange={(e) => setLlmApiKey(e.target.value)}

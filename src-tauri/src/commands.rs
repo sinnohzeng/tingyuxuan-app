@@ -132,7 +132,7 @@ pub fn build_pipeline(
         llm_key,
         llm_base_url,
         config.llm.model.clone(),
-    ));
+    ).ok()?);
 
     Some(Arc::new(Pipeline::new(
         stt_provider,
@@ -284,7 +284,7 @@ pub async fn stop_recording(
         .send(PipelineEvent::RecordingStopped { duration_ms });
 
     // Check network status — if offline, queue for later processing.
-    let is_online = network_state.0.load(std::sync::atomic::Ordering::Relaxed);
+    let is_online = network_state.0.load(std::sync::atomic::Ordering::Acquire);
 
     if !is_online {
         let queued = QueuedRecording {
@@ -528,7 +528,8 @@ pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result
         .base_url
         .clone()
         .unwrap_or_else(|| config.llm_base_url());
-    let provider = OpenAICompatProvider::new(api_key, base_url, config.llm.model.clone());
+    let provider = OpenAICompatProvider::new(api_key, base_url, config.llm.model.clone())
+        .map_err(|e| e.to_string())?;
 
     provider.test_connection().await.map_err(|e| e.to_string())
 }

@@ -45,12 +45,14 @@ abstract class LifecycleInputMethodService :
     }
 
     override fun onCreateInputView(): View? {
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         return null
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
+        if (!lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        }
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
 

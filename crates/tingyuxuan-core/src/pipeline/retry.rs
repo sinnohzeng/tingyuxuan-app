@@ -44,6 +44,7 @@ pub async fn execute_with_retry<F, Fut, T, E>(
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Debug,
 {
     let mut delay_ms = policy.initial_delay_ms;
 
@@ -65,6 +66,7 @@ where
                     attempt = attempt + 1,
                     max = policy.max_retries,
                     delay_ms = delay_ms,
+                    error = ?err,
                     "operation failed, retrying after delay"
                 );
 

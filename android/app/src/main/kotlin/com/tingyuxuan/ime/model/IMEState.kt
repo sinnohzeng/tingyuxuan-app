@@ -12,6 +12,7 @@ sealed class IMEState {
     /** 空闲状态，等待用户操作 */
     data class Idle(
         val isPasswordField: Boolean = false,
+        val currentMode: ProcessingMode = ProcessingMode.Dictate,
     ) : IMEState()
 
     /** 正在录音 */
@@ -37,6 +38,7 @@ sealed class IMEState {
     data class Error(
         val code: ErrorCode,
         val message: String,
+        val failedMode: ProcessingMode = ProcessingMode.Dictate,
     ) : IMEState()
 }
 

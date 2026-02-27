@@ -53,6 +53,10 @@ pub enum STTError {
     NotConfigured,
     #[error("Unsupported audio format")]
     UnsupportedFormat,
+    #[error("HTTP client initialization failed: {0}")]
+    HttpClientError(String),
+    #[error("Input too large: {0}")]
+    InputTooLarge(String),
 }
 
 #[derive(Error, Debug)]
@@ -71,6 +75,10 @@ pub enum LLMError {
     InvalidResponse(String),
     #[error("Provider not configured")]
     NotConfigured,
+    #[error("HTTP client initialization failed: {0}")]
+    HttpClientError(String),
+    #[error("Input too large: {0}")]
+    InputTooLarge(String),
 }
 
 #[derive(Error, Debug)]

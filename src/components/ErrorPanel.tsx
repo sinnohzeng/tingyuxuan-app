@@ -20,7 +20,7 @@ export default function ErrorPanel({
   onOpenSettings,
 }: ErrorPanelProps) {
   return (
-    <div className="flex flex-col items-center gap-2 px-4 py-2 w-full">
+    <div role="alert" className="flex flex-col items-center gap-2 px-4 py-2 w-full">
       <p className="text-red-400 text-xs truncate max-w-[300px]">{message}</p>
       <div className="flex gap-2">
         {action === "RetryOrQueue" && (

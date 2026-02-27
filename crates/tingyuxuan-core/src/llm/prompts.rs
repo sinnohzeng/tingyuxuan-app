@@ -1,4 +1,29 @@
+use crate::error::LLMError;
 use crate::llm::provider::{LLMInput, ProcessingMode};
+
+const MAX_TRANSCRIPT_LEN: usize = 50_000;
+const MAX_SELECTED_TEXT_LEN: usize = 100_000;
+
+/// Validate that LLM input sizes are within acceptable bounds.
+pub fn validate_input(input: &super::provider::LLMInput) -> Result<(), LLMError> {
+    if input.raw_transcript.len() > MAX_TRANSCRIPT_LEN {
+        return Err(LLMError::InputTooLarge(format!(
+            "Transcript too large: {} bytes (max {})",
+            input.raw_transcript.len(),
+            MAX_TRANSCRIPT_LEN
+        )));
+    }
+    if let Some(ref text) = input.selected_text {
+        if text.len() > MAX_SELECTED_TEXT_LEN {
+            return Err(LLMError::InputTooLarge(format!(
+                "Selected text too large: {} bytes (max {})",
+                text.len(),
+                MAX_SELECTED_TEXT_LEN
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Build the (system_message, user_message) pair for the given processing mode.
 pub fn build_prompt(mode: &ProcessingMode, input: &LLMInput) -> (String, String) {
@@ -416,5 +441,27 @@ mod tests {
         };
         let (system, _) = build_prompt(&input.mode, &input);
         assert!(system.contains("口语化"));
+    }
+
+    #[test]
+    fn test_validate_input_ok() {
+        let input = make_input(ProcessingMode::Dictate, "normal input");
+        assert!(validate_input(&input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_input_transcript_too_large() {
+        let large = "x".repeat(50_001);
+        let input = make_input(ProcessingMode::Dictate, &large);
+        let err = validate_input(&input).unwrap_err();
+        assert!(matches!(err, LLMError::InputTooLarge(_)));
+    }
+
+    #[test]
+    fn test_validate_input_selected_text_too_large() {
+        let mut input = make_input(ProcessingMode::Edit, "short transcript");
+        input.selected_text = Some("y".repeat(100_001));
+        let err = validate_input(&input).unwrap_err();
+        assert!(matches!(err, LLMError::InputTooLarge(_)));
     }
 }

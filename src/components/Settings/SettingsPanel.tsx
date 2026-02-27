@@ -21,7 +21,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<Tab>("api");
-  const { config, setConfig } = useAppStore();
+  const { setConfig } = useAppStore();
   const [localConfig, setLocalConfig] = useState<AppConfig | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>("");
   const [showWizard, setShowWizard] = useState(false);
@@ -208,8 +208,9 @@ function LanguageConfig({
       <h2 className="text-base font-medium text-gray-700">语言设置</h2>
 
       <div>
-        <label className="block text-sm text-gray-600 mb-1">主要听写语言</label>
+        <label htmlFor="primary-language" className="block text-sm text-gray-600 mb-1">主要听写语言</label>
         <select
+          id="primary-language"
           value={config.language.primary}
           onChange={(e) =>
             onUpdate((c) => ({
@@ -231,8 +232,9 @@ function LanguageConfig({
       </div>
 
       <div>
-        <label className="block text-sm text-gray-600 mb-1">翻译目标语言</label>
+        <label htmlFor="translation-target" className="block text-sm text-gray-600 mb-1">翻译目标语言</label>
         <select
+          id="translation-target"
           value={config.language.translation_target}
           onChange={(e) =>
             onUpdate((c) => ({

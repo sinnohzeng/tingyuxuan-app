@@ -1,23 +1,17 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import FloatingBar from "./components/FloatingBar";
 import SettingsPanel from "./components/Settings/SettingsPanel";
 
-function AppContent() {
-  const [route, setRoute] = useState<string>("");
+function getInitialRoute(): string {
+  const path = window.location.pathname;
+  if (path.includes("floating-bar")) return "floating-bar";
+  if (path.includes("settings")) return "settings";
+  return "floating-bar";
+}
 
-  useEffect(() => {
-    // Determine which view to render based on the URL path
-    const path = window.location.pathname;
-    if (path.includes("floating-bar")) {
-      setRoute("floating-bar");
-    } else if (path.includes("settings")) {
-      setRoute("settings");
-    } else {
-      // Default: show floating bar (for development)
-      setRoute("floating-bar");
-    }
-  }, []);
+function AppContent() {
+  const [route, setRoute] = useState(getInitialRoute);
 
   switch (route) {
     case "floating-bar":

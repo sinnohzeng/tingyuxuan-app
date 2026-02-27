@@ -38,6 +38,8 @@ fn runtime() -> &'static tokio::runtime::Runtime {
             .enable_all()
             .thread_name("tingyuxuan-rt")
             .build()
+            // Tokio runtime creation is a one-time, unrecoverable operation. If it fails,
+            // the JNI layer cannot function at all, so panicking is the correct behavior.
             .expect("Failed to create tokio runtime")
     })
 }
@@ -159,13 +161,17 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
             .base_url
             .clone()
             .unwrap_or_else(|| config.llm_base_url());
-        let llm_provider = Box::new(
-            tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
-                llm_key,
-                llm_base_url,
-                config.llm.model.clone(),
-            ),
-        );
+        let llm_provider = match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
+            llm_key,
+            llm_base_url,
+            config.llm.model.clone(),
+        ) {
+            Ok(p) => Box::new(p),
+            Err(e) => {
+                tracing::error!("Failed to create LLM provider: {e}");
+                return Ok(0);
+            }
+        };
 
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
         let pipeline = Arc::new(Pipeline::new(stt_provider, llm_provider, event_tx));
@@ -351,13 +357,17 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                     .base_url
                     .clone()
                     .unwrap_or_else(|| config.llm_base_url());
-                let provider: Box<dyn LLMProvider> = Box::new(
-                    tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
-                        llm_key,
-                        llm_base_url,
-                        config.llm.model.clone(),
-                    ),
-                );
+                let provider: Box<dyn LLMProvider> = match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
+                    llm_key,
+                    llm_base_url,
+                    config.llm.model.clone(),
+                ) {
+                    Ok(p) => Box::new(p),
+                    Err(e) => {
+                        let json = serde_json::json!({ "success": false, "error": format!("LLM init failed: {e}") }).to_string();
+                        return Ok(env.new_string(&json)?);
+                    }
+                };
                 match rt.block_on(provider.test_connection()) {
                     Ok(true) => serde_json::json!({ "success": true }).to_string(),
                     Ok(false) => {

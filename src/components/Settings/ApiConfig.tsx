@@ -128,8 +128,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         <h2 className="text-base font-medium text-gray-700">语音识别 (STT)</h2>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Provider</label>
+          <label htmlFor="stt-provider" className="block text-sm text-gray-600 mb-1">Provider</label>
           <select
+            id="stt-provider"
             value={config.stt.provider}
             onChange={(e) =>
               onUpdate((c) => ({
@@ -181,8 +182,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Base URL</label>
+          <label htmlFor="stt-base-url" className="block text-sm text-gray-600 mb-1">Base URL</label>
           <input
+            id="stt-base-url"
             type="text"
             value={config.stt.base_url ?? ""}
             onChange={(e) =>
@@ -197,8 +199,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Model</label>
+          <label htmlFor="stt-model" className="block text-sm text-gray-600 mb-1">Model</label>
           <input
+            id="stt-model"
             type="text"
             value={config.stt.model ?? ""}
             onChange={(e) =>
@@ -236,8 +239,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         <h2 className="text-base font-medium text-gray-700">大语言模型 (LLM)</h2>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Provider</label>
+          <label htmlFor="llm-provider" className="block text-sm text-gray-600 mb-1">Provider</label>
           <select
+            id="llm-provider"
             value={config.llm.provider}
             onChange={(e) =>
               onUpdate((c) => ({
@@ -290,8 +294,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Base URL</label>
+          <label htmlFor="llm-base-url" className="block text-sm text-gray-600 mb-1">Base URL</label>
           <input
+            id="llm-base-url"
             type="text"
             value={config.llm.base_url ?? ""}
             onChange={(e) =>
@@ -306,8 +311,9 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
         </div>
 
         <div>
-          <label className="block text-sm text-gray-600 mb-1">Model</label>
+          <label htmlFor="llm-model" className="block text-sm text-gray-600 mb-1">Model</label>
           <input
+            id="llm-model"
             type="text"
             value={config.llm.model}
             onChange={(e) =>

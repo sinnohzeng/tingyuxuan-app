@@ -45,7 +45,19 @@ pub fn run() {
             let history_arc = states.history.0.clone();
             let event_tx_clone = states.event_bus.0.clone();
             tauri::async_runtime::spawn(async move {
-                while let Ok(event) = event_rx.recv().await {
+                loop {
+                let event = match event_rx.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Event bridge lagged, skipped {n} event(s)");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Event bus closed, stopping event bridge");
+                        break;
+                    }
+                };
+                {
                     // Window visibility management.
                     if let Some(window) = handle.get_webview_window("floating-bar") {
                         match &event {
@@ -68,7 +80,7 @@ pub fn run() {
 
                     // Track network status and drain offline queue on restore.
                     if let PipelineEvent::NetworkStatusChanged { online } = &event {
-                        network_flag.store(*online, std::sync::atomic::Ordering::Relaxed);
+                        network_flag.store(*online, std::sync::atomic::Ordering::Release);
 
                         if *online {
                             // Network is back — drain the offline queue and process.
@@ -135,6 +147,7 @@ pub fn run() {
 
                     // Forward all events to the frontend.
                     let _ = handle.emit("pipeline-event", &event);
+                }
                 }
             });
 

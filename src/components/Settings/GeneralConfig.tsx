@@ -39,10 +39,11 @@ export default function GeneralConfig({ config, onUpdate }: GeneralConfigProps) 
 
       {/* Floating bar position */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="floating-bar-position" className="block text-sm font-medium text-gray-700 mb-1">
           浮动条位置
         </label>
         <select
+          id="floating-bar-position"
           value={config.general.floating_bar_position}
           onChange={(e) =>
             onUpdate((c) => ({
@@ -67,10 +68,11 @@ export default function GeneralConfig({ config, onUpdate }: GeneralConfigProps) 
 
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">
+            <label htmlFor="audio-retention" className="block text-xs text-gray-600 mb-1">
               音频缓存保留时长
             </label>
             <select
+              id="audio-retention"
               value={config.cache.audio_retention_hours}
               onChange={(e) =>
                 onUpdate((c) => ({
@@ -92,10 +94,11 @@ export default function GeneralConfig({ config, onUpdate }: GeneralConfigProps) 
           </div>
 
           <div>
-            <label className="block text-xs text-gray-600 mb-1">
+            <label htmlFor="max-cache-size" className="block text-xs text-gray-600 mb-1">
               缓存最大体积 (MB)
             </label>
             <input
+              id="max-cache-size"
               type="number"
               value={config.cache.max_cache_size_mb}
               onChange={(e) =>

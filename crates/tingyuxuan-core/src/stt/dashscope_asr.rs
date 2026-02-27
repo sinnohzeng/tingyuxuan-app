@@ -6,13 +6,14 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::api_key::ApiKey;
 use crate::error::STTError;
 use crate::stt::provider::{STTOptions, STTProvider, STTResult};
 
 /// Alibaba Cloud DashScope Qwen-ASR speech-to-text provider.
 pub struct DashScopeASRProvider {
     client: Client,
-    api_key: String,
+    api_key: ApiKey,
     base_url: String,
     model: String,
 }
@@ -84,19 +85,19 @@ impl DashScopeASRProvider {
     /// - `api_key`: The API key for authentication.
     /// - `base_url`: The base URL of the API (defaults to `https://dashscope.aliyuncs.com/compatible-mode/v1`).
     /// - `model`: The model to use (defaults to `qwen2-audio-instruct`).
-    pub fn new(api_key: String, base_url: Option<String>, model: Option<String>) -> Self {
+    pub fn new(api_key: String, base_url: Option<String>, model: Option<String>) -> Result<Self, STTError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
-            .expect("failed to build HTTP client");
+            .map_err(|e| STTError::HttpClientError(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             client,
-            api_key,
+            api_key: ApiKey::new(api_key),
             base_url: base_url
                 .unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             model: model.unwrap_or_else(|| "qwen2-audio-instruct".to_string()),
-        }
+        })
     }
 
     /// Map an HTTP status code and body to an appropriate STTError.
@@ -104,7 +105,7 @@ impl DashScopeASRProvider {
         match status.as_u16() {
             401 => STTError::AuthFailed,
             429 => STTError::RateLimited,
-            code if code >= 500 => STTError::ServerError(code, body.to_string()),
+            500..=599 => STTError::ServerError(status.as_u16(), body.to_string()),
             code => STTError::ServerError(code, body.to_string()),
         }
     }
@@ -160,7 +161,7 @@ impl STTProvider for DashScopeASRProvider {
             let response = self
                 .client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
                 .header("Content-Type", "application/json")
                 .json(&request)
                 .send()
@@ -225,7 +226,7 @@ impl STTProvider for DashScopeASRProvider {
             let response = self
                 .client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
                 .header("Content-Type", "application/json")
                 .json(&request)
                 .send()
@@ -297,7 +298,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("test-key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("test-key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(result.is_ok());
@@ -313,7 +314,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("bad-key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("bad-key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::AuthFailed)));
@@ -328,7 +329,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::RateLimited)));
@@ -343,7 +344,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::ServerError(500, _))));
@@ -358,7 +359,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::InvalidResponse(_))));
@@ -373,7 +374,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None);
+        let provider = DashScopeASRProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let result = provider.test_connection().await;
         assert!(result.is_ok());
         assert!(result.unwrap());

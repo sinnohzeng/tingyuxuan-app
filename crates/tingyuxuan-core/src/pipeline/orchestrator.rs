@@ -109,10 +109,14 @@ impl Pipeline {
         let stt_result = {
             let stt = &self.stt;
             let opts = &stt_options;
-            execute_with_retry(&self.retry_policy, &cancel_token, || async {
-                stt.transcribe(audio_path, opts).await
-            })
-            .await
+            tokio::select! {
+                result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
+                    stt.transcribe(audio_path, opts).await
+                }) => result,
+                _ = cancel_token.cancelled() => {
+                    return Err(PipelineError::Cancelled);
+                }
+            }
         };
 
         let stt_result = match stt_result {
@@ -127,7 +131,7 @@ impl Pipeline {
             }
         };
 
-        let raw_text = stt_result.text.clone();
+        let raw_text = stt_result.text;
         self.emit(PipelineEvent::TranscriptionComplete {
             raw_text: raw_text.clone(),
         });
@@ -153,10 +157,14 @@ impl Pipeline {
         let llm_result = {
             let llm = &self.llm;
             let input = &llm_input;
-            execute_with_retry(&self.retry_policy, &cancel_token, || async {
-                llm.process(input).await
-            })
-            .await
+            tokio::select! {
+                result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
+                    llm.process(input).await
+                }) => result,
+                _ = cancel_token.cancelled() => {
+                    return Err(PipelineError::Cancelled);
+                }
+            }
         };
 
         let llm_result = match llm_result {
@@ -171,7 +179,7 @@ impl Pipeline {
             }
         };
 
-        let processed = llm_result.processed_text.clone();
+        let processed = llm_result.processed_text;
         self.emit(PipelineEvent::ProcessingComplete {
             processed_text: processed.clone(),
         });

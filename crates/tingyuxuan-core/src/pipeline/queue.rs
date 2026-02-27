@@ -54,7 +54,7 @@ impl OfflineQueue {
                     "Failed to open persistent queue database: {} — falling back to in-memory",
                     e
                 );
-                Self::new_in_memory()
+                Self::new_in_memory().expect("in-memory SQLite failed: system resource exhaustion")
             }
         }
     }
@@ -76,11 +76,10 @@ impl OfflineQueue {
     }
 
     /// Create an in-memory queue (for testing or as a fallback).
-    pub fn new_in_memory() -> Self {
-        let conn = Connection::open_in_memory().expect("failed to open in-memory SQLite");
-        conn.execute_batch(SCHEMA)
-            .expect("failed to create queue schema");
-        Self { conn }
+    pub fn new_in_memory() -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Self { conn })
     }
 
     /// Append a recording to the end of the queue.
@@ -164,9 +163,9 @@ impl OfflineQueue {
     pub fn len(&self) -> usize {
         self.conn
             .query_row("SELECT COUNT(*) FROM queue", [], |row| {
-                row.get::<_, usize>(0)
+                row.get::<_, i64>(0)
             })
-            .unwrap_or(0)
+            .unwrap_or(0) as usize
     }
 
     /// Returns `true` when there are no queued recordings.
@@ -216,14 +215,14 @@ mod tests {
 
     #[test]
     fn new_queue_is_empty() {
-        let q = OfflineQueue::new_in_memory();
+        let q = OfflineQueue::new_in_memory().unwrap();
         assert!(q.is_empty());
         assert_eq!(q.len(), 0);
     }
 
     #[test]
     fn enqueue_increases_length() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         q.enqueue(sample_recording("a"));
         assert_eq!(q.len(), 1);
         assert!(!q.is_empty());
@@ -234,7 +233,7 @@ mod tests {
 
     #[test]
     fn drain_returns_all_items_in_order() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         q.enqueue(sample_recording("1"));
         q.enqueue(sample_recording("2"));
         q.enqueue(sample_recording("3"));
@@ -252,14 +251,14 @@ mod tests {
 
     #[test]
     fn drain_on_empty_queue_returns_empty_vec() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         let items = q.drain();
         assert!(items.is_empty());
     }
 
     #[test]
     fn enqueue_after_drain_works() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         q.enqueue(sample_recording("x"));
         let _ = q.drain();
 
@@ -271,7 +270,7 @@ mod tests {
 
     #[test]
     fn duplicate_session_id_replaces() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         q.enqueue(QueuedRecording {
             session_id: "dup".to_string(),
             audio_path: PathBuf::from("/tmp/first.wav"),
@@ -297,7 +296,7 @@ mod tests {
 
     #[test]
     fn mode_roundtrip() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
         q.enqueue(QueuedRecording {
             session_id: "t1".to_string(),
             audio_path: PathBuf::from("/tmp/t1.wav"),
@@ -336,7 +335,7 @@ mod tests {
 
     #[test]
     fn persistence_across_operations() {
-        let mut q = OfflineQueue::new_in_memory();
+        let mut q = OfflineQueue::new_in_memory().unwrap();
 
         // Enqueue, drain partially, enqueue more, drain again
         q.enqueue(sample_recording("a"));

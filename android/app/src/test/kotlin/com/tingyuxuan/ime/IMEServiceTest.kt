@@ -81,4 +81,40 @@ class IMEServiceTest {
         assertTrue(done is IMEState.Done)
         assertTrue(error is IMEState.Error)
     }
+
+    @Test
+    fun `idle state carries current mode`() {
+        val idle = IMEState.Idle(currentMode = ProcessingMode.Translate)
+        assertEquals(ProcessingMode.Translate, idle.currentMode)
+    }
+
+    @Test
+    fun `idle state defaults to dictate mode`() {
+        val idle = IMEState.Idle()
+        assertEquals(ProcessingMode.Dictate, idle.currentMode)
+    }
+
+    @Test
+    fun `error state carries failed mode`() {
+        val error = IMEState.Error(
+            code = ErrorCode.NetworkError,
+            message = "timeout",
+            failedMode = ProcessingMode.AiAssistant,
+        )
+        assertEquals(ProcessingMode.AiAssistant, error.failedMode)
+    }
+
+    @Test
+    fun `error state defaults to dictate mode`() {
+        val error = IMEState.Error(code = ErrorCode.Unknown, message = "error")
+        assertEquals(ProcessingMode.Dictate, error.failedMode)
+    }
+
+    @Test
+    fun `idle state copy preserves mode`() {
+        val idle = IMEState.Idle(currentMode = ProcessingMode.Translate)
+        val withPassword = idle.copy(isPasswordField = true)
+        assertEquals(ProcessingMode.Translate, withPassword.currentMode)
+        assertTrue(withPassword.isPasswordField)
+    }
 }

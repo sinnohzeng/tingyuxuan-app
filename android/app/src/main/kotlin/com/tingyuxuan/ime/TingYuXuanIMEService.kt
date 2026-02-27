@@ -47,15 +47,25 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
     private val _state = MutableStateFlow<IMEState>(IMEState.Idle())
     val state: StateFlow<IMEState> = _state.asStateFlow()
 
-    private var currentMode: ProcessingMode = ProcessingMode.Dictate
-    private var lastFailedMode: ProcessingMode? = null
+    /**
+     * 从当前状态中提取处理模式。
+     * 每个状态自带模式信息，无需额外字段。
+     */
+    private val currentMode: ProcessingMode
+        get() = when (val s = _state.value) {
+            is IMEState.Idle -> s.currentMode
+            is IMEState.Recording -> s.mode
+            is IMEState.Processing -> s.mode
+            is IMEState.Done -> s.mode
+            is IMEState.Error -> s.failedMode
+        }
 
     // 振幅更新 Job
     private var amplitudeJob: Job? = null
 
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         Log.e(TAG, "Uncaught coroutine exception", throwable)
-        _state.value = IMEState.Error(ErrorCode.Unknown, throwable.message ?: "未知错误")
+        _state.value = IMEState.Error(ErrorCode.Unknown, throwable.message ?: "未知错误", failedMode = currentMode)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
@@ -101,7 +111,7 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         // 仅当不在录音/处理中时重置状态
         val current = _state.value
         if (current is IMEState.Idle || current is IMEState.Done || current is IMEState.Error) {
-            _state.value = IMEState.Idle(isPasswordField = isPassword)
+            _state.value = IMEState.Idle(isPasswordField = isPassword, currentMode = currentMode)
         }
     }
 
@@ -114,7 +124,7 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         amplitudeJob?.cancel()
         val current = _state.value
         if (current is IMEState.Recording || current is IMEState.Processing) {
-            _state.value = IMEState.Idle()
+            _state.value = IMEState.Idle(currentMode = currentMode)
         }
     }
 
@@ -127,7 +137,7 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         amplitudeJob?.cancel()
         val current = _state.value
         if (current is IMEState.Recording) {
-            _state.value = IMEState.Idle()
+            _state.value = IMEState.Idle(currentMode = currentMode)
         }
     }
 
@@ -159,7 +169,7 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
 
         // 密码字段禁止录音
         if (currentState is IMEState.Idle && currentState.isPasswordField) {
-            _state.value = IMEState.Error(ErrorCode.Unknown, "密码输入框中不可使用语音输入")
+            _state.value = IMEState.Error(ErrorCode.Unknown, "密码输入框中不可使用语音输入", failedMode = mode)
             return
         }
 
@@ -167,15 +177,14 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         if (!pipelineController.isInitialized) {
             val error = pipelineController.reinitialize()
             if (error != null) {
-                _state.value = IMEState.Error(error, errorMessage(error))
+                _state.value = IMEState.Error(error, errorMessage(error), failedMode = mode)
                 return
             }
         }
 
-        currentMode = mode
         val error = recordingController.start(mode)
         if (error != null) {
-            _state.value = IMEState.Error(error, errorMessage(error))
+            _state.value = IMEState.Error(error, errorMessage(error), failedMode = mode)
             return
         }
 
@@ -196,19 +205,20 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
 
     private fun stopRecording() {
         amplitudeJob?.cancel()
+        val mode = currentMode
         val audioPath = recordingController.stop() ?: run {
-            _state.value = IMEState.Idle()
+            _state.value = IMEState.Idle(currentMode = mode)
             return
         }
 
-        _state.value = IMEState.Processing(mode = currentMode, stage = ProcessingStage.Transcribing)
+        _state.value = IMEState.Processing(mode = mode, stage = ProcessingStage.Transcribing)
 
         scope.launch {
-            val result = pipelineController.processAudio(audioPath, currentMode)
+            val result = pipelineController.processAudio(audioPath, mode)
             withContext(Dispatchers.Main) {
                 when (result) {
-                    is ProcessResult.Success -> onProcessingSuccess(result.text)
-                    is ProcessResult.Failure -> onProcessingFailure(result.errorCode, result.message)
+                    is ProcessResult.Success -> onProcessingSuccess(result.text, mode)
+                    is ProcessResult.Failure -> onProcessingFailure(result.errorCode, result.message, mode)
                 }
             }
         }
@@ -216,12 +226,16 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
 
     private fun cancelRecording() {
         amplitudeJob?.cancel()
+        val mode = currentMode
         recordingController.cancel()
-        _state.value = IMEState.Idle()
+        _state.value = IMEState.Idle(currentMode = mode)
     }
 
     private fun switchMode(mode: ProcessingMode) {
-        currentMode = mode
+        val current = _state.value
+        if (current is IMEState.Idle) {
+            _state.value = current.copy(currentMode = mode)
+        }
     }
 
     private fun openSettings() {
@@ -232,16 +246,16 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
     }
 
     private fun clearError() {
-        _state.value = IMEState.Idle()
+        _state.value = IMEState.Idle(currentMode = currentMode)
     }
 
     private fun retry() {
-        val mode = lastFailedMode ?: currentMode
-        lastFailedMode = null
+        val current = _state.value
+        val mode = if (current is IMEState.Error) current.failedMode else currentMode
         startRecording(mode)
     }
 
-    private fun onProcessingSuccess(text: String) {
+    private fun onProcessingSuccess(text: String, mode: ProcessingMode) {
         val connection = currentInputConnection
         if (connection != null) {
             connection.commitText(text, 1)
@@ -251,20 +265,19 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
             showToast("结果已复制到剪贴板")
         }
 
-        _state.value = IMEState.Done(text = text, mode = currentMode)
+        _state.value = IMEState.Done(text = text, mode = mode)
 
         // 1.5 秒后回到 Idle
         scope.launch(Dispatchers.Main) {
             delay(DONE_DISPLAY_MS)
             if (_state.value is IMEState.Done) {
-                _state.value = IMEState.Idle()
+                _state.value = IMEState.Idle(currentMode = mode)
             }
         }
     }
 
-    private fun onProcessingFailure(errorCode: ErrorCode, message: String) {
-        lastFailedMode = currentMode
-        _state.value = IMEState.Error(errorCode, message)
+    private fun onProcessingFailure(errorCode: ErrorCode, message: String, mode: ProcessingMode) {
+        _state.value = IMEState.Error(errorCode, message, failedMode = mode)
     }
 
     private fun copyToClipboard(text: String) {

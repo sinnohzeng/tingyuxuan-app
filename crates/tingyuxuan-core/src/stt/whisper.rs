@@ -5,13 +5,14 @@ use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::api_key::ApiKey;
 use crate::error::STTError;
 use crate::stt::provider::{STTOptions, STTProvider, STTResult};
 
 /// OpenAI Whisper API compatible speech-to-text provider.
 pub struct WhisperProvider {
     client: Client,
-    api_key: String,
+    api_key: ApiKey,
     base_url: String,
     model: String,
 }
@@ -28,18 +29,18 @@ impl WhisperProvider {
     /// - `api_key`: The API key for authentication.
     /// - `base_url`: The base URL of the API (defaults to `https://api.openai.com/v1`).
     /// - `model`: The model to use (defaults to `whisper-1`).
-    pub fn new(api_key: String, base_url: Option<String>, model: Option<String>) -> Self {
+    pub fn new(api_key: String, base_url: Option<String>, model: Option<String>) -> Result<Self, STTError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
-            .expect("failed to build HTTP client");
+            .map_err(|e| STTError::HttpClientError(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             client,
-            api_key,
+            api_key: ApiKey::new(api_key),
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
             model: model.unwrap_or_else(|| "whisper-1".to_string()),
-        }
+        })
     }
 
     /// Map an HTTP status code and body to an appropriate STTError.
@@ -47,7 +48,7 @@ impl WhisperProvider {
         match status.as_u16() {
             401 => STTError::AuthFailed,
             429 => STTError::RateLimited,
-            code if code >= 500 => STTError::ServerError(code, body.to_string()),
+            500..=599 => STTError::ServerError(status.as_u16(), body.to_string()),
             code => STTError::ServerError(code, body.to_string()),
         }
     }
@@ -101,7 +102,7 @@ impl STTProvider for WhisperProvider {
             let response = self
                 .client
                 .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
                 .multipart(form)
                 .send()
                 .await
@@ -149,7 +150,7 @@ impl STTProvider for WhisperProvider {
             let response = self
                 .client
                 .get(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
                 .send()
                 .await
                 .map_err(|e| {
@@ -217,7 +218,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("test-key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("test-key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(result.is_ok());
@@ -233,7 +234,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("bad-key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("bad-key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::AuthFailed)));
@@ -248,7 +249,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::RateLimited)));
@@ -263,7 +264,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::ServerError(500, _))));
@@ -278,7 +279,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let audio = dummy_audio_file();
         let result = provider.transcribe(audio.path(), &default_opts()).await;
         assert!(matches!(result, Err(STTError::InvalidResponse(_))));
@@ -293,7 +294,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None);
+        let provider = WhisperProvider::new("key".into(), Some(server.uri()), None).unwrap();
         let result = provider.test_connection().await;
         assert!(result.is_ok());
         assert!(result.unwrap());

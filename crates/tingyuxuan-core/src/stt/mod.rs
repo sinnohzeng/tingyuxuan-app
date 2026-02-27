@@ -23,19 +23,19 @@ pub fn create_stt_provider(
             api_key,
             config.base_url.clone(),
             config.model.clone(),
-        ))),
+        )?)),
         STTProviderType::DashScopeASR => Ok(Box::new(dashscope_asr::DashScopeASRProvider::new(
             api_key,
             config.base_url.clone(),
             config.model.clone(),
-        ))),
+        )?)),
         STTProviderType::Custom => {
             // Custom providers are treated as Whisper-compatible (OpenAI API format).
             Ok(Box::new(whisper::WhisperProvider::new(
                 api_key,
                 config.base_url.clone(),
                 config.model.clone(),
-            )))
+            )?))
         }
     }
 }

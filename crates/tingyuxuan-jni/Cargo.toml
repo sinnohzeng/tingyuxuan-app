@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-jni"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "JNI bridge for TingYuXuan Android IME"
 
@@ -16,7 +16,7 @@ serde_json = "1"
 tracing = "0.1"
 
 # Android logcat 日志输出
-android_logger = "0.14"
+android_logger = "0.15"
 log = "0.4"
 tracing-log = "0.2"
 
