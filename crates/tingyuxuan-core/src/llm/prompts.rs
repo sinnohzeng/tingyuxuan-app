@@ -285,13 +285,10 @@ pub fn detect_tone(ctx: &InputContext) -> Tone {
 /// Build a tone-specific hint for the LLM system prompt.
 fn format_tone_hint(ctx: &InputContext) -> String {
     match detect_tone(ctx) {
-        Tone::Casual => {
-            "语气提示：用户正在聊天应用中，请保持口语化和轻松的表达风格。".to_string()
-        }
+        Tone::Casual => "语气提示：用户正在聊天应用中，请保持口语化和轻松的表达风格。".to_string(),
         Tone::Formal => "语气提示：用户正在写邮件，请使用正式、专业的书面表达。".to_string(),
         Tone::Technical => {
-            "语气提示：用户正在使用开发工具，请保留技术术语和代码相关词汇的原始写法。"
-                .to_string()
+            "语气提示：用户正在使用开发工具，请保留技术术语和代码相关词汇的原始写法。".to_string()
         }
         Tone::Structured => {
             "语气提示：适当使用 Markdown 格式（标题、列表、粗体等）来组织内容。".to_string()

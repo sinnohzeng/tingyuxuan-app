@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 use crate::context::InputContext;
 use crate::error::PipelineError;
 use crate::llm::provider::ProcessingMode;
-use crate::pipeline::orchestrator::Pipeline;
 use crate::pipeline::ProcessingRequest;
+use crate::pipeline::orchestrator::Pipeline;
 use crate::stt::provider::STTOptions;
 use crate::stt::streaming::{AudioChunk, StreamingSTTEvent};
 
@@ -249,7 +249,11 @@ impl SessionOrchestrator {
         }
 
         finals.sort_by_key(|(idx, _)| *idx);
-        Ok(finals.into_iter().map(|(_, text)| text).collect::<Vec<_>>().join(""))
+        Ok(finals
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join(""))
     }
 }
 
@@ -260,7 +264,9 @@ mod tests {
     use crate::error::{LLMError, STTError};
     use crate::llm::provider::{LLMInput, LLMProvider, LLMResult};
     use crate::pipeline::events::PipelineEvent;
-    use crate::stt::streaming::{StreamingSTTProvider, StreamingSession, STREAMING_CHANNEL_CAPACITY};
+    use crate::stt::streaming::{
+        STREAMING_CHANNEL_CAPACITY, StreamingSTTProvider, StreamingSession,
+    };
     use std::future::Future;
     use std::pin::Pin;
     use tokio::sync::broadcast;
@@ -302,10 +308,7 @@ mod tests {
                         .await;
                 });
 
-                Ok(StreamingSession {
-                    audio_tx,
-                    event_rx,
-                })
+                Ok(StreamingSession { audio_tx, event_rx })
             })
         }
         fn test_connection(
@@ -336,10 +339,7 @@ mod tests {
                     // event_tx drop → event_rx 关闭。
                 });
 
-                Ok(StreamingSession {
-                    audio_tx,
-                    event_rx,
-                })
+                Ok(StreamingSession { audio_tx, event_rx })
             })
         }
         fn test_connection(
@@ -373,10 +373,7 @@ mod tests {
                         .await;
                 });
 
-                Ok(StreamingSession {
-                    audio_tx,
-                    event_rx,
-                })
+                Ok(StreamingSession { audio_tx, event_rx })
             })
         }
         fn test_connection(
@@ -435,10 +432,7 @@ mod tests {
 
     // -- Helper -------------------------------------------------------------
 
-    fn make_pipeline(
-        stt: Box<dyn StreamingSTTProvider>,
-        llm: Box<dyn LLMProvider>,
-    ) -> Pipeline {
+    fn make_pipeline(stt: Box<dyn StreamingSTTProvider>, llm: Box<dyn LLMProvider>) -> Pipeline {
         let (tx, _) = broadcast::channel::<PipelineEvent>(32);
         Pipeline::new(stt, llm, tx)
     }

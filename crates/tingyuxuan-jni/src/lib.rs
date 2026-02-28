@@ -35,7 +35,9 @@ use tingyuxuan_core::context::InputContext;
 use tingyuxuan_core::error::StructuredError;
 use tingyuxuan_core::llm::LLMProvider;
 use tingyuxuan_core::llm::provider::ProcessingMode;
-use tingyuxuan_core::pipeline::{ManagedSession, Pipeline, SessionConfig, SessionOrchestrator, SessionResult};
+use tingyuxuan_core::pipeline::{
+    ManagedSession, Pipeline, SessionConfig, SessionOrchestrator, SessionResult,
+};
 use tingyuxuan_core::stt::streaming::AudioChunk;
 
 /// 全局共享的 tokio Runtime，通过 OnceLock 懒初始化。
@@ -71,7 +73,10 @@ fn store_managed_session(handle_id: u64, session: ManagedSession) -> Result<(), 
         .lock()
         .map_err(|_| "Streaming sessions mutex poisoned".to_string())?;
     if map.contains_key(&handle_id) {
-        tracing::warn!(handle_id, "Replacing existing streaming session (resource leak)");
+        tracing::warn!(
+            handle_id,
+            "Replacing existing streaming session (resource leak)"
+        );
     }
     map.insert(handle_id, session);
     Ok(())
@@ -274,12 +279,10 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_startStreaming<'local
             }
         };
 
-        let processing_mode = mode_str
-            .parse::<ProcessingMode>()
-            .unwrap_or_else(|_| {
-                tracing::warn!("Unknown processing mode '{mode_str}', falling back to Dictate");
-                ProcessingMode::Dictate
-            });
+        let processing_mode = mode_str.parse::<ProcessingMode>().unwrap_or_else(|_| {
+            tracing::warn!("Unknown processing mode '{mode_str}', falling back to Dictate");
+            ProcessingMode::Dictate
+        });
 
         let session_config = SessionConfig {
             mode: processing_mode,
@@ -337,9 +340,9 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_sendAudioChunk(
             return Ok(false);
         };
 
-        let len = pcm_data.len(&env)? as usize;
+        let len = pcm_data.len(env)?;
         let mut buf = vec![0i16; len];
-        pcm_data.get_region(&env, 0, &mut buf)?;
+        pcm_data.get_region(env, 0, &mut buf)?;
 
         Ok(session.send_audio(AudioChunk { samples: buf }))
     })
@@ -449,7 +452,11 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
         let config: tingyuxuan_core::config::AppConfig = match serde_json::from_str(&config_str) {
             Ok(c) => c,
             Err(e) => {
-                let json = error_json("invalid_config", &format!("Invalid config: {e}"), "open_settings");
+                let json = error_json(
+                    "invalid_config",
+                    &format!("Invalid config: {e}"),
+                    "open_settings",
+                );
                 return env.new_string(json);
             }
         };
@@ -462,7 +469,9 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                 match tingyuxuan_core::stt::create_streaming_stt_provider(&config.stt, stt_key) {
                     Ok(provider) => match rt.block_on(provider.test_connection()) {
                         Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                        Ok(false) => error_json("stt_error", "Connection test failed", "check_api_key"),
+                        Ok(false) => {
+                            error_json("stt_error", "Connection test failed", "check_api_key")
+                        }
                         Err(e) => error_json("stt_error", &e.to_string(), "check_api_key"),
                     },
                     Err(e) => error_json("stt_error", &e.to_string(), "open_settings"),
@@ -475,26 +484,33 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                     .base_url
                     .clone()
                     .unwrap_or_else(|| config.llm_base_url());
-                let provider: Box<dyn LLMProvider> = match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
-                    llm_key,
-                    llm_base_url,
-                    config.llm.model.clone(),
-                ) {
-                    Ok(p) => Box::new(p),
-                    Err(e) => {
-                        let json = error_json("llm_error", &format!("LLM init failed: {e}"), "open_settings");
-                        return Ok(env.new_string(&json)?);
-                    }
-                };
+                let provider: Box<dyn LLMProvider> =
+                    match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
+                        llm_key,
+                        llm_base_url,
+                        config.llm.model.clone(),
+                    ) {
+                        Ok(p) => Box::new(p),
+                        Err(e) => {
+                            let json = error_json(
+                                "llm_error",
+                                &format!("LLM init failed: {e}"),
+                                "open_settings",
+                            );
+                            return env.new_string(&json);
+                        }
+                    };
                 match rt.block_on(provider.test_connection()) {
                     Ok(true) => serde_json::json!({ "success": true }).to_string(),
                     Ok(false) => error_json("llm_error", "Connection test failed", "check_api_key"),
                     Err(e) => error_json("llm_error", &e.to_string(), "check_api_key"),
                 }
             }
-            other => {
-                error_json("invalid_service", &format!("Unknown service: {other}"), "dismiss")
-            }
+            other => error_json(
+                "invalid_service",
+                &format!("Unknown service: {other}"),
+                "dismiss",
+            ),
         };
 
         env.new_string(json)

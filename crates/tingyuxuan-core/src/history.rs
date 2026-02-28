@@ -134,8 +134,7 @@ impl HistoryManager {
     }
 
     /// Column list for SELECT queries (audio_path excluded from Rust mapping).
-    const SELECT_COLUMNS: &str =
-        "id, timestamp, mode, raw_text, processed_text, \
+    const SELECT_COLUMNS: &str = "id, timestamp, mode, raw_text, processed_text, \
          status, context_json, duration_ms, language, error_message";
 
     /// Map a row (matching SELECT_COLUMNS order) to a TranscriptRecord.

@@ -90,10 +90,22 @@ mod tests {
 
     #[test]
     fn test_processing_mode_from_str_all_variants() {
-        assert_eq!("dictate".parse::<ProcessingMode>().unwrap(), ProcessingMode::Dictate);
-        assert_eq!("translate".parse::<ProcessingMode>().unwrap(), ProcessingMode::Translate);
-        assert_eq!("ai_assistant".parse::<ProcessingMode>().unwrap(), ProcessingMode::AiAssistant);
-        assert_eq!("edit".parse::<ProcessingMode>().unwrap(), ProcessingMode::Edit);
+        assert_eq!(
+            "dictate".parse::<ProcessingMode>().unwrap(),
+            ProcessingMode::Dictate
+        );
+        assert_eq!(
+            "translate".parse::<ProcessingMode>().unwrap(),
+            ProcessingMode::Translate
+        );
+        assert_eq!(
+            "ai_assistant".parse::<ProcessingMode>().unwrap(),
+            ProcessingMode::AiAssistant
+        );
+        assert_eq!(
+            "edit".parse::<ProcessingMode>().unwrap(),
+            ProcessingMode::Edit
+        );
     }
 
     #[test]

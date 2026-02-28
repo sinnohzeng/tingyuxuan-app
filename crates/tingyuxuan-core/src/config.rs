@@ -333,21 +333,19 @@ pub struct ProviderPreset {
 
 impl ProviderPreset {
     pub fn all() -> Vec<ProviderPreset> {
-        vec![
-            ProviderPreset {
-                name: "阿里云 DashScope".to_string(),
-                llm_provider: LLMProviderType::DashScope,
-                llm_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-                llm_models: vec![
-                    "qwen-turbo".to_string(),
-                    "qwen-plus".to_string(),
-                    "qwen-max".to_string(),
-                ],
-                stt_provider: STTProviderType::DashScopeStreaming,
-                stt_base_url: None,
-                stt_model: Some("paraformer-realtime-v2".to_string()),
-            },
-        ]
+        vec![ProviderPreset {
+            name: "阿里云 DashScope".to_string(),
+            llm_provider: LLMProviderType::DashScope,
+            llm_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            llm_models: vec![
+                "qwen-turbo".to_string(),
+                "qwen-plus".to_string(),
+                "qwen-max".to_string(),
+            ],
+            stt_provider: STTProviderType::DashScopeStreaming,
+            stt_base_url: None,
+            stt_model: Some("paraformer-realtime-v2".to_string()),
+        }]
     }
 }
 

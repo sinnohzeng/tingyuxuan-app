@@ -19,15 +19,15 @@ use std::pin::Pin;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::http;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http;
 
 use crate::api_key::ApiKey;
 use crate::error::STTError;
 use crate::stt::provider::STTOptions;
 use crate::stt::streaming::{
-    AudioChunk, StreamingSTTEvent, StreamingSTTProvider, StreamingSession,
-    STREAMING_CHANNEL_CAPACITY,
+    AudioChunk, STREAMING_CHANNEL_CAPACITY, StreamingSTTEvent, StreamingSTTProvider,
+    StreamingSession,
 };
 
 /// DashScope 实时语音识别默认 WebSocket 端点。
@@ -113,14 +113,11 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
             // 建立 WebSocket 连接（携带 Bearer token）
             let request = build_ws_request(&self.ws_url, self.api_key.expose_secret())?;
             let (ws_stream, _response) =
-                tokio_tungstenite::connect_async_tls_with_config(
-                    request,
-                    None,
-                    false,
-                    None,
-                )
+                tokio_tungstenite::connect_async_tls_with_config(request, None, false, None)
                     .await
-                    .map_err(|e| STTError::NetworkError(format!("WebSocket connection failed: {e}")))?;
+                    .map_err(|e| {
+                        STTError::NetworkError(format!("WebSocket connection failed: {e}"))
+                    })?;
 
             let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -129,14 +126,15 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
             ws_sink
                 .send(Message::Text(start_msg.into()))
                 .await
-                .map_err(|e| STTError::NetworkError(format!("Failed to send start message: {e}")))?;
+                .map_err(|e| {
+                    STTError::NetworkError(format!("Failed to send start message: {e}"))
+                })?;
 
             // 等待 TranscriptionStarted 确认
             wait_for_started(&mut ws_source).await?;
 
             // 创建 channel
-            let (audio_tx, mut audio_rx) =
-                mpsc::channel::<AudioChunk>(STREAMING_CHANNEL_CAPACITY);
+            let (audio_tx, mut audio_rx) = mpsc::channel::<AudioChunk>(STREAMING_CHANNEL_CAPACITY);
             let (event_tx, event_rx) = mpsc::channel::<StreamingSTTEvent>(64);
 
             let stop_msg = self.build_stop_message(&task_id);
@@ -205,10 +203,7 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
                 }
             });
 
-            Ok(StreamingSession {
-                audio_tx,
-                event_rx,
-            })
+            Ok(StreamingSession { audio_tx, event_rx })
         })
     }
 
@@ -216,9 +211,8 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
         Box::pin(async move {
             // 尝试建立 WebSocket 连接来验证凭证
             let request = build_ws_request(&self.ws_url, self.api_key.expose_secret())?;
-            match tokio_tungstenite::connect_async_tls_with_config(
-                request, None, false, None,
-            ).await {
+            match tokio_tungstenite::connect_async_tls_with_config(request, None, false, None).await
+            {
                 Ok((ws_stream, _)) => {
                     // 连接成功，立即关闭
                     let (mut sink, _) = ws_stream.split();
@@ -230,10 +224,7 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
                     match code {
                         401 => Err(STTError::AuthFailed),
                         429 => Err(STTError::RateLimited),
-                        _ => Err(STTError::ServerError(
-                            code,
-                            format!("HTTP {code}"),
-                        )),
+                        _ => Err(STTError::ServerError(code, format!("HTTP {code}"))),
                     }
                 }
                 Err(e) => Err(STTError::NetworkError(e.to_string())),
@@ -272,8 +263,7 @@ fn extract_host(url: &str) -> String {
 /// 等待 TranscriptionStarted 确认。
 async fn wait_for_started<S>(ws_source: &mut S) -> Result<(), STTError>
 where
-    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     // 等待最多 10 秒
     let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -288,9 +278,7 @@ where
                                 let message = json["header"]["status_text"]
                                     .as_str()
                                     .unwrap_or("Task failed");
-                                let status = json["header"]["status"]
-                                    .as_u64()
-                                    .unwrap_or(0);
+                                let status = json["header"]["status"].as_u64().unwrap_or(0);
                                 if status == 40_100_000 {
                                     return Err(STTError::AuthFailed);
                                 }
@@ -376,22 +364,19 @@ fn parse_ws_message(text: &str) -> ParsedMessage {
 /// 在音频流结束后，继续读取 WebSocket 事件直到连接关闭。
 async fn drain_ws_events<S>(ws_source: &mut S, event_tx: &mpsc::Sender<StreamingSTTEvent>)
 where
-    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     // 最多等 30 秒
     let timed_out = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(msg) = ws_source.next().await {
             match msg {
-                Ok(Message::Text(text)) => {
-                    match parse_ws_message(&text) {
-                        ParsedMessage::SttEvent(event) => {
-                            let _ = event_tx.send(event).await;
-                        }
-                        ParsedMessage::Completed => break,
-                        ParsedMessage::Ignored => {}
+                Ok(Message::Text(text)) => match parse_ws_message(&text) {
+                    ParsedMessage::SttEvent(event) => {
+                        let _ = event_tx.send(event).await;
                     }
-                }
+                    ParsedMessage::Completed => break,
+                    ParsedMessage::Ignored => {}
+                },
                 Ok(Message::Close(_)) | Err(_) => break,
                 _ => {}
             }
@@ -429,10 +414,7 @@ mod tests {
             extract_host("wss://dashscope.aliyuncs.com/api-ws/v1/inference/"),
             "dashscope.aliyuncs.com"
         );
-        assert_eq!(
-            extract_host("ws://localhost:8080/ws"),
-            "localhost:8080"
-        );
+        assert_eq!(extract_host("ws://localhost:8080/ws"), "localhost:8080");
     }
 
     #[test]
@@ -471,7 +453,10 @@ mod tests {
     fn test_parse_ws_message_failed() {
         let json = r#"{"header":{"name":"TaskFailed","status_text":"Auth error"}}"#;
         let result = parse_ws_message(json);
-        assert!(matches!(result, ParsedMessage::SttEvent(StreamingSTTEvent::Error(_))));
+        assert!(matches!(
+            result,
+            ParsedMessage::SttEvent(StreamingSTTEvent::Error(_))
+        ));
     }
 
     #[test]
@@ -482,8 +467,7 @@ mod tests {
 
     #[test]
     fn test_new_provider_with_defaults() {
-        let provider =
-            DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
+        let provider = DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
         assert_eq!(provider.name(), "dashscope-streaming");
         assert_eq!(provider.ws_url, DEFAULT_WS_URL);
         assert_eq!(provider.model, DEFAULT_MODEL);
@@ -503,8 +487,7 @@ mod tests {
 
     #[test]
     fn test_build_start_message_format() {
-        let provider =
-            DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
+        let provider = DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
         let msg = provider.build_start_message("task-123");
         let json: serde_json::Value = serde_json::from_str(&msg).unwrap();
 
@@ -513,13 +496,16 @@ mod tests {
         assert_eq!(json["header"]["namespace"], "SpeechTranscriber");
         assert_eq!(json["payload"]["format"], "pcm");
         assert_eq!(json["payload"]["sample_rate"], 16000);
-        assert!(json["payload"]["enable_intermediate_result"].as_bool().unwrap());
+        assert!(
+            json["payload"]["enable_intermediate_result"]
+                .as_bool()
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_build_stop_message_format() {
-        let provider =
-            DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
+        let provider = DashScopeStreamingProvider::new("test-key".to_string(), None, None).unwrap();
         let msg = provider.build_stop_message("task-123");
         let json: serde_json::Value = serde_json::from_str(&msg).unwrap();
 

@@ -20,12 +20,12 @@ pub fn create_streaming_stt_provider(
     }
 
     match config.provider {
-        STTProviderType::DashScopeStreaming => {
-            Ok(Box::new(dashscope_streaming::DashScopeStreamingProvider::new(
+        STTProviderType::DashScopeStreaming => Ok(Box::new(
+            dashscope_streaming::DashScopeStreamingProvider::new(
                 api_key,
                 config.base_url.clone(),
                 config.model.clone(),
-            )?))
-        }
+            )?,
+        )),
     }
 }

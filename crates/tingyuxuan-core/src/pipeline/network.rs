@@ -42,10 +42,7 @@ impl NetworkMonitor {
         let timeout = self.timeout;
 
         tokio::spawn(async move {
-            let client = match reqwest::Client::builder()
-                .timeout(timeout)
-                .build()
-            {
+            let client = match reqwest::Client::builder().timeout(timeout).build() {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("Network monitor: failed to build HTTP client: {e}");

@@ -4,8 +4,8 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::HistoryManager;
-use tingyuxuan_core::pipeline::Pipeline;
 use tingyuxuan_core::pipeline::ManagedSession;
+use tingyuxuan_core::pipeline::Pipeline;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 use crate::platform::{PlatformDetector, PlatformInjector};
@@ -41,6 +41,8 @@ pub struct InjectorState(pub Arc<PlatformInjector>);
 pub struct DetectorState(pub PlatformDetector);
 
 /// Holds the network monitor cancellation token to keep it alive for the app's lifetime.
+/// The field is never read directly — the struct exists solely to keep the token alive.
+#[allow(dead_code)]
 pub struct MonitorState(pub tokio_util::sync::CancellationToken);
 
 /// Tracks the in-progress recording/processing session.

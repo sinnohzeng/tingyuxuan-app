@@ -10,7 +10,8 @@ use tingyuxuan_core::context::InputContext;
 /// std::process::Child has no wait_timeout; polling with sleep(10ms) is the
 /// portable fallback until std stabilizes `Child::wait_timeout`.
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
-    let mut child = cmd.stdout(std::process::Stdio::piped())
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
@@ -269,18 +270,14 @@ impl LinuxContextDetector {
     /// 获取活动窗口标题（_NET_WM_NAME）
     fn get_window_title(&self) -> Option<String> {
         match self.display {
-            DisplayServer::X11 => {
-                run_with_timeout(
-                    Command::new("xdotool").args(["getactivewindow", "getwindowname"]),
-                    Self::CTX_TIMEOUT,
-                )
-            }
-            DisplayServer::Wayland => {
-                run_with_timeout(
-                    Command::new("wlrctl").args(["toplevel", "find", "focused"]),
-                    Self::CTX_TIMEOUT,
-                )
-            }
+            DisplayServer::X11 => run_with_timeout(
+                Command::new("xdotool").args(["getactivewindow", "getwindowname"]),
+                Self::CTX_TIMEOUT,
+            ),
+            DisplayServer::Wayland => run_with_timeout(
+                Command::new("wlrctl").args(["toplevel", "find", "focused"]),
+                Self::CTX_TIMEOUT,
+            ),
             DisplayServer::Unknown => None,
         }
     }
@@ -288,13 +285,11 @@ impl LinuxContextDetector {
     /// 获取应用名称（WM_CLASS）
     fn get_app_name(&self) -> Option<String> {
         match self.display {
-            DisplayServer::X11 => {
-                run_with_timeout(
-                    Command::new("xdotool").args(["getactivewindow", "getwindowclassname"]),
-                    Self::CTX_TIMEOUT,
-                )
-                .or_else(|| self.get_window_title())
-            }
+            DisplayServer::X11 => run_with_timeout(
+                Command::new("xdotool").args(["getactivewindow", "getwindowclassname"]),
+                Self::CTX_TIMEOUT,
+            )
+            .or_else(|| self.get_window_title()),
             DisplayServer::Wayland => self.get_window_title(),
             DisplayServer::Unknown => None,
         }
@@ -303,18 +298,14 @@ impl LinuxContextDetector {
     /// 读取 PRIMARY selection（选中文本）
     fn get_selected_text(&self) -> Option<String> {
         match self.display {
-            DisplayServer::X11 => {
-                run_with_timeout(
-                    Command::new("xclip").args(["-selection", "primary", "-o"]),
-                    Self::CTX_TIMEOUT,
-                )
-            }
-            DisplayServer::Wayland => {
-                run_with_timeout(
-                    Command::new("wl-paste").args(["--primary"]),
-                    Self::CTX_TIMEOUT,
-                )
-            }
+            DisplayServer::X11 => run_with_timeout(
+                Command::new("xclip").args(["-selection", "primary", "-o"]),
+                Self::CTX_TIMEOUT,
+            ),
+            DisplayServer::Wayland => run_with_timeout(
+                Command::new("wl-paste").args(["--primary"]),
+                Self::CTX_TIMEOUT,
+            ),
             DisplayServer::Unknown => None,
         }
     }
@@ -334,20 +325,19 @@ impl ContextDetector for LinuxContextDetector {
         let _span = tracing::info_span!("collect_context", platform = "linux").entered();
 
         // 各项采集独立并行执行（每项最多 200ms），总耗时从最坏 800ms 降至 ~200ms
-        let (clipboard_text, selected_text, app_name, window_title) =
-            std::thread::scope(|s| {
-                let h_clip = s.spawn(|| self.get_clipboard_text());
-                let h_sel = s.spawn(|| self.get_selected_text());
-                let h_app = s.spawn(|| self.get_app_name());
-                let h_title = s.spawn(|| self.get_window_title());
+        let (clipboard_text, selected_text, app_name, window_title) = std::thread::scope(|s| {
+            let h_clip = s.spawn(|| self.get_clipboard_text());
+            let h_sel = s.spawn(|| self.get_selected_text());
+            let h_app = s.spawn(|| self.get_app_name());
+            let h_title = s.spawn(|| self.get_window_title());
 
-                (
-                    h_clip.join().ok().flatten(),
-                    h_sel.join().ok().flatten(),
-                    h_app.join().ok().flatten(),
-                    h_title.join().ok().flatten(),
-                )
-            });
+            (
+                h_clip.join().ok().flatten(),
+                h_sel.join().ok().flatten(),
+                h_app.join().ok().flatten(),
+                h_title.join().ok().flatten(),
+            )
+        });
 
         InputContext {
             app_name,

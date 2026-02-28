@@ -6,14 +6,14 @@ use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::error::StructuredError;
 use tingyuxuan_core::history::TranscriptRecord;
 use tingyuxuan_core::llm::openai_compat::OpenAICompatProvider;
-use tingyuxuan_core::llm::provider::ProcessingMode;
+use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::{Pipeline, SessionConfig, SessionOrchestrator, SessionResult};
 use tingyuxuan_core::stt;
 
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
-    ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState, NetworkState,
+    ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState,
     PipelineState, RecorderState, SessionState,
 };
 
@@ -130,11 +130,8 @@ pub fn build_pipeline(
         .base_url
         .clone()
         .unwrap_or_else(|| config.llm_base_url());
-    let llm_provider = Box::new(OpenAICompatProvider::new(
-        llm_key,
-        llm_base_url,
-        config.llm.model.clone(),
-    ).ok()?);
+    let llm_provider =
+        Box::new(OpenAICompatProvider::new(llm_key, llm_base_url, config.llm.model.clone()).ok()?);
 
     Some(Arc::new(Pipeline::new(
         stt_provider,
@@ -311,7 +308,9 @@ pub async fn stop_recording(
     let duration_ms = session.started_at.elapsed().as_millis() as u64;
 
     // Emit recording stopped event.
-    let _ = event_bus.0.send(PipelineEvent::RecordingStopped { duration_ms });
+    let _ = event_bus
+        .0
+        .send(PipelineEvent::RecordingStopped { duration_ms });
 
     // Get pipeline reference.
     let pipeline = pipeline_state

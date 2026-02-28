@@ -71,18 +71,14 @@ impl Pipeline {
     ) -> Result<StreamingSession, PipelineError> {
         self.emit(PipelineEvent::TranscriptionStarted);
 
-        let session = self
-            .stt
-            .start_stream(options)
-            .await
-            .map_err(|e| {
-                self.emit(PipelineEvent::Error {
-                    message: e.to_string(),
-                    user_action: e.user_action(),
-                    raw_text: None,
-                });
-                PipelineError::Stt(e)
-            })?;
+        let session = self.stt.start_stream(options).await.map_err(|e| {
+            self.emit(PipelineEvent::Error {
+                message: e.to_string(),
+                user_action: e.user_action(),
+                raw_text: None,
+            });
+            PipelineError::Stt(e)
+        })?;
 
         Ok(session)
     }
@@ -157,7 +153,7 @@ mod tests {
     use crate::context::InputContext;
     use crate::error::{LLMError, STTError};
     use crate::llm::provider::LLMResult;
-    use crate::stt::streaming::{AudioChunk, StreamingSTTEvent, STREAMING_CHANNEL_CAPACITY};
+    use crate::stt::streaming::{AudioChunk, STREAMING_CHANNEL_CAPACITY, StreamingSTTEvent};
     use std::future::Future;
     use std::pin::Pin;
     use tokio::sync::mpsc;
@@ -201,10 +197,7 @@ mod tests {
                         .await;
                 });
 
-                Ok(StreamingSession {
-                    audio_tx,
-                    event_rx,
-                })
+                Ok(StreamingSession { audio_tx, event_rx })
             })
         }
         fn test_connection(
@@ -374,10 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_llm_failure_includes_raw_text() {
-        let (pipeline, mut rx) = make_pipeline(
-            Box::new(MockStreamingSTT),
-            Box::new(FailingLLM),
-        );
+        let (pipeline, mut rx) = make_pipeline(Box::new(MockStreamingSTT), Box::new(FailingLLM));
 
         let request = ProcessingRequest {
             mode: ProcessingMode::Dictate,

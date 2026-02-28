@@ -221,7 +221,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into()).unwrap();
+        let provider =
+            OpenAICompatProvider::new("key".into(), server.uri(), "gpt-4o-mini".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(result.is_ok());
         let r = result.unwrap();
@@ -238,7 +239,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = OpenAICompatProvider::new("bad-key".into(), server.uri(), "m".into()).unwrap();
+        let provider =
+            OpenAICompatProvider::new("bad-key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.process(&sample_input()).await;
         assert!(matches!(result, Err(LLMError::AuthFailed)));
     }

@@ -91,7 +91,10 @@ impl AudioRecorder {
     /// Dropping the returned `Receiver` or calling [`stop`] ends the stream.
     pub fn start(&mut self) -> Result<mpsc::Receiver<AudioChunk>, AudioError> {
         {
-            let inner = self.inner.lock().expect("RecorderInner: lock poisoned in start() check");
+            let inner = self
+                .inner
+                .lock()
+                .expect("RecorderInner: lock poisoned in start() check");
             if inner.is_recording {
                 return Err(AudioError::AlreadyRecording);
             }
@@ -100,7 +103,10 @@ impl AudioRecorder {
         let (tx, rx) = mpsc::channel(STREAMING_CHANNEL_CAPACITY);
 
         {
-            let mut inner = self.inner.lock().expect("RecorderInner: lock poisoned in start() setup");
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("RecorderInner: lock poisoned in start() setup");
             inner.is_recording = true;
             inner.audio_tx = Some(tx);
             inner.sample_count = 0;
@@ -126,7 +132,10 @@ impl AudioRecorder {
         self.stream.take();
 
         {
-            let mut inner = self.inner.lock().expect("RecorderInner: lock poisoned in stop()");
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("RecorderInner: lock poisoned in stop()");
             if !inner.is_recording {
                 return Err(AudioError::NotRecording);
             }
@@ -153,13 +162,19 @@ impl AudioRecorder {
     /// Each value is in the range `[0.0, 1.0]` where 0 is silence and 1.0 is
     /// full scale.
     pub fn get_volume_levels(&self) -> Vec<f32> {
-        let inner = self.inner.lock().expect("RecorderInner: lock poisoned in get_volume_levels()");
+        let inner = self
+            .inner
+            .lock()
+            .expect("RecorderInner: lock poisoned in get_volume_levels()");
         inner.rms_levels.iter().copied().collect()
     }
 
     /// Returns `true` if the recorder is currently recording.
     pub fn is_recording(&self) -> bool {
-        let inner = self.inner.lock().expect("RecorderInner: lock poisoned in is_recording()");
+        let inner = self
+            .inner
+            .lock()
+            .expect("RecorderInner: lock poisoned in is_recording()");
         inner.is_recording
     }
 
@@ -264,13 +279,13 @@ impl AudioRecorder {
 
         // Fall back to the config closest to 16 kHz (prefer integer multiples like 48k/32k).
         configs.sort_by_key(|c| {
-            let rate = c.max_sample_rate().0 as i64;
+            let rate = c.max_sample_rate() as i64;
             (rate - target_rate as i64).unsigned_abs()
         });
         let best = configs.first().unwrap();
         // Use the max sample rate but cap at 48 kHz (beyond that wastes CPU resampling).
-        let rate = best.max_sample_rate().0.min(48_000);
-        let clamped = rate.clamp(best.min_sample_rate().0, best.max_sample_rate().0);
+        let rate = best.max_sample_rate().min(48_000);
+        let clamped = rate.clamp(best.min_sample_rate(), best.max_sample_rate());
         Ok((*best).with_sample_rate(clamped))
     }
 
@@ -378,8 +393,7 @@ impl AudioRecorder {
             Cow::Owned(
                 (0..out_len)
                     .map(|i| {
-                        let src_idx =
-                            ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
+                        let src_idx = ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
                         samples[src_idx]
                     })
                     .collect(),

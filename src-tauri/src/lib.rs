@@ -41,45 +41,45 @@ pub fn run() {
             let network_flag = states.network.0.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                let event = match event_rx.recv().await {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("Event bridge lagged, skipped {n} event(s)");
-                        continue;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::info!("Event bus closed, stopping event bridge");
-                        break;
-                    }
-                };
-                {
-                    // Window visibility management.
-                    if let Some(window) = handle.get_webview_window("floating-bar") {
-                        match &event {
-                            PipelineEvent::RecordingStarted { .. } => {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                            PipelineEvent::Error { .. } => {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                            PipelineEvent::ProcessingComplete { .. } => {
-                                // Auto-hide after a short delay (frontend handles the
-                                // 1.5s "done" display then calls window.hide()).
-                            }
-                            _ => {}
+                    let event = match event_rx.recv().await {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Event bridge lagged, skipped {n} event(s)");
+                            continue;
                         }
-                    }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::info!("Event bus closed, stopping event bridge");
+                            break;
+                        }
+                    };
+                    {
+                        // Window visibility management.
+                        if let Some(window) = handle.get_webview_window("floating-bar") {
+                            match &event {
+                                PipelineEvent::RecordingStarted { .. } => {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                                PipelineEvent::Error { .. } => {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                                PipelineEvent::ProcessingComplete { .. } => {
+                                    // Auto-hide after a short delay (frontend handles the
+                                    // 1.5s "done" display then calls window.hide()).
+                                }
+                                _ => {}
+                            }
+                        }
 
-                    // Track network status.
-                    if let PipelineEvent::NetworkStatusChanged { online } = &event {
-                        network_flag.store(*online, std::sync::atomic::Ordering::Release);
-                    }
+                        // Track network status.
+                        if let PipelineEvent::NetworkStatusChanged { online } = &event {
+                            network_flag.store(*online, std::sync::atomic::Ordering::Release);
+                        }
 
-                    // Forward all events to the frontend.
-                    let _ = handle.emit("pipeline-event", &event);
-                }
+                        // Forward all events to the frontend.
+                        let _ = handle.emit("pipeline-event", &event);
+                    }
                 }
             });
 
