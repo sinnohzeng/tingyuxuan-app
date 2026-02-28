@@ -14,20 +14,8 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let ai_label = format!("AI 助手    {}", labels.ai_assistant);
 
     let dictate_item = MenuItem::with_id(app, "dictate", &dictate_label, true, None::<&str>)?;
-    let translate_item = MenuItem::with_id(
-        app,
-        "translate",
-        &translate_label,
-        true,
-        None::<&str>,
-    )?;
-    let ai_item = MenuItem::with_id(
-        app,
-        "ai_assistant",
-        &ai_label,
-        true,
-        None::<&str>,
-    )?;
+    let translate_item = MenuItem::with_id(app, "translate", &translate_label, true, None::<&str>)?;
+    let ai_item = MenuItem::with_id(app, "ai_assistant", &ai_label, true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let settings_item = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)?;
     let history_item = MenuItem::with_id(app, "history", "历史记录...", true, None::<&str>)?;

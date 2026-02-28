@@ -83,7 +83,9 @@ mod ax {
     impl Drop for OwnedCFRef {
         fn drop(&mut self) {
             if !self.0.is_null() {
-                unsafe { CFRelease(self.0 as CFTypeRef); }
+                unsafe {
+                    CFRelease(self.0 as CFTypeRef);
+                }
             }
         }
     }
@@ -93,8 +95,8 @@ mod ax {
     /// 使用 core_foundation::string::CFString 进行属性名构造和结果提取，
     /// 避免手动 UTF-8/UTF-16 转换。
     pub fn ax_get_string_attr(element: AXUIElementRef, attr_name: &str) -> Option<String> {
-        use core_foundation::string::CFString;
         use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
 
         if element.is_null() {
             return None;
@@ -125,17 +127,20 @@ mod ax {
         }
 
         // 安全地转换为 CFString（不增加引用计数，OwnedCFRef 负责释放）
-        let cf_str: CFString = unsafe {
-            TCFType::wrap_under_get_rule(value as core_foundation::string::CFStringRef)
-        };
+        let cf_str: CFString =
+            unsafe { TCFType::wrap_under_get_rule(value as core_foundation::string::CFStringRef) };
         let result = cf_str.to_string();
-        if result.is_empty() { None } else { Some(result) }
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// 从 AXUIElement 读取子元素引用属性（返回 AXUIElementRef）。
     pub fn ax_get_element_attr(element: AXUIElementRef, attr_name: &str) -> Option<OwnedCFRef> {
-        use core_foundation::string::CFString;
         use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
 
         if element.is_null() {
             return None;
@@ -167,13 +172,16 @@ mod ax {
 fn clipboard_read() -> Result<Option<String>, PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        let mut clipboard = arboard::Clipboard::new()
-            .map_err(|e| PlatformError::ClipboardError(format!("Failed to access clipboard: {e}")))?;
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
+            PlatformError::ClipboardError(format!("Failed to access clipboard: {e}"))
+        })?;
         match clipboard.get_text() {
             Ok(text) if !text.is_empty() => Ok(Some(text)),
             Ok(_) => Ok(None),
             Err(arboard::Error::ContentNotAvailable) => Ok(None),
-            Err(e) => Err(PlatformError::ClipboardError(format!("Clipboard read failed: {e}"))),
+            Err(e) => Err(PlatformError::ClipboardError(format!(
+                "Clipboard read failed: {e}"
+            ))),
         }
     }
 
@@ -186,9 +194,11 @@ fn clipboard_read() -> Result<Option<String>, PlatformError> {
 fn clipboard_write(text: &str) -> Result<(), PlatformError> {
     #[cfg(target_os = "macos")]
     {
-        let mut clipboard = arboard::Clipboard::new()
-            .map_err(|e| PlatformError::ClipboardError(format!("Failed to access clipboard: {e}")))?;
-        clipboard.set_text(text)
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
+            PlatformError::ClipboardError(format!("Failed to access clipboard: {e}"))
+        })?;
+        clipboard
+            .set_text(text)
             .map_err(|e| PlatformError::ClipboardError(format!("Clipboard write failed: {e}")))
     }
 
@@ -215,8 +225,9 @@ fn type_text_directly(text: &str) -> Result<(), PlatformError> {
     let utf16: Vec<u16> = text.encode_utf16().collect();
 
     for chunk in utf16.chunks(MAX_UNICODE_PER_EVENT) {
-        let key_down = CGEvent::new_keyboard_event(source.clone(), 0, true)
-            .map_err(|_| PlatformError::InjectionFailed("Failed to create key down event".into()))?;
+        let key_down = CGEvent::new_keyboard_event(source.clone(), 0, true).map_err(|_| {
+            PlatformError::InjectionFailed("Failed to create key down event".into())
+        })?;
         key_down.set_string_from_utf16_unchecked(chunk);
         key_down.post(CGEventTapLocation::HID);
 
@@ -317,7 +328,10 @@ pub struct MacOSContextDetector;
 
 impl MacOSContextDetector {
     pub fn new() -> Self {
-        tracing::info!(platform = "macos", "ContextDetector initialized (AXUIElement)");
+        tracing::info!(
+            platform = "macos",
+            "ContextDetector initialized (AXUIElement)"
+        );
         Self
     }
 
@@ -449,12 +463,12 @@ impl ContextDetector for MacOSContextDetector {
             selected_text,
             // 以下字段在 macOS 桌面端暂不采集
             app_package: None,
-            browser_url: None,    // 需浏览器扩展，后续迭代
+            browser_url: None, // 需浏览器扩展，后续迭代
             input_field_type: None,
             input_hint: None,
             editor_action: None,
             surrounding_text: None,
-            screen_text: None,    // AXUIElement 已就绪，后续迭代可用
+            screen_text: None, // AXUIElement 已就绪，后续迭代可用
         }
     }
 }
@@ -495,7 +509,10 @@ impl FnKeyMonitor {
         use core_graphics::event::{
             CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
         };
-        use std::sync::{Arc, Barrier, Mutex, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            Arc, Barrier, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
         use tauri::Emitter;
 
         // 追踪 Fn 键当前状态，防止重复触发
@@ -523,7 +540,10 @@ impl FnKeyMonitor {
                 if event_type == CGEventType::TapDisabledByTimeout
                     || event_type == CGEventType::TapDisabledByUserInput
                 {
-                    tracing::warn!("CGEventTap disabled by system ({:?}), re-enabling", event_type);
+                    tracing::warn!(
+                        "CGEventTap disabled by system ({:?}), re-enabling",
+                        event_type
+                    );
                     // tap 引用在 callback 外部，此处仅记录日志。
                     // 实际重新启用在 RunLoop source 回调中处理（core-graphics 库会
                     // 在下次事件循环中自动恢复 ListenOnly tap）。
@@ -545,15 +565,20 @@ impl FnKeyMonitor {
 
                 None
             },
-        ).map_err(|_| PlatformError::InjectionFailed(
-            "Failed to create CGEventTap for Fn key. \
-             Ensure Input Monitoring permission is granted.".into(),
-        ))?;
+        )
+        .map_err(|_| {
+            PlatformError::InjectionFailed(
+                "Failed to create CGEventTap for Fn key. \
+             Ensure Input Monitoring permission is granted."
+                    .into(),
+            )
+        })?;
 
-        let run_loop_source = tap.mach_port_create_runloop_source(0)
-            .map_err(|_| PlatformError::InjectionFailed(
+        let run_loop_source = tap.mach_port_create_runloop_source(0).map_err(|_| {
+            PlatformError::InjectionFailed(
                 "Failed to create run loop source for Fn key monitor".into(),
-            ))?;
+            )
+        })?;
 
         // 在独立线程中运行 CFRunLoop
         let thread = std::thread::Builder::new()
@@ -577,9 +602,11 @@ impl FnKeyMonitor {
                 CFRunLoop::run_current();
                 tracing::info!("FnKeyMonitor stopped");
             })
-            .map_err(|e| PlatformError::InjectionFailed(
-                format!("Failed to spawn Fn key monitor thread: {e}"),
-            ))?;
+            .map_err(|e| {
+                PlatformError::InjectionFailed(format!(
+                    "Failed to spawn Fn key monitor thread: {e}"
+                ))
+            })?;
 
         // 等待监听线程 RunLoop 就绪
         barrier.wait();
@@ -612,23 +639,18 @@ impl Drop for FnKeyMonitor {
 /// - Fn 键（听写）: 通过 FnKeyMonitor CGEventTap 实现
 /// - ⌥T（翻译）、⌃Space（AI 助手）、Escape（取消）: 通过 tauri-plugin-global-shortcut
 #[cfg(target_os = "macos")]
-pub fn register_platform_hotkeys(
-    app: &tauri::App,
-) -> Result<Option<FnKeyMonitor>, PlatformError> {
+pub fn register_platform_hotkeys(app: &tauri::App) -> Result<Option<FnKeyMonitor>, PlatformError> {
+    use tauri::Emitter;
     use tauri_plugin_global_shortcut::{
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };
-    use tauri::Emitter;
 
     // 1. 启动 Fn 键监听器
     let fn_monitor = FnKeyMonitor::start(app.handle().clone())?;
 
     // 2. 注册其余快捷键（使用 global-shortcut 插件）
     let shortcuts = [
-        (
-            Shortcut::new(Some(Modifiers::ALT), Code::KeyT),
-            "translate",
-        ),
+        (Shortcut::new(Some(Modifiers::ALT), Code::KeyT), "translate"),
         (
             Shortcut::new(Some(Modifiers::CONTROL), Code::Space),
             "ai_assistant",

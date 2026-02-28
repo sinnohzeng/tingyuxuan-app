@@ -107,9 +107,7 @@ fn clipboard_write_wayland(text: &str) -> Result<(), PlatformError> {
         .as_mut()
         .ok_or_else(|| PlatformError::ClipboardError("wl-copy stdin not available".into()))?
         .write_all(text.as_bytes())
-        .map_err(|e| {
-            PlatformError::ClipboardError(format!("Failed to write to wl-copy: {e}"))
-        })?;
+        .map_err(|e| PlatformError::ClipboardError(format!("Failed to write to wl-copy: {e}")))?;
 
     child
         .wait()
