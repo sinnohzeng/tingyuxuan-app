@@ -44,20 +44,33 @@ object NativeCore {
     external fun initPipeline(configJson: String): Long
 
     /**
-     * Process an audio file through the STT → LLM pipeline.
+     * 开始流式 STT 会话。建立 WebSocket 连接，准备接收音频帧。
      *
      * @param handle Pipeline handle from [initPipeline].
-     * @param audioPath Absolute path to the 16kHz mono WAV file.
      * @param mode Processing mode: "dictate", "translate", "edit", "ai_assistant".
-     * @param selectedText Optional selected text for Edit mode (empty string if none).
-     * @return JSON string with structured result.
+     * @param contextJson JSON string of InputContext (empty string if none).
+     * @return JSON string: `{"success": true}` or error JSON.
      */
-    external fun processAudio(
-        handle: Long,
-        audioPath: String,
-        mode: String,
-        selectedText: String,
-    ): String
+    external fun startStreaming(handle: Long, mode: String, contextJson: String): String
+
+    /**
+     * 发送一帧 PCM 音频到流式 STT。
+     *
+     * @param handle Pipeline handle.
+     * @param pcmData 16kHz mono PCM16 音频数据。
+     * @return true 表示发送成功，false 表示会话不存在或已关闭。
+     */
+    external fun sendAudioChunk(handle: Long, pcmData: ShortArray): Boolean
+
+    /**
+     * 停止流式录音，收集 STT 结果并执行 LLM 处理。
+     *
+     * 阻塞调用 — 等待 STT 最终结果和 LLM 处理完成。
+     *
+     * @param handle Pipeline handle.
+     * @return JSON string: `{"success": true, "text": "..."}` or error JSON.
+     */
+    external fun stopStreaming(handle: Long): String
 
     /**
      * Destroy a pipeline and free its resources.
@@ -84,7 +97,7 @@ object NativeCore {
     external fun testConnection(configJson: String, service: String): String
 
     /**
-     * Cancel an in-progress audio processing task.
+     * Cancel an in-progress streaming session.
      *
      * @param handle Pipeline handle.
      */
@@ -93,7 +106,7 @@ object NativeCore {
     /**
      * Get the core library version string.
      *
-     * @return Version string (e.g. "0.4.0").
+     * @return Version string (e.g. "0.5.0").
      */
     external fun getVersion(): String
 }

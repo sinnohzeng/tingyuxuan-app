@@ -1,11 +1,34 @@
+use crate::context::{InputContext, InputFieldType};
 use crate::error::LLMError;
 use crate::llm::provider::{LLMInput, ProcessingMode};
+
+/// UTF-8 安全截断：在 `max_bytes` 以内找到最近的 char boundary。
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 
 const MAX_TRANSCRIPT_LEN: usize = 50_000;
 const MAX_SELECTED_TEXT_LEN: usize = 100_000;
 
+/// 语气枚举，替代旧的字符串匹配
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Casual,     // 聊天、即时通讯
+    Formal,     // 邮件、文档
+    Technical,  // 代码、开发工具
+    Structured, // 笔记类应用：Obsidian、Notion 等
+    Neutral,    // 默认：未知应用，纯文本输出
+}
+
 /// Validate that LLM input sizes are within acceptable bounds.
-pub fn validate_input(input: &super::provider::LLMInput) -> Result<(), LLMError> {
+pub fn validate_input(input: &LLMInput) -> Result<(), LLMError> {
     if input.raw_transcript.len() > MAX_TRANSCRIPT_LEN {
         return Err(LLMError::InputTooLarge(format!(
             "Transcript too large: {} bytes (max {})",
@@ -13,14 +36,14 @@ pub fn validate_input(input: &super::provider::LLMInput) -> Result<(), LLMError>
             MAX_TRANSCRIPT_LEN
         )));
     }
-    if let Some(ref text) = input.selected_text {
-        if text.len() > MAX_SELECTED_TEXT_LEN {
-            return Err(LLMError::InputTooLarge(format!(
-                "Selected text too large: {} bytes (max {})",
-                text.len(),
-                MAX_SELECTED_TEXT_LEN
-            )));
-        }
+    if let Some(ref text) = input.context.selected_text
+        && text.len() > MAX_SELECTED_TEXT_LEN
+    {
+        return Err(LLMError::InputTooLarge(format!(
+            "Selected text too large: {} bytes (max {})",
+            text.len(),
+            MAX_SELECTED_TEXT_LEN
+        )));
     }
     Ok(())
 }
@@ -36,13 +59,13 @@ pub fn build_prompt(mode: &ProcessingMode, input: &LLMInput) -> (String, String)
 }
 
 // ---------------------------------------------------------------------------
-// Dictate mode  (main MVP prompt from PRD)
+// Dictate mode
 // ---------------------------------------------------------------------------
 
 fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
     let dictionary_hint = format_dictionary_hint(&input.user_dictionary);
-    let context_hint = format_context_hint(input.current_app.as_deref());
-    let tone_hint = format_tone_hint(input.current_app.as_deref());
+    let context_block = format_rich_context(&input.context);
+    let tone_hint = format_tone_hint(&input.context);
 
     let system = format!(
         "你是一个智能语音输入助手。请将以下语音转写的原始文本整理为清晰、规范的书面文字。\n\n\
@@ -55,7 +78,7 @@ fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
          6. 如果用户说了「第一」「第二」或「首先」「其次」等顺序词，自动生成有序列表\n\
          7. 如果用户使用并列结构（如「有以下几点」），自动生成无序列表\n\
          {dictionary_hint}\n\
-         {context_hint}\n\
+         {context_block}\n\
          {tone_hint}"
     );
 
@@ -64,7 +87,7 @@ fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
 }
 
 // ---------------------------------------------------------------------------
-// Translate mode  (template only, not used in MVP pipeline)
+// Translate mode
 // ---------------------------------------------------------------------------
 
 fn build_translate_prompt(input: &LLMInput) -> (String, String) {
@@ -83,11 +106,11 @@ fn build_translate_prompt(input: &LLMInput) -> (String, String) {
 }
 
 // ---------------------------------------------------------------------------
-// AI Assistant mode  (template only)
+// AI Assistant mode
 // ---------------------------------------------------------------------------
 
 fn build_ai_assistant_prompt(input: &LLMInput) -> (String, String) {
-    let context_hint = format_context_hint(input.current_app.as_deref());
+    let context_block = format_rich_context(&input.context);
 
     let system = format!(
         "你是一个智能助手。用户通过语音输入了一个请求，请理解其意图并给出简洁、实用的回复。\n\n\
@@ -95,7 +118,7 @@ fn build_ai_assistant_prompt(input: &LLMInput) -> (String, String) {
          1. 先理解用户的核心意图（语音转写可能包含填充词和重复）\n\
          2. 给出直接、可操作的回答\n\
          3. 回复应简洁，适合直接插入到用户正在编辑的文档中\n\
-         {context_hint}"
+         {context_block}"
     );
 
     let user = input.raw_transcript.clone();
@@ -103,11 +126,11 @@ fn build_ai_assistant_prompt(input: &LLMInput) -> (String, String) {
 }
 
 // ---------------------------------------------------------------------------
-// Edit mode  (template only)
+// Edit mode
 // ---------------------------------------------------------------------------
 
 fn build_edit_prompt(input: &LLMInput) -> (String, String) {
-    let selected = input.selected_text.as_deref().unwrap_or("");
+    let selected = input.context.selected_text.as_deref().unwrap_or("");
 
     let system = "你是一个文本编辑助手。用户选中了一段文本，并通过语音给出了修改指令。\n\n\
          规则：\n\
@@ -122,6 +145,159 @@ fn build_edit_prompt(input: &LLMInput) -> (String, String) {
     );
 
     (system, user)
+}
+
+// ---------------------------------------------------------------------------
+// 上下文格式化
+// ---------------------------------------------------------------------------
+
+/// 将所有非空字段组装为结构化上下文块，完全透传原值
+pub fn format_rich_context(ctx: &InputContext) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(ref name) = ctx.app_name
+        && !name.is_empty()
+    {
+        parts.push(format!("当前应用：{name}"));
+    }
+    if let Some(ref title) = ctx.window_title
+        && !title.is_empty()
+    {
+        parts.push(format!("窗口标题：{title}"));
+    }
+    if let Some(ref url) = ctx.browser_url
+        && !url.is_empty()
+    {
+        parts.push(format!("浏览器URL：{url}"));
+    }
+    if let Some(ref ft) = ctx.input_field_type {
+        parts.push(format!("输入框类型：{ft}"));
+    }
+    if let Some(ref hint) = ctx.input_hint
+        && !hint.is_empty()
+    {
+        parts.push(format!("输入提示：{hint}"));
+    }
+    if let Some(ref surrounding) = ctx.surrounding_text
+        && !surrounding.is_empty()
+    {
+        // 截取上下文，避免 prompt 过长
+        let truncated = if surrounding.len() > 500 {
+            format!("{}...", truncate_utf8(surrounding, 500))
+        } else {
+            surrounding.clone()
+        };
+        parts.push(format!("周围文本：{truncated}"));
+    }
+    if let Some(ref clip) = ctx.clipboard_text
+        && !clip.is_empty()
+    {
+        let truncated = if clip.len() > 200 {
+            format!("{}...", truncate_utf8(clip, 200))
+        } else {
+            clip.clone()
+        };
+        parts.push(format!("剪贴板：{truncated}"));
+    }
+    if let Some(ref screen) = ctx.screen_text
+        && !screen.is_empty()
+    {
+        let truncated = if screen.len() > 500 {
+            format!("{}...", truncate_utf8(screen, 500))
+        } else {
+            screen.clone()
+        };
+        parts.push(format!("屏幕文本：{truncated}"));
+    }
+
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    format!("上下文信息：\n{}", parts.join("\n"))
+}
+
+/// 综合判断语气
+pub fn detect_tone(ctx: &InputContext) -> Tone {
+    // 优先使用 input_field_type（Android 提供精确信息）
+    if let Some(ref ft) = ctx.input_field_type {
+        match ft {
+            InputFieldType::Email => return Tone::Formal,
+            InputFieldType::Chat => return Tone::Casual,
+            InputFieldType::Code => return Tone::Technical,
+            _ => {}
+        }
+    }
+
+    // 回退到应用名称和 URL 推断
+    let sources: Vec<&str> = [
+        ctx.app_name.as_deref(),
+        ctx.window_title.as_deref(),
+        ctx.browser_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for source in &sources {
+        let lower = source.to_lowercase();
+        if contains_any(
+            &lower,
+            &[
+                "slack", "discord", "telegram", "wechat", "微信", "dingtalk", "钉钉", "teams",
+            ],
+        ) {
+            return Tone::Casual;
+        }
+        if contains_any(&lower, &["mail", "outlook", "thunderbird", "邮", "foxmail"]) {
+            return Tone::Formal;
+        }
+        if contains_any(
+            &lower,
+            &[
+                "code",
+                "intellij",
+                "vim",
+                "neovim",
+                "terminal",
+                "iterm",
+                "wezterm",
+                "alacritty",
+                "emacs",
+                "github.com",
+                "gitlab.com",
+                "stackoverflow.com",
+            ],
+        ) {
+            return Tone::Technical;
+        }
+        if contains_any(
+            &lower,
+            &["notion", "obsidian", "logseq", "typora", "bear", "joplin"],
+        ) {
+            return Tone::Structured;
+        }
+    }
+
+    Tone::Neutral // 默认：未知应用不注入特定格式提示
+}
+
+/// Build a tone-specific hint for the LLM system prompt.
+fn format_tone_hint(ctx: &InputContext) -> String {
+    match detect_tone(ctx) {
+        Tone::Casual => {
+            "语气提示：用户正在聊天应用中，请保持口语化和轻松的表达风格。".to_string()
+        }
+        Tone::Formal => "语气提示：用户正在写邮件，请使用正式、专业的书面表达。".to_string(),
+        Tone::Technical => {
+            "语气提示：用户正在使用开发工具，请保留技术术语和代码相关词汇的原始写法。"
+                .to_string()
+        }
+        Tone::Structured => {
+            "语气提示：适当使用 Markdown 格式（标题、列表、粗体等）来组织内容。".to_string()
+        }
+        Tone::Neutral => String::new(), // 不注入任何格式提示
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,76 +316,6 @@ pub fn format_dictionary_hint(words: &[String]) -> String {
     )
 }
 
-/// Format a context hint based on the currently active application.
-/// Returns an empty string when no app name is provided.
-pub fn format_context_hint(app_name: Option<&str>) -> String {
-    match app_name {
-        Some(name) if !name.is_empty() => {
-            format!("当前用户正在使用的应用：{name}")
-        }
-        _ => String::new(),
-    }
-}
-
-/// Detect the appropriate tone based on the active application name.
-fn detect_tone(app_name: &str) -> &'static str {
-    let lower = app_name.to_lowercase();
-    if contains_any(
-        &lower,
-        &[
-            "slack", "discord", "telegram", "wechat", "微信", "dingtalk", "钉钉", "teams",
-        ],
-    ) {
-        "casual" // IM/chat → conversational
-    } else if contains_any(&lower, &["mail", "outlook", "thunderbird", "邮", "foxmail"]) {
-        "formal" // Email → formal
-    } else if contains_any(
-        &lower,
-        &[
-            "code",
-            "intellij",
-            "vim",
-            "neovim",
-            "terminal",
-            "iterm",
-            "wezterm",
-            "alacritty",
-            "emacs",
-        ],
-    ) {
-        "technical" // IDE/terminal → preserve technical terms
-    } else if contains_any(
-        &lower,
-        &["notion", "obsidian", "logseq", "typora", "bear", "joplin"],
-    ) {
-        "structured" // Note-taking → structured markdown
-    } else {
-        "neutral"
-    }
-}
-
-/// Build a tone-specific hint for the LLM system prompt.
-fn format_tone_hint(app_name: Option<&str>) -> String {
-    let tone = match app_name {
-        Some(name) if !name.is_empty() => detect_tone(name),
-        _ => return String::new(),
-    };
-
-    match tone {
-        "casual" => "语气提示：用户正在聊天应用中，请保持口语化和轻松的表达风格。".to_string(),
-        "formal" => "语气提示：用户正在写邮件，请使用正式、专业的书面表达。".to_string(),
-        "technical" => {
-            "语气提示：用户正在使用开发工具，请保留技术术语和代码相关词汇的原始写法。"
-                .to_string()
-        }
-        "structured" => {
-            "语气提示：用户正在使用笔记应用，适当使用 Markdown 格式（标题、列表、粗体等）来组织内容。"
-                .to_string()
-        }
-        _ => String::new(),
-    }
-}
-
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
 }
@@ -221,14 +327,12 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn make_input(mode: ProcessingMode, transcript: &str) -> LLMInput {
         LLMInput {
             mode,
             raw_transcript: transcript.to_string(),
             target_language: None,
-            selected_text: None,
-            current_app: None,
+            context: InputContext::default(),
             user_dictionary: Vec::new(),
         }
     }
@@ -249,8 +353,7 @@ mod tests {
             mode: ProcessingMode::Dictate,
             raw_transcript: "test".to_string(),
             target_language: None,
-            selected_text: None,
-            current_app: None,
+            context: InputContext::default(),
             user_dictionary: vec!["TingYuXuan".to_string(), "Rust".to_string()],
         };
         let (system, _user) = build_prompt(&input.mode, &input);
@@ -261,19 +364,24 @@ mod tests {
     }
 
     #[test]
-    fn test_dictate_prompt_with_context() {
+    fn test_dictate_prompt_with_rich_context() {
         let input = LLMInput {
             mode: ProcessingMode::Dictate,
             raw_transcript: "test".to_string(),
             target_language: None,
-            selected_text: None,
-            current_app: Some("Visual Studio Code".to_string()),
+            context: InputContext {
+                app_name: Some("Visual Studio Code".to_string()),
+                window_title: Some("main.rs - tingyuxuan".to_string()),
+                ..Default::default()
+            },
             user_dictionary: Vec::new(),
         };
         let (system, _user) = build_prompt(&input.mode, &input);
 
         assert!(system.contains("Visual Studio Code"));
-        assert!(system.contains("当前用户正在使用的应用"));
+        assert!(system.contains("main.rs - tingyuxuan"));
+        assert!(system.contains("当前应用"));
+        assert!(system.contains("窗口标题"));
     }
 
     #[test]
@@ -282,8 +390,7 @@ mod tests {
             mode: ProcessingMode::Translate,
             raw_transcript: "你好世界".to_string(),
             target_language: Some("en".to_string()),
-            selected_text: None,
-            current_app: None,
+            context: InputContext::default(),
             user_dictionary: Vec::new(),
         };
         let (system, user) = build_prompt(&input.mode, &input);
@@ -297,7 +404,6 @@ mod tests {
     fn test_translate_prompt_default_language() {
         let input = make_input(ProcessingMode::Translate, "hello");
         let (system, _user) = build_prompt(&input.mode, &input);
-        // Should default to "en"
         assert!(system.contains("en"));
     }
 
@@ -316,8 +422,10 @@ mod tests {
             mode: ProcessingMode::Edit,
             raw_transcript: "把这段改成英文".to_string(),
             target_language: None,
-            selected_text: Some("你好世界".to_string()),
-            current_app: None,
+            context: InputContext {
+                selected_text: Some("你好世界".to_string()),
+                ..Default::default()
+            },
             user_dictionary: Vec::new(),
         };
         let (system, user) = build_prompt(&input.mode, &input);
@@ -351,74 +459,125 @@ mod tests {
     }
 
     #[test]
-    fn test_format_context_hint_none() {
-        assert_eq!(format_context_hint(None), "");
+    fn test_format_rich_context_empty() {
+        let ctx = InputContext::default();
+        assert_eq!(format_rich_context(&ctx), "");
     }
 
     #[test]
-    fn test_format_context_hint_empty() {
-        assert_eq!(format_context_hint(Some("")), "");
+    fn test_format_rich_context_with_app() {
+        let ctx = InputContext {
+            app_name: Some("Firefox".to_string()),
+            ..Default::default()
+        };
+        let result = format_rich_context(&ctx);
+        assert!(result.contains("Firefox"));
+        assert!(result.contains("当前应用"));
     }
 
     #[test]
-    fn test_format_context_hint_with_app() {
-        let hint = format_context_hint(Some("Firefox"));
-        assert!(hint.contains("Firefox"));
+    fn test_format_rich_context_multiple_fields() {
+        let ctx = InputContext {
+            app_name: Some("Chrome".to_string()),
+            window_title: Some("Google".to_string()),
+            browser_url: Some("https://google.com".to_string()),
+            ..Default::default()
+        };
+        let result = format_rich_context(&ctx);
+        assert!(result.contains("Chrome"));
+        assert!(result.contains("Google"));
+        assert!(result.contains("https://google.com"));
     }
 
     // -- Tone detection tests -------------------------------------------------
 
     #[test]
-    fn test_detect_tone_chat() {
-        assert_eq!(detect_tone("Slack - general"), "casual");
-        assert_eq!(detect_tone("Discord"), "casual");
-        assert_eq!(detect_tone("微信"), "casual");
-        assert_eq!(detect_tone("DingTalk"), "casual");
+    fn test_detect_tone_from_input_field_type() {
+        let ctx = InputContext {
+            input_field_type: Some(InputFieldType::Email),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Formal);
+
+        let ctx = InputContext {
+            input_field_type: Some(InputFieldType::Chat),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Casual);
+
+        let ctx = InputContext {
+            input_field_type: Some(InputFieldType::Code),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Technical);
     }
 
     #[test]
-    fn test_detect_tone_email() {
-        assert_eq!(detect_tone("Outlook"), "formal");
-        assert_eq!(detect_tone("Thunderbird Mail"), "formal");
-        assert_eq!(detect_tone("Foxmail"), "formal");
+    fn test_detect_tone_chat_from_app() {
+        let ctx = InputContext {
+            app_name: Some("Slack - general".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Casual);
+
+        let ctx = InputContext {
+            app_name: Some("微信".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Casual);
     }
 
     #[test]
-    fn test_detect_tone_dev() {
-        assert_eq!(detect_tone("Visual Studio Code"), "technical");
-        assert_eq!(detect_tone("IntelliJ IDEA"), "technical");
-        assert_eq!(detect_tone("vim"), "technical");
-        assert_eq!(detect_tone("Alacritty"), "technical");
+    fn test_detect_tone_email_from_app() {
+        let ctx = InputContext {
+            app_name: Some("Outlook".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Formal);
+    }
+
+    #[test]
+    fn test_detect_tone_dev_from_app() {
+        let ctx = InputContext {
+            app_name: Some("Visual Studio Code".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Technical);
+    }
+
+    #[test]
+    fn test_detect_tone_dev_from_url() {
+        let ctx = InputContext {
+            browser_url: Some("https://github.com/tingyuxuan".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Technical);
     }
 
     #[test]
     fn test_detect_tone_notes() {
-        assert_eq!(detect_tone("Notion"), "structured");
-        assert_eq!(detect_tone("Obsidian"), "structured");
-        assert_eq!(detect_tone("Logseq"), "structured");
+        let ctx = InputContext {
+            app_name: Some("Obsidian".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Structured);
     }
 
     #[test]
-    fn test_detect_tone_unknown() {
-        assert_eq!(detect_tone("Firefox"), "neutral");
-        assert_eq!(detect_tone("Random App"), "neutral");
+    fn test_detect_tone_default() {
+        let ctx = InputContext::default();
+        assert_eq!(detect_tone(&ctx), Tone::Neutral);
     }
 
     #[test]
-    fn test_format_tone_hint_none() {
-        assert_eq!(format_tone_hint(None), "");
-    }
-
-    #[test]
-    fn test_format_tone_hint_chat() {
-        let hint = format_tone_hint(Some("Slack - general"));
-        assert!(hint.contains("口语化"));
-    }
-
-    #[test]
-    fn test_format_tone_hint_formal() {
-        let hint = format_tone_hint(Some("Outlook"));
-        assert!(hint.contains("正式"));
+    fn test_detect_tone_input_field_type_overrides_app() {
+        // input_field_type 优先于 app_name
+        let ctx = InputContext {
+            app_name: Some("Slack".to_string()),
+            input_field_type: Some(InputFieldType::Email),
+            ..Default::default()
+        };
+        assert_eq!(detect_tone(&ctx), Tone::Formal);
     }
 
     #[test]
@@ -435,8 +594,10 @@ mod tests {
             mode: ProcessingMode::Dictate,
             raw_transcript: "test".to_string(),
             target_language: None,
-            selected_text: None,
-            current_app: Some("Slack - general".to_string()),
+            context: InputContext {
+                app_name: Some("Slack - general".to_string()),
+                ..Default::default()
+            },
             user_dictionary: Vec::new(),
         };
         let (system, _) = build_prompt(&input.mode, &input);
@@ -460,7 +621,7 @@ mod tests {
     #[test]
     fn test_validate_input_selected_text_too_large() {
         let mut input = make_input(ProcessingMode::Edit, "short transcript");
-        input.selected_text = Some("y".repeat(100_001));
+        input.context.selected_text = Some("y".repeat(100_001));
         let err = validate_input(&input).unwrap_err();
         assert!(matches!(err, LLMError::InputTooLarge(_)));
     }

@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-jni"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "JNI bridge for TingYuXuan Android IME"
 
@@ -21,4 +21,5 @@ log = "0.4"
 tracing-log = "0.2"
 
 [dev-dependencies]
+tingyuxuan-core = { path = "../tingyuxuan-core", default-features = false, features = ["testing"] }
 tokio = { version = "1", features = ["full", "test-util"] }

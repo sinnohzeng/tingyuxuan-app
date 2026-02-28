@@ -13,7 +13,6 @@ const MODE_LABELS: Record<string, string> = {
 const STATUS_LABELS: Record<string, { text: string; color: string }> = {
   success: { text: "成功", color: "text-green-600" },
   failed: { text: "失败", color: "text-red-500" },
-  queued: { text: "排队中", color: "text-yellow-600" },
   recording: { text: "录音中", color: "text-blue-500" },
   processing: { text: "处理中", color: "text-blue-500" },
   cancelled: { text: "已取消", color: "text-gray-400" },
@@ -26,12 +25,24 @@ export default function HistoryPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const recordsRef = useRef(records);
+  recordsRef.current = records;
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   // Load initial page.
   const loadRecords = useCallback(async (reset = true) => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const offset = reset ? 0 : records.length;
+      const offset = reset ? 0 : recordsRef.current.length;
       const page = await invoke<TranscriptRecord[]>("get_history_page", {
         limit: PAGE_SIZE,
         offset,
@@ -46,12 +57,11 @@ export default function HistoryPanel() {
       // Dev mode
     }
     setLoading(false);
-  }, [records.length]);
+  }, []);
 
   useEffect(() => {
     loadRecords(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadRecords]);
 
   // Debounced search.
   const handleSearchChange = useCallback(
@@ -108,7 +118,8 @@ export default function HistoryPanel() {
     try {
       await navigator.clipboard.writeText(text);
       setCopyFeedback("已复制");
-      setTimeout(() => setCopyFeedback(null), 1000);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopyFeedback(null), 1000);
     } catch {
       // Fallback
     }
@@ -197,7 +208,7 @@ export default function HistoryPanel() {
             const displayText =
               record.processed_text || record.raw_text || null;
             const canRetry =
-              record.status === "failed" && !!record.audio_path;
+              record.status === "failed" && !!record.raw_text;
 
             return (
               <div

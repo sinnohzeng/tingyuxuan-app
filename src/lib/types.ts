@@ -26,12 +26,11 @@ export type PipelineEvent =
       raw_text: string | null;
     }
   | { type: "NetworkStatusChanged"; online: boolean }
-  | { type: "QueuedForLater"; session_id: string }
   | { type: "RecordingCancelled" };
 
 /** User action to show on error */
 export type UserAction =
-  | "RetryOrQueue"
+  | "Retry"
   | "InsertRawOrRetry"
   | "CheckApiKey"
   | "WaitAndRetry"
@@ -41,7 +40,7 @@ export type UserAction =
 export type FloatingBarPosition = "bottom_center" | "follow_cursor" | "fixed";
 
 /** STT Provider type */
-export type STTProviderType = "whisper" | "dashscope_asr" | "custom";
+export type STTProviderType = "dashscope_streaming";
 
 /** LLM Provider type */
 export type LLMProviderType = "openai" | "dashscope" | "volcengine" | "custom";
@@ -77,9 +76,7 @@ export interface AppConfig {
     model: string;
   };
   cache: {
-    audio_retention_hours: number;
-    failed_retention_days: number;
-    max_cache_size_mb: number;
+    history_retention_days: number;
   };
   user_dictionary: string[];
 }
@@ -91,9 +88,8 @@ export interface TranscriptRecord {
   mode: string;
   raw_text: string | null;
   processed_text: string | null;
-  audio_path: string | null;
   status: string;
-  app_context: string | null;
+  context_json: string | null;
   duration_ms: number | null;
   language: string | null;
   error_message: string | null;
@@ -102,6 +98,7 @@ export interface TranscriptRecord {
 /** Provider preset for quick setup */
 export interface ProviderPreset {
   name: string;
+  llm_provider: LLMProviderType;
   llm_base_url: string;
   llm_models: string[];
   stt_provider: STTProviderType;

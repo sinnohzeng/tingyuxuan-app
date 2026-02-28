@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import DOMPurify from "dompurify";
 import { renderMarkdown } from "../lib/markdown";
 
@@ -16,6 +16,13 @@ export default function ResultPanel({
   onDismiss,
 }: ResultPanelProps) {
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   // Resize window to show result panel.
   useEffect(() => {
@@ -41,7 +48,8 @@ export default function ResultPanel({
   const handleCopy = useCallback(() => {
     onCopy();
     setCopied(true);
-    setTimeout(() => setCopied(false), 1000);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopied(false), 1000);
   }, [onCopy]);
 
   const renderedHtml = useMemo(() => DOMPurify.sanitize(renderMarkdown(result)), [result]);

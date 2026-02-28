@@ -10,11 +10,12 @@ interface SetupWizardProps {
 
 type Step = 1 | 2 | 3;
 
-const PROVIDERS = [
-  { id: "dashscope", label: "阿里云 DashScope", desc: "通义千问 + Qwen2-Audio" },
-  { id: "volcengine", label: "火山引擎 (豆包)", desc: "豆包大模型 + Whisper" },
-  { id: "openai", label: "OpenAI", desc: "GPT-4o + Whisper" },
-] as const;
+// 从 PROVIDER_PRESETS 动态生成，避免与已删除的 provider 不同步。
+const PROVIDERS = Object.entries(PROVIDER_PRESETS).map(([id, preset]) => ({
+  id,
+  label: preset.name,
+  desc: `${preset.llm_models[0]} + ${preset.stt_model ?? preset.stt_provider}`,
+}));
 
 export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizardProps) {
   const [step, setStep] = useState<Step>(1);
@@ -64,8 +65,8 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
         // For providers that share the same key.
         await invoke("save_api_key", { service: "llm", key: sttApiKey.trim() });
       }
-    } catch {
-      // Dev mode
+    } catch (e) {
+      console.warn("Tauri unavailable:", e);
     }
     setStep(3);
   }, [sttApiKey, llmApiKey, isSameKey]);
@@ -94,7 +95,8 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
       } catch {
         setLlmTestResult("failed");
       }
-    } catch {
+    } catch (e) {
+      console.warn("Tauri unavailable:", e);
       setSttTestResult("failed");
       setLlmTestResult("failed");
     }
@@ -105,8 +107,8 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_config", { config });
-    } catch {
-      // Dev mode
+    } catch (e) {
+      console.warn("Tauri unavailable:", e);
     }
     onComplete();
   }, [config, onComplete]);

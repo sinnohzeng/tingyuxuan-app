@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { AppConfig, STTProviderType, LLMProviderType } from "../../lib/types";
 import { PROVIDER_PRESETS } from "../../lib/providers";
 
@@ -16,6 +16,21 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
   const [llmKeyStatus, setLlmKeyStatus] = useState<string>("");
   const [sttTestResult, setSttTestResult] = useState<string>("");
   const [llmTestResult, setLlmTestResult] = useState<string>("");
+
+  const sttKeyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const llmKeyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sttTestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const llmTestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (sttKeyTimerRef.current) clearTimeout(sttKeyTimerRef.current);
+      if (llmKeyTimerRef.current) clearTimeout(llmKeyTimerRef.current);
+      if (sttTestTimerRef.current) clearTimeout(sttTestTimerRef.current);
+      if (llmTestTimerRef.current) clearTimeout(llmTestTimerRef.current);
+    };
+  }, []);
 
   // Check API key status on mount
   useEffect(() => {
@@ -43,7 +58,8 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
     } catch {
       setSttKeyStatus("保存失败");
     }
-    setTimeout(() => setSttKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
+    if (sttKeyTimerRef.current) clearTimeout(sttKeyTimerRef.current);
+    sttKeyTimerRef.current = setTimeout(() => setSttKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
   }, [sttApiKey]);
 
   const saveLlmKey = useCallback(async () => {
@@ -56,7 +72,8 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
     } catch {
       setLlmKeyStatus("保存失败");
     }
-    setTimeout(() => setLlmKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
+    if (llmKeyTimerRef.current) clearTimeout(llmKeyTimerRef.current);
+    llmKeyTimerRef.current = setTimeout(() => setLlmKeyStatus((s) => s === "保存失败" ? "" : s), 3000);
   }, [llmApiKey]);
 
   const applyPreset = (presetKey: string) => {
@@ -67,7 +84,7 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
       ...c,
       llm: {
         ...c.llm,
-        provider: presetKey === "openai" ? "openai" : presetKey === "dashscope" ? "dashscope" : "volcengine" as LLMProviderType,
+        provider: preset.llm_provider,
         base_url: preset.llm_base_url,
         model: preset.llm_models[0],
       },
@@ -89,7 +106,8 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
     } catch {
       setSttTestResult("测试失败（开发模式）");
     }
-    setTimeout(() => setSttTestResult(""), 3000);
+    if (sttTestTimerRef.current) clearTimeout(sttTestTimerRef.current);
+    sttTestTimerRef.current = setTimeout(() => setSttTestResult(""), 3000);
   };
 
   const testLlmConnection = async () => {
@@ -101,7 +119,8 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
     } catch {
       setLlmTestResult("测试失败（开发模式）");
     }
-    setTimeout(() => setLlmTestResult(""), 3000);
+    if (llmTestTimerRef.current) clearTimeout(llmTestTimerRef.current);
+    llmTestTimerRef.current = setTimeout(() => setLlmTestResult(""), 3000);
   };
 
   return (
@@ -140,9 +159,7 @@ export default function ApiConfig({ config, onUpdate }: ApiConfigProps) {
             }
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
           >
-            <option value="whisper">OpenAI Whisper（兼容格式）</option>
-            <option value="dashscope_asr">阿里云 Qwen-ASR</option>
-            <option value="custom">自定义</option>
+            <option value="dashscope_streaming">阿里云 DashScope（流式）</option>
           </select>
         </div>
 

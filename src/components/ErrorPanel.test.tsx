@@ -5,7 +5,7 @@ import ErrorPanel from "./ErrorPanel";
 describe("ErrorPanel", () => {
   const defaultProps = {
     message: "API 连接失败",
-    action: "RetryOrQueue" as const,
+    action: "Retry" as const,
     rawTranscript: null,
     onRetry: vi.fn(),
     onInsertRaw: vi.fn(),
@@ -28,9 +28,9 @@ describe("ErrorPanel", () => {
     expect(screen.getByText("网络连接超时")).toBeInTheDocument();
   });
 
-  it("renders retry button for RetryOrQueue action and calls handler", () => {
+  it("renders retry button for Retry action and calls handler", () => {
     const onRetry = vi.fn();
-    render(<ErrorPanel {...defaultProps} action="RetryOrQueue" onRetry={onRetry} />);
+    render(<ErrorPanel {...defaultProps} action="Retry" onRetry={onRetry} />);
 
     const retryButton = screen.getByText("重试");
     expect(retryButton).toBeInTheDocument();
@@ -38,9 +38,9 @@ describe("ErrorPanel", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it("renders dismiss button for RetryOrQueue action and calls handler", () => {
+  it("renders dismiss button for Retry action and calls handler", () => {
     const onDismiss = vi.fn();
-    render(<ErrorPanel {...defaultProps} action="RetryOrQueue" onDismiss={onDismiss} />);
+    render(<ErrorPanel {...defaultProps} action="Retry" onDismiss={onDismiss} />);
 
     const dismissButton = screen.getByText("稍后处理");
     expect(dismissButton).toBeInTheDocument();

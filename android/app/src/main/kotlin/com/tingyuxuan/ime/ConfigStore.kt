@@ -15,14 +15,24 @@ import org.json.JSONObject
  */
 class ConfigStore(context: Context) {
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    companion object {
+        @Volatile
+        private var masterKeyInstance: MasterKey? = null
+
+        private fun getMasterKey(context: Context): MasterKey {
+            return masterKeyInstance ?: synchronized(this) {
+                masterKeyInstance ?: MasterKey.Builder(context.applicationContext)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                    .also { masterKeyInstance = it }
+            }
+        }
+    }
 
     private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
         context,
         "tingyuxuan_config",
-        masterKey,
+        getMasterKey(context),
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
@@ -30,7 +40,7 @@ class ConfigStore(context: Context) {
     // --- STT 配置 ---
 
     var sttProvider: String
-        get() = prefs.getString("stt_provider", "whisper") ?: "whisper"
+        get() = prefs.getString("stt_provider", "dashscope_streaming") ?: "dashscope_streaming"
         set(value) = prefs.edit().putString("stt_provider", value).apply()
 
     var sttApiKey: String
@@ -100,6 +110,7 @@ class ConfigStore(context: Context) {
         }
 
         val llmObj = JSONObject().apply {
+            put("provider", llmProvider)
             put("api_key_ref", llmApiKey)
             put("model", llmModel)
             llmBaseUrl?.let { put("base_url", it) }

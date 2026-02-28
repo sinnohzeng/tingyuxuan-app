@@ -9,13 +9,13 @@
 //! Volume levels are pushed as `PipelineEvent::VolumeUpdate` every ~33ms
 //! while recording (no polling from the frontend).
 
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use tingyuxuan_core::audio::recorder::AudioRecorder;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
+use tingyuxuan_core::stt::streaming::AudioChunk;
 
 // ---------------------------------------------------------------------------
 // Commands sent to the recorder actor
@@ -23,13 +23,10 @@ use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 enum RecorderCommand {
     Start {
-        session_id: String,
-        mode: String,
-        cache_dir: PathBuf,
-        reply: oneshot::Sender<Result<PathBuf, String>>,
+        reply: oneshot::Sender<Result<mpsc::Receiver<AudioChunk>, String>>,
     },
     Stop {
-        reply: oneshot::Sender<Result<(PathBuf, u64), String>>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Cancel {
         reply: oneshot::Sender<Result<(), String>>,
@@ -60,41 +57,35 @@ impl RecorderHandle {
         std::thread::Builder::new()
             .name("recorder-actor".into())
             .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to create tokio runtime for recorder actor");
+                if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to create tokio runtime for recorder actor");
 
-                rt.block_on(run_actor(cmd_rx, event_tx));
+                    rt.block_on(run_actor(cmd_rx, event_tx));
+                })) {
+                    tracing::error!("Recorder actor panicked: {e:?}");
+                }
             })
             .expect("failed to spawn recorder actor thread");
 
         RecorderHandle { cmd_tx }
     }
 
-    /// Start recording. Returns the path to the WAV file being written.
-    pub async fn start(
-        &self,
-        session_id: &str,
-        mode: &str,
-        cache_dir: &Path,
-    ) -> Result<PathBuf, String> {
+    /// Start recording. Returns a channel receiver for PCM audio chunks.
+    pub async fn start(&self) -> Result<mpsc::Receiver<AudioChunk>, String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(RecorderCommand::Start {
-                session_id: session_id.to_string(),
-                mode: mode.to_string(),
-                cache_dir: cache_dir.to_path_buf(),
-                reply: tx,
-            })
+            .send(RecorderCommand::Start { reply: tx })
             .await
             .map_err(|_| "Recorder actor is gone".to_string())?;
         rx.await
             .map_err(|_| "Recorder reply channel dropped".to_string())?
     }
 
-    /// Stop recording. Returns `(audio_path, duration_ms)`.
-    pub async fn stop(&self) -> Result<(PathBuf, u64), String> {
+    /// Stop recording.
+    pub async fn stop(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Stop { reply: tx })
@@ -104,7 +95,7 @@ impl RecorderHandle {
             .map_err(|_| "Recorder reply channel dropped".to_string())?
     }
 
-    /// Cancel the current recording (deletes the WAV file).
+    /// Cancel the current recording.
     pub async fn cancel(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
@@ -174,33 +165,28 @@ async fn run_actor(
 
 fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
     match cmd {
-        RecorderCommand::Start {
-            session_id,
-            mode,
-            cache_dir,
-            reply,
-        } => {
-            let result = recorder
-                .start(&session_id, &mode, &cache_dir)
-                .map_err(|e| e.to_string());
-            let _ = reply.send(result);
+        RecorderCommand::Start { reply } => {
+            let result = recorder.start().map_err(|e| e.to_string());
+            if reply.send(result).is_err() {
+                tracing::warn!("Reply channel dropped (caller timed out?)");
+            }
         }
         RecorderCommand::Stop { reply } => {
-            let result = recorder
-                .stop()
-                .map(|path| {
-                    let duration_ms = compute_duration_ms(&path);
-                    (path, duration_ms)
-                })
-                .map_err(|e| e.to_string());
-            let _ = reply.send(result);
+            let result = recorder.stop().map_err(|e| e.to_string());
+            if reply.send(result).is_err() {
+                tracing::warn!("Reply channel dropped (caller timed out?)");
+            }
         }
         RecorderCommand::Cancel { reply } => {
             let result = recorder.cancel().map_err(|e| e.to_string());
-            let _ = reply.send(result);
+            if reply.send(result).is_err() {
+                tracing::warn!("Reply channel dropped (caller timed out?)");
+            }
         }
         RecorderCommand::IsRecording { reply } => {
-            let _ = reply.send(recorder.is_recording());
+            if reply.send(recorder.is_recording()).is_err() {
+                tracing::warn!("Reply channel dropped (caller timed out?)");
+            }
         }
     }
 }
@@ -224,19 +210,4 @@ async fn drain_with_error(cmd_rx: &mut mpsc::Receiver<RecorderCommand>, error_ms
             }
         }
     }
-}
-
-/// Compute audio duration from WAV file size.
-///
-/// Assumes 16 kHz, 16-bit, mono PCM with a 44-byte WAV header.
-fn compute_duration_ms(path: &Path) -> u64 {
-    const BYTES_PER_SECOND: u64 = 16_000 * 2; // 16kHz × 16-bit
-    const WAV_HEADER_SIZE: u64 = 44;
-
-    std::fs::metadata(path)
-        .map(|m| {
-            let data_size = m.len().saturating_sub(WAV_HEADER_SIZE);
-            (data_size * 1000) / BYTES_PER_SECOND
-        })
-        .unwrap_or(0)
 }

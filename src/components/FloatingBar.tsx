@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../stores/appStore";
+import type { PipelineEvent, UserAction } from "../lib/types";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
 import ResultPanel from "./ResultPanel";
@@ -11,6 +12,25 @@ const MODE_LABELS: Record<string, string> = {
   ai_assistant: "AI 助手",
   edit: "语音编辑",
 };
+
+/** Format duration as M:SS */
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** 根据状态计算浮动条容器的 className */
+function barContainerClass(
+  state: string,
+  mode: string,
+  aiResult: string | null,
+): string {
+  if (state === "error") return "w-[400px] min-h-[64px]";
+  if (state === "done" && mode === "ai_assistant" && aiResult)
+    return "w-[420px] h-[360px] flex-col";
+  return "w-[400px] h-[56px]";
+}
 
 export default function FloatingBar() {
   const recordingState = useAppStore((s) => s.recordingState);
@@ -26,13 +46,6 @@ export default function FloatingBar() {
 
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Format duration as M:SS
-  const formatDuration = (seconds: number): string => {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
 
   // Start duration timer when recording
   useEffect(() => {
@@ -89,15 +102,15 @@ export default function FloatingBar() {
         const store = useAppStore.getState();
 
         // Pipeline events from the Rust backend
-        const u1 = await listen("pipeline-event", (event) => {
-          const data = event.payload as Record<string, unknown>;
+        const u1 = await listen<PipelineEvent>("pipeline-event", (event) => {
+          const data = event.payload;
           switch (data.type) {
             case "RecordingStarted":
-              store.setSessionId(data.session_id as string);
+              store.setSessionId(data.session_id);
               store.setRecordingState("recording");
               break;
             case "VolumeUpdate":
-              store.setVolumeLevels(data.levels as number[]);
+              store.setVolumeLevels(data.levels);
               break;
             case "RecordingStopped":
               // Don't change state yet; processing is next
@@ -111,28 +124,20 @@ export default function FloatingBar() {
               break;
             case "ProcessingComplete":
               if (useAppStore.getState().recordingMode === "ai_assistant") {
-                store.setAiResult(data.processed_text as string);
+                store.setAiResult(data.processed_text);
               }
               store.setRecordingState("done");
               break;
-            case "Error":
-              store.setError(
-                data.message as string,
-                data.user_action as
-                  | "RetryOrQueue"
-                  | "InsertRawOrRetry"
-                  | "CheckApiKey"
-                  | "WaitAndRetry"
-                  | "CheckMicrophone",
-                data.raw_text as string | null
-              );
+            case "Error": {
+              const knownActions: UserAction[] = ["Retry", "InsertRawOrRetry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
+              const action = knownActions.includes(data.user_action as UserAction)
+                ? (data.user_action as UserAction)
+                : "Retry";
+              store.setError(data.message, action, data.raw_text);
               break;
+            }
             case "NetworkStatusChanged":
-              store.setIsOnline(data.online as boolean);
-              break;
-            case "QueuedForLater":
-              // Recording was queued for offline processing — show done state.
-              store.setRecordingState("done");
+              store.setIsOnline(data.online);
               break;
             case "RecordingCancelled":
               store.setRecordingState("cancelled");
@@ -265,7 +270,7 @@ export default function FloatingBar() {
               : "bg-gray-900/90 border-gray-700/50"
           }
           backdrop-blur-md
-          ${recordingState === "error" ? "w-[400px] min-h-[64px]" : recordingState === "done" && recordingMode === "ai_assistant" && aiResult ? "w-[420px] h-[360px] flex-col" : "w-[400px] h-[56px]"}
+          ${barContainerClass(recordingState, recordingMode, aiResult)}
         `}
       >
         {/* Recording state */}

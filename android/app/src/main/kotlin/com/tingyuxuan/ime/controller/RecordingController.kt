@@ -9,11 +9,8 @@ import com.tingyuxuan.ime.model.ProcessingMode
 /**
  * 录音控制器 — 封装 AudioRecorder，管理录音生命周期。
  *
- * 职责：
- * - 权限检查后启动录音
- * - 停止录音并返回文件路径
- * - 取消录音
- * - 提供振幅数据给 UI
+ * 录音帧通过 [AudioRecorder.AudioChunkListener] 回调实时发送到
+ * [PipelineController.sendAudioChunk]，不再写入 WAV 文件。
  */
 class RecordingController(private val context: Context) {
 
@@ -30,11 +27,11 @@ class RecordingController(private val context: Context) {
     val amplitude: Float get() = recorder.getAmplitude()
 
     /**
-     * 开始录音。
+     * 开始录音，PCM 帧通过 [chunkListener] 实时回调。
      *
      * @return null 表示成功，非 null 表示错误码
      */
-    fun start(mode: ProcessingMode): ErrorCode? {
+    fun start(mode: ProcessingMode, chunkListener: AudioRecorder.AudioChunkListener): ErrorCode? {
         if (isRecording) {
             Log.w(TAG, "Already recording, ignoring start request")
             return null
@@ -46,7 +43,7 @@ class RecordingController(private val context: Context) {
         }
 
         return try {
-            recorder.start(context, context.cacheDir)
+            recorder.start(context, chunkListener)
             Log.i(TAG, "Recording started (mode=${mode.id})")
             null
         } catch (e: SecurityException) {
@@ -59,23 +56,19 @@ class RecordingController(private val context: Context) {
     }
 
     /**
-     * 停止录音并返回 WAV 文件路径。
-     *
-     * @return 文件路径，失败时返回 null
+     * 停止录音。
      */
-    fun stop(): String? {
+    fun stop() {
         if (!isRecording) {
             Log.w(TAG, "Not recording, ignoring stop request")
-            return null
+            return
         }
 
-        return try {
-            val path = recorder.stop()
-            Log.i(TAG, "Recording stopped: $path")
-            path
+        try {
+            recorder.stop()
+            Log.i(TAG, "Recording stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop recording", e)
-            null
         }
     }
 

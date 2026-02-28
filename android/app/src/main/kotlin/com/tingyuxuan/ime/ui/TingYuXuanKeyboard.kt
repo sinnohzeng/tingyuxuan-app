@@ -2,7 +2,6 @@ package com.tingyuxuan.ime.ui
 
 import android.content.Context
 import android.view.View
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -55,7 +54,18 @@ private fun KeyboardContent(
     state: IMEState,
     onIntent: (KeyboardIntent) -> Unit,
 ) {
+    // 从 IMEState 派生当前模式，保持 UI 和状态机同步
     var selectedMode by remember { mutableStateOf(ProcessingMode.Dictate) }
+    LaunchedEffect(state) {
+        val derivedMode = when (state) {
+            is IMEState.Idle -> state.currentMode
+            is IMEState.Recording -> state.mode
+            is IMEState.Processing -> state.mode
+            is IMEState.Done -> state.mode
+            is IMEState.Error -> state.failedMode
+        }
+        selectedMode = derivedMode
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -165,7 +175,7 @@ private fun IdleContent(
             .height(48.dp),
     ) {
         Text(
-            text = if (isPasswordField) "密码框不可语音输入" else "按住说话 \uD83C\uDFA4",
+            text = if (isPasswordField) "密码框不可语音输入" else "开始录音 \uD83C\uDFA4",
             fontSize = 16.sp,
         )
     }
@@ -244,6 +254,7 @@ private fun AmplitudeBar(amplitude: Float) {
         Box(
             modifier = Modifier
                 .fillMaxHeight()
+                // 0.02 minimum prevents visual disappearance during brief silence
                 .fillMaxWidth(fraction = animatedAmplitude.coerceIn(0.02f, 1f))
                 .clip(RoundedCornerShape(3.dp))
                 .background(MaterialTheme.colorScheme.primary),
@@ -297,11 +308,6 @@ private fun DoneContent(
     text: String,
     mode: ProcessingMode,
 ) {
-    val textColor by animateColorAsState(
-        targetValue = MaterialTheme.colorScheme.primary,
-        label = "doneColor",
-    )
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -312,7 +318,7 @@ private fun DoneContent(
         Text(
             text = "\u2713 已输入",
             fontWeight = FontWeight.Medium,
-            color = textColor,
+            color = MaterialTheme.colorScheme.primary,
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(

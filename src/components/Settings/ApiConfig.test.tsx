@@ -15,10 +15,10 @@ const defaultConfig: AppConfig = {
     floating_bar_position: "bottom_center",
   },
   shortcuts: {
-    dictate: "RAlt",
-    translate: "Shift+RAlt",
-    ai_assistant: "Alt+Space",
-    cancel: "Escape",
+    dictate: "alt_right",
+    translate: "shift+alt_right",
+    ai_assistant: "alt+space",
+    cancel: "escape",
   },
   language: {
     primary: "zh-CN",
@@ -26,7 +26,7 @@ const defaultConfig: AppConfig = {
     variant: null,
   },
   stt: {
-    provider: "whisper",
+    provider: "dashscope_streaming",
     api_key_ref: "stt",
     base_url: null,
     model: null,
@@ -38,9 +38,7 @@ const defaultConfig: AppConfig = {
     model: "gpt-4o-mini",
   },
   cache: {
-    audio_retention_hours: 24,
-    failed_retention_days: 7,
-    max_cache_size_mb: 500,
+    history_retention_days: 30,
   },
   user_dictionary: [],
 };
@@ -57,9 +55,8 @@ describe("ApiConfig", () => {
   it("renders STT configuration section with provider select", () => {
     render(<ApiConfig config={defaultConfig} onUpdate={vi.fn()} />);
 
-    // STT provider options should be present
-    expect(screen.getByText("OpenAI Whisper（兼容格式）")).toBeInTheDocument();
-    expect(screen.getByText("阿里云 Qwen-ASR")).toBeInTheDocument();
+    // STT provider option should be present
+    expect(screen.getByText("阿里云 DashScope（流式）")).toBeInTheDocument();
   });
 
   it("renders LLM configuration section with provider select", () => {
@@ -74,10 +71,8 @@ describe("ApiConfig", () => {
   it("renders provider preset buttons", () => {
     render(<ApiConfig config={defaultConfig} onUpdate={vi.fn()} />);
 
-    // Preset buttons from PROVIDER_PRESETS
+    // Preset button from PROVIDER_PRESETS (MVP: only DashScope)
     expect(screen.getByText("阿里云 DashScope", { selector: "button" })).toBeInTheDocument();
-    expect(screen.getByText("火山引擎 (豆包)", { selector: "button" })).toBeInTheDocument();
-    // "OpenAI" also appears as a preset button
   });
 
   it("renders API key inputs and save buttons", () => {

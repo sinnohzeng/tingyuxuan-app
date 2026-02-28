@@ -79,7 +79,7 @@ impl OpenAICompatProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let status_code = status.as_u16();
+            let status_code = status.as_u16() as u32;
             let body_text = response
                 .text()
                 .await
@@ -207,8 +207,7 @@ mod tests {
             mode: ProcessingMode::Dictate,
             raw_transcript: "hello world".to_string(),
             target_language: None,
-            selected_text: None,
-            current_app: None,
+            context: crate::context::InputContext::default(),
             user_dictionary: Vec::new(),
         }
     }

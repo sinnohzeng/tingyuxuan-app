@@ -1,15 +1,12 @@
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock, broadcast};
-use tokio_util::sync::CancellationToken;
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::HistoryManager;
-use tingyuxuan_core::llm::provider::ProcessingMode;
 use tingyuxuan_core::pipeline::Pipeline;
+use tingyuxuan_core::pipeline::ManagedSession;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
-
-use tingyuxuan_core::pipeline::queue::OfflineQueue;
 
 use crate::platform::{PlatformDetector, PlatformInjector};
 use crate::recorder_actor::RecorderHandle;
@@ -33,10 +30,6 @@ pub struct RecorderState(pub RecorderHandle);
 /// Currently active recording session.
 pub struct SessionState(pub Arc<Mutex<Option<ActiveSession>>>);
 
-/// Offline recording queue — persistent SQLite-backed queue for recordings
-/// captured while the network is down.  Survives application restarts.
-pub struct QueueState(pub Arc<Mutex<OfflineQueue>>);
-
 /// Tracks current network connectivity status (true = online).
 pub struct NetworkState(pub Arc<std::sync::atomic::AtomicBool>);
 
@@ -47,15 +40,18 @@ pub struct InjectorState(pub Arc<PlatformInjector>);
 /// Platform context detector — created once, used for all context queries.
 pub struct DetectorState(pub PlatformDetector);
 
+/// Holds the network monitor cancellation token to keep it alive for the app's lifetime.
+pub struct MonitorState(pub tokio_util::sync::CancellationToken);
+
 /// Tracks the in-progress recording/processing session.
+///
+/// ManagedSession 封装了 STT 会话、取消令牌和配置。
+/// Tauri 层只需维护 session_id 和 started_at 等桥接信息。
 pub struct ActiveSession {
     pub session_id: String,
-    pub mode: ProcessingMode,
-    pub selected_text: Option<String>,
-    pub target_language: Option<String>,
-    pub app_context: Option<String>,
-    /// Token that can be cancelled to abort in-progress STT/LLM requests.
-    pub cancel_token: CancellationToken,
+    pub managed_session: Option<ManagedSession>,
+    /// 录音开始时间（用于计算 duration_ms）。
+    pub started_at: std::time::Instant,
 }
 
 /// Helper to create all managed states used by the application.
@@ -66,7 +62,6 @@ pub struct AppStates {
     pub event_bus: EventBus,
     pub session: SessionState,
     pub recorder: RecorderState,
-    pub queue: QueueState,
     pub network: NetworkState,
     pub injector: InjectorState,
     pub detector: DetectorState,
@@ -94,7 +89,6 @@ impl AppStates {
             event_bus: EventBus(event_tx),
             session: SessionState(Arc::new(Mutex::new(None))),
             recorder: RecorderState(recorder_handle),
-            queue: QueueState(Arc::new(Mutex::new(OfflineQueue::new()))),
             network: NetworkState(Arc::new(std::sync::atomic::AtomicBool::new(true))),
             injector: InjectorState(Arc::new(injector)),
             detector: DetectorState(detector),

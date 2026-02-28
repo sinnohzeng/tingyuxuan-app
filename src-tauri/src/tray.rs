@@ -52,6 +52,8 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(window) = app.get_webview_window("settings") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                } else {
+                    tracing::warn!("Window 'settings' not found");
                 }
             }
             "history" => {
@@ -61,6 +63,8 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = window.show();
                     let _ = window.set_focus();
                     let _ = app.emit("open-history", ());
+                } else {
+                    tracing::warn!("Window 'settings' not found");
                 }
             }
             "quit" => {

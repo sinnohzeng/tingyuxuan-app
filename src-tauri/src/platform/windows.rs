@@ -21,6 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::error::PlatformError;
 use super::{ContextDetector, TextInjector};
+use tingyuxuan_core::context::InputContext;
 
 // ---------------------------------------------------------------------------
 // TextInjector
@@ -260,7 +261,9 @@ fn inject_via_clipboard(text: &str) -> Result<(), PlatformError> {
     simulate_paste()?;
     std::thread::sleep(Duration::from_millis(100));
     if let Some(original) = saved {
-        let _ = clipboard_write(&original); // best-effort restore
+        if let Err(e) = clipboard_write(&original) {
+            tracing::warn!("Clipboard restore failed: {e}");
+        }
     }
     Ok(())
 }
@@ -276,12 +279,8 @@ impl WindowsContextDetector {
         tracing::info!(platform = "windows", "ContextDetector initialized");
         Self
     }
-}
 
-impl ContextDetector for WindowsContextDetector {
-    fn get_active_window_name(&self) -> Option<String> {
-        let _span = tracing::info_span!("get_active_window", platform = "windows").entered();
-
+    fn get_window_title(&self) -> Option<String> {
         #[cfg(target_os = "windows")]
         {
             // SAFETY: GetForegroundWindow has no preconditions, returns HWND or null.
@@ -309,18 +308,57 @@ impl ContextDetector for WindowsContextDetector {
         }
     }
 
+    /// 通过模拟 Ctrl+C 获取选中文本。注意：此操作会短暂修改剪贴板内容，
+    /// 完成后会尽力恢复原始剪贴板。
     fn get_selected_text(&self) -> Option<String> {
-        let _span = tracing::info_span!("get_selected_text", platform = "windows").entered();
-
         #[cfg(target_os = "windows")]
         {
-            // Strategy: simulate Ctrl+C → read clipboard → restore clipboard.
             tokio::task::block_in_place(copy_selection_via_clipboard)
         }
 
         #[cfg(not(target_os = "windows"))]
         {
             None
+        }
+    }
+
+    fn get_clipboard_text(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            clipboard_read().ok().flatten()
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+}
+
+impl ContextDetector for WindowsContextDetector {
+    fn collect_context(&self) -> InputContext {
+        let _span = tracing::info_span!("collect_context", platform = "windows").entered();
+
+        // clipboard_text 先于 selected_text 采集（Ctrl+C 会覆盖剪贴板）
+        let clipboard_text = self.get_clipboard_text();
+        let selected_text = self.get_selected_text();
+        let window_title = self.get_window_title();
+        // 使用窗口标题作为应用名称（Windows 上暂不取进程名）
+        let app_name = window_title.clone();
+
+        InputContext {
+            app_name,
+            window_title,
+            clipboard_text,
+            selected_text,
+            // 以下字段在 Windows 桌面端暂不采集
+            app_package: None,
+            browser_url: None, // 需 UI Automation，后续迭代
+            input_field_type: None,
+            input_hint: None,
+            editor_action: None,
+            surrounding_text: None,
+            screen_text: None, // 需 UI Automation，后续迭代
         }
     }
 }
@@ -360,7 +398,9 @@ fn copy_selection_via_clipboard() -> Option<String> {
 
     // Restore original clipboard (best-effort).
     if let Some(original) = saved {
-        let _ = clipboard_write(&original);
+        if let Err(e) = clipboard_write(&original) {
+            tracing::warn!("Clipboard restore failed: {e}");
+        }
     }
 
     text.filter(|t| !t.is_empty())

@@ -62,59 +62,34 @@ export default function GeneralConfig({ config, onUpdate }: GeneralConfigProps) 
         </select>
       </div>
 
-      {/* Cache settings */}
+      {/* History settings */}
       <div>
-        <h3 className="text-sm font-medium text-gray-700 mb-3">缓存管理</h3>
+        <h3 className="text-sm font-medium text-gray-700 mb-3">历史记录</h3>
 
-        <div className="space-y-3">
-          <div>
-            <label htmlFor="audio-retention" className="block text-xs text-gray-600 mb-1">
-              音频缓存保留时长
-            </label>
-            <select
-              id="audio-retention"
-              value={config.cache.audio_retention_hours}
-              onChange={(e) =>
-                onUpdate((c) => ({
-                  ...c,
-                  cache: {
-                    ...c.cache,
-                    audio_retention_hours: parseInt(e.target.value),
-                  },
-                }))
-              }
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-            >
-              <option value={1}>1 小时</option>
-              <option value={12}>12 小时</option>
-              <option value={24}>24 小时</option>
-              <option value={168}>7 天</option>
-              <option value={0}>永久保留</option>
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="max-cache-size" className="block text-xs text-gray-600 mb-1">
-              缓存最大体积 (MB)
-            </label>
-            <input
-              id="max-cache-size"
-              type="number"
-              value={config.cache.max_cache_size_mb}
-              onChange={(e) =>
-                onUpdate((c) => ({
-                  ...c,
-                  cache: {
-                    ...c.cache,
-                    max_cache_size_mb: parseInt(e.target.value) || 500,
-                  },
-                }))
-              }
-              min={100}
-              max={10000}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+        <div>
+          <label htmlFor="history-retention" className="block text-xs text-gray-600 mb-1">
+            历史记录保留天数
+          </label>
+          <select
+            id="history-retention"
+            value={config.cache.history_retention_days}
+            onChange={(e) =>
+              onUpdate((c) => ({
+                ...c,
+                cache: {
+                  ...c.cache,
+                  history_retention_days: parseInt(e.target.value),
+                },
+              }))
+            }
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+          >
+            <option value={7}>7 天</option>
+            <option value={30}>30 天</option>
+            <option value={90}>90 天</option>
+            <option value={365}>1 年</option>
+            <option value={0}>永久保留</option>
+          </select>
         </div>
       </div>
     </div>

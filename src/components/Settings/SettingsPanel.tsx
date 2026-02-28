@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAppStore } from "../../stores/appStore";
 import type { AppConfig } from "../../lib/types";
 import ApiConfig from "./ApiConfig";
@@ -27,20 +27,31 @@ export default function SettingsPanel() {
   const [showWizard, setShowWizard] = useState(false);
 
   // Listen for open-history event from tray menu.
+  // 使用 ref 确保异步 listen() resolve 后仍能正确清理。
+  const unlistenRef = useRef<(() => void) | null>(null);
+  const unmountedRef = useRef(false);
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    unmountedRef.current = false;
     import("@tauri-apps/api/event")
-      .then(({ listen }) => {
+      .then(({ listen }) =>
         listen("open-history", () => {
           setActiveTab("history");
           setShowWizard(false);
-        }).then((u) => {
-          unlisten = u;
-        });
+        })
+      )
+      .then((u) => {
+        if (unmountedRef.current) {
+          // 组件已卸载，立即清理
+          u();
+        } else {
+          unlistenRef.current = u;
+        }
       })
       .catch(() => {});
     return () => {
-      if (unlisten) unlisten();
+      unmountedRef.current = true;
+      unlistenRef.current?.();
+      unlistenRef.current = null;
     };
   }, []);
 
@@ -76,10 +87,10 @@ export default function SettingsPanel() {
             variant: null,
           },
           stt: {
-            provider: "whisper",
+            provider: "dashscope_streaming",
             api_key_ref: "",
             base_url: null,
-            model: "whisper-1",
+            model: "paraformer-realtime-v2",
           },
           llm: {
             provider: "openai",
@@ -88,9 +99,7 @@ export default function SettingsPanel() {
             model: "gpt-4o-mini",
           },
           cache: {
-            audio_retention_hours: 24,
-            failed_retention_days: 7,
-            max_cache_size_mb: 500,
+            history_retention_days: 30,
           },
           user_dictionary: [],
         };

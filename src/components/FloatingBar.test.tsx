@@ -56,7 +56,7 @@ describe("FloatingBar", () => {
     useAppStore.setState({
       recordingState: "error",
       errorMessage: "API 连接失败",
-      errorAction: "RetryOrQueue",
+      errorAction: "Retry",
     });
     render(<FloatingBar />);
 

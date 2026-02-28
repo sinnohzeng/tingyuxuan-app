@@ -11,9 +11,9 @@ pub struct TranscriptRecord {
     pub mode: String,
     pub raw_text: Option<String>,
     pub processed_text: Option<String>,
-    pub audio_path: Option<String>,
     pub status: String,
-    pub app_context: Option<String>,
+    /// JSON 序列化的 InputContext，替代旧的 app_context 字符串
+    pub context_json: Option<String>,
     pub duration_ms: Option<i64>,
     pub language: Option<String>,
     pub error_message: Option<String>,
@@ -60,7 +60,7 @@ impl HistoryManager {
                 processed_text TEXT,
                 audio_path TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
-                app_context TEXT,
+                context_json TEXT,
                 duration_ms INTEGER,
                 language TEXT,
                 error_message TEXT,
@@ -69,25 +69,62 @@ impl HistoryManager {
             CREATE INDEX IF NOT EXISTS idx_transcripts_status ON transcripts(status);
             CREATE INDEX IF NOT EXISTS idx_transcripts_timestamp ON transcripts(timestamp DESC);",
         )?;
+        // 迁移旧表：如果 app_context 列存在，将数据迁移到 context_json
+        self.migrate_app_context();
         Ok(())
+    }
+
+    /// 将旧的 app_context 列数据迁移到 context_json 列。
+    /// 旧数据格式为纯应用名称字符串，迁移为 `{"app_name": "..."}` JSON。
+    fn migrate_app_context(&self) {
+        // 检查旧列是否存在
+        let has_old_column = self
+            .conn
+            .prepare("SELECT app_context FROM transcripts LIMIT 0")
+            .is_ok();
+        if !has_old_column {
+            return;
+        }
+        // 检查新列是否存在
+        let has_new_column = self
+            .conn
+            .prepare("SELECT context_json FROM transcripts LIMIT 0")
+            .is_ok();
+        if !has_new_column {
+            // 添加新列
+            if let Err(e) = self
+                .conn
+                .execute_batch("ALTER TABLE transcripts ADD COLUMN context_json TEXT;")
+            {
+                tracing::warn!("Failed to add context_json column: {e}");
+                return;
+            }
+        }
+        // 迁移非空 app_context 数据到 context_json（仅当 context_json 为空时）
+        if let Err(e) = self.conn.execute(
+            "UPDATE transcripts SET context_json = json_object('app_name', app_context) \
+             WHERE app_context IS NOT NULL AND app_context != '' AND context_json IS NULL",
+            [],
+        ) {
+            tracing::warn!("Failed to migrate app_context data: {e}");
+        }
     }
 
     /// Save a new transcript record.
     pub fn save_transcript(&self, record: &TranscriptRecord) -> Result<(), HistoryError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO transcripts
-             (id, timestamp, mode, raw_text, processed_text, audio_path,
-              status, app_context, duration_ms, language, error_message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, timestamp, mode, raw_text, processed_text,
+              status, context_json, duration_ms, language, error_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.id,
                 record.timestamp,
                 record.mode,
                 record.raw_text,
                 record.processed_text,
-                record.audio_path,
                 record.status,
-                record.app_context,
+                record.context_json,
                 record.duration_ms,
                 record.language,
                 record.error_message,
@@ -96,63 +133,37 @@ impl HistoryManager {
         Ok(())
     }
 
-    /// Get the most recent transcript records.
-    pub fn get_recent(&self, limit: u32) -> Result<Vec<TranscriptRecord>, HistoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
-                    status, app_context, duration_ms, language, error_message
-             FROM transcripts
-             ORDER BY timestamp DESC
-             LIMIT ?1",
-        )?;
+    /// Column list for SELECT queries (audio_path excluded from Rust mapping).
+    const SELECT_COLUMNS: &str =
+        "id, timestamp, mode, raw_text, processed_text, \
+         status, context_json, duration_ms, language, error_message";
 
-        let records = stmt
-            .query_map(params![limit], |row| {
-                Ok(TranscriptRecord {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    mode: row.get(2)?,
-                    raw_text: row.get(3)?,
-                    processed_text: row.get(4)?,
-                    audio_path: row.get(5)?,
-                    status: row.get(6)?,
-                    app_context: row.get(7)?,
-                    duration_ms: row.get(8)?,
-                    language: row.get(9)?,
-                    error_message: row.get(10)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(records)
+    /// Map a row (matching SELECT_COLUMNS order) to a TranscriptRecord.
+    fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TranscriptRecord> {
+        Ok(TranscriptRecord {
+            id: row.get(0)?,
+            timestamp: row.get(1)?,
+            mode: row.get(2)?,
+            raw_text: row.get(3)?,
+            processed_text: row.get(4)?,
+            status: row.get(5)?,
+            context_json: row.get(6)?,
+            duration_ms: row.get(7)?,
+            language: row.get(8)?,
+            error_message: row.get(9)?,
+        })
     }
 
-    /// Get all pending/failed transcript records.
-    pub fn get_pending(&self) -> Result<Vec<TranscriptRecord>, HistoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
-                    status, app_context, duration_ms, language, error_message
-             FROM transcripts
-             WHERE status IN ('pending', 'failed')
-             ORDER BY timestamp DESC",
-        )?;
+    /// Get the most recent transcript records.
+    pub fn get_recent(&self, limit: u32) -> Result<Vec<TranscriptRecord>, HistoryError> {
+        let sql = format!(
+            "SELECT {} FROM transcripts ORDER BY timestamp DESC LIMIT ?1",
+            Self::SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let records = stmt
-            .query_map([], |row| {
-                Ok(TranscriptRecord {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    mode: row.get(2)?,
-                    raw_text: row.get(3)?,
-                    processed_text: row.get(4)?,
-                    audio_path: row.get(5)?,
-                    status: row.get(6)?,
-                    app_context: row.get(7)?,
-                    duration_ms: row.get(8)?,
-                    language: row.get(9)?,
-                    error_message: row.get(10)?,
-                })
-            })?
+            .query_map(params![limit], Self::row_to_record)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
@@ -196,27 +207,13 @@ impl HistoryManager {
 
     /// Get a single transcript record by ID.
     pub fn get_by_id(&self, id: &str) -> Result<Option<TranscriptRecord>, HistoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
-                    status, app_context, duration_ms, language, error_message
-             FROM transcripts WHERE id = ?1",
-        )?;
+        let sql = format!(
+            "SELECT {} FROM transcripts WHERE id = ?1",
+            Self::SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(TranscriptRecord {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                mode: row.get(2)?,
-                raw_text: row.get(3)?,
-                processed_text: row.get(4)?,
-                audio_path: row.get(5)?,
-                status: row.get(6)?,
-                app_context: row.get(7)?,
-                duration_ms: row.get(8)?,
-                language: row.get(9)?,
-                error_message: row.get(10)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], Self::row_to_record)?;
 
         match rows.next() {
             Some(Ok(record)) => Ok(Some(record)),
@@ -243,31 +240,16 @@ impl HistoryManager {
     /// Full-text search across raw_text and processed_text.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<TranscriptRecord>, HistoryError> {
         let pattern = format!("%{}%", query);
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
-                    status, app_context, duration_ms, language, error_message
-             FROM transcripts
-             WHERE raw_text LIKE ?1 OR processed_text LIKE ?1
-             ORDER BY timestamp DESC
-             LIMIT ?2",
-        )?;
+        let sql = format!(
+            "SELECT {} FROM transcripts \
+             WHERE raw_text LIKE ?1 OR processed_text LIKE ?1 \
+             ORDER BY timestamp DESC LIMIT ?2",
+            Self::SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let records = stmt
-            .query_map(params![pattern, limit], |row| {
-                Ok(TranscriptRecord {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    mode: row.get(2)?,
-                    raw_text: row.get(3)?,
-                    processed_text: row.get(4)?,
-                    audio_path: row.get(5)?,
-                    status: row.get(6)?,
-                    app_context: row.get(7)?,
-                    duration_ms: row.get(8)?,
-                    language: row.get(9)?,
-                    error_message: row.get(10)?,
-                })
-            })?
+            .query_map(params![pattern, limit], Self::row_to_record)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
@@ -275,30 +257,14 @@ impl HistoryManager {
 
     /// Paginated query with LIMIT and OFFSET.
     pub fn get_page(&self, limit: u32, offset: u32) -> Result<Vec<TranscriptRecord>, HistoryError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp, mode, raw_text, processed_text, audio_path,
-                    status, app_context, duration_ms, language, error_message
-             FROM transcripts
-             ORDER BY timestamp DESC
-             LIMIT ?1 OFFSET ?2",
-        )?;
+        let sql = format!(
+            "SELECT {} FROM transcripts ORDER BY timestamp DESC LIMIT ?1 OFFSET ?2",
+            Self::SELECT_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let records = stmt
-            .query_map(params![limit, offset], |row| {
-                Ok(TranscriptRecord {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    mode: row.get(2)?,
-                    raw_text: row.get(3)?,
-                    processed_text: row.get(4)?,
-                    audio_path: row.get(5)?,
-                    status: row.get(6)?,
-                    app_context: row.get(7)?,
-                    duration_ms: row.get(8)?,
-                    language: row.get(9)?,
-                    error_message: row.get(10)?,
-                })
-            })?
+            .query_map(params![limit, offset], Self::row_to_record)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
@@ -341,9 +307,8 @@ mod tests {
             mode: "dictate".to_string(),
             raw_text: Some("hello world".to_string()),
             processed_text: Some("Hello, world.".to_string()),
-            audio_path: Some("/tmp/test.wav".to_string()),
             status: status.to_string(),
-            app_context: None,
+            context_json: None,
             duration_ms: Some(3000),
             language: Some("en".to_string()),
             error_message: None,
@@ -360,17 +325,6 @@ mod tests {
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].id, "test-1");
         assert_eq!(recent[0].raw_text, Some("hello world".to_string()));
-    }
-
-    #[test]
-    fn test_get_pending() {
-        let mgr = HistoryManager::new_in_memory().unwrap();
-        mgr.save_transcript(&make_record("r1", "success")).unwrap();
-        mgr.save_transcript(&make_record("r2", "pending")).unwrap();
-        mgr.save_transcript(&make_record("r3", "failed")).unwrap();
-
-        let pending = mgr.get_pending().unwrap();
-        assert_eq!(pending.len(), 2);
     }
 
     #[test]

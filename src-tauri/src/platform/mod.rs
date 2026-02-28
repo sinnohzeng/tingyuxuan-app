@@ -6,15 +6,18 @@ pub mod windows;
 
 pub use error::PlatformError;
 
+use tingyuxuan_core::context::InputContext;
+
 /// Text injection trait — inject text at the current cursor position.
 pub trait TextInjector: Send + Sync {
     fn inject_text(&self, text: &str) -> Result<(), PlatformError>;
 }
 
-/// Context detection trait — detect active window and selected text.
+/// Context detection trait — 采集当前输入上下文。
+///
+/// 整体超时 200ms，单项失败不阻塞其他字段。
 pub trait ContextDetector: Send + Sync {
-    fn get_active_window_name(&self) -> Option<String>;
-    fn get_selected_text(&self) -> Option<String>;
+    fn collect_context(&self) -> InputContext;
 }
 
 /// Strip dangerous control characters from text that will be typed directly.
@@ -46,6 +49,9 @@ pub type PlatformDetector = linux::LinuxContextDetector;
 pub type PlatformInjector = windows::WindowsTextInjector;
 #[cfg(target_os = "windows")]
 pub type PlatformDetector = windows::WindowsContextDetector;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+compile_error!("Unsupported platform: only Linux and Windows are supported for desktop builds");
 
 // ---------------------------------------------------------------------------
 // Tests

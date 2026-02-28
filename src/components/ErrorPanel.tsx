@@ -23,7 +23,7 @@ export default function ErrorPanel({
     <div role="alert" className="flex flex-col items-center gap-2 px-4 py-2 w-full">
       <p className="text-red-400 text-xs truncate max-w-[300px]">{message}</p>
       <div className="flex gap-2">
-        {action === "RetryOrQueue" && (
+        {action === "Retry" && (
           <>
             <ActionButton label="重试" onClick={onRetry} primary />
             <ActionButton label="稍后处理" onClick={onDismiss} />

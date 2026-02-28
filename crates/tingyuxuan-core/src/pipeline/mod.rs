@@ -1,8 +1,8 @@
 pub mod events;
 pub mod network;
 pub mod orchestrator;
-pub mod queue;
-pub mod recovery;
 pub mod retry;
+pub mod session;
 
 pub use orchestrator::{Pipeline, ProcessingRequest};
+pub use session::{ManagedSession, SessionConfig, SessionOrchestrator, SessionResult};

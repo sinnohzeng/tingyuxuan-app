@@ -29,12 +29,12 @@ describe("appStore", () => {
 
   it("setError() sets error state and recording state to error", () => {
     const store = useAppStore.getState();
-    store.setError("Connection failed", "RetryOrQueue", "raw text");
+    store.setError("Connection failed", "Retry", "raw text");
 
     const state = useAppStore.getState();
     expect(state.recordingState).toBe("error");
     expect(state.errorMessage).toBe("Connection failed");
-    expect(state.errorAction).toBe("RetryOrQueue");
+    expect(state.errorAction).toBe("Retry");
     expect(state.rawTranscript).toBe("raw text");
   });
 

@@ -1,21 +1,20 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::State;
-use tokio_util::sync::CancellationToken;
 
 use tingyuxuan_core::config::AppConfig;
+use tingyuxuan_core::error::StructuredError;
 use tingyuxuan_core::history::TranscriptRecord;
 use tingyuxuan_core::llm::openai_compat::OpenAICompatProvider;
-use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
+use tingyuxuan_core::llm::provider::ProcessingMode;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
-use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
+use tingyuxuan_core::pipeline::{Pipeline, SessionConfig, SessionOrchestrator, SessionResult};
 use tingyuxuan_core::stt;
 
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
     ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState, NetworkState,
-    PipelineState, QueueState, RecorderState, SessionState,
+    PipelineState, RecorderState, SessionState,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +77,9 @@ pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
 /// Retrieve an API key from the OS keychain.  Returns `None` if no key is stored.
 #[tauri::command]
 pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
+    if !VALID_KEY_SERVICES.contains(&service.as_str()) {
+        return Err(format!("无效的服务名称: {service}（允许: stt, llm）"));
+    }
     let entry =
         keyring::Entry::new("tingyuxuan", &service).map_err(|e| format!("Keyring error: {e}"))?;
     match entry.get_password() {
@@ -121,7 +123,7 @@ pub fn build_pipeline(
     let stt_key = resolve_api_key("stt", &config.stt.api_key_ref)?;
     let llm_key = resolve_api_key("llm", &config.llm.api_key_ref)?;
 
-    let stt_provider = stt::create_stt_provider(&config.stt, stt_key).ok()?;
+    let stt_provider = stt::create_streaming_stt_provider(&config.stt, stt_key).ok()?;
 
     let llm_base_url = config
         .llm
@@ -158,21 +160,23 @@ pub async fn start_recording(
     detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
     // Validate pipeline is available before starting recording.
-    if pipeline_state.0.read().await.is_none() {
-        return Err("请先在设置中配置 STT 和 LLM 的 API Key".to_string());
-    }
+    let pipeline = pipeline_state
+        .0
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| "请先在设置中配置 STT 和 LLM 的 API Key".to_string())?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut processing_mode = parse_mode(&mode);
+    let mut processing_mode = mode
+        .parse::<ProcessingMode>()
+        .unwrap_or(ProcessingMode::Dictate);
 
-    // Detect context: selected text and active window name.
-    // These are synchronous system calls — fast enough to inline.
-    let selected_text = detector_state.0.get_selected_text();
-    let app_context = detector_state.0.get_active_window_name();
+    // 采集当前输入上下文（整体 ~200ms 超时，各项独立容错）
+    let context = detector_state.0.collect_context();
 
     // Auto-switch to Edit mode when user has selected text and pressed Dictate.
-    // This enables the "speak-to-edit" workflow.
-    if selected_text.is_some() && matches!(processing_mode, ProcessingMode::Dictate) {
+    if context.selected_text.is_some() && matches!(processing_mode, ProcessingMode::Dictate) {
         processing_mode = ProcessingMode::Edit;
         tracing::info!("Auto-switched to Edit mode (selected text detected)");
     }
@@ -184,43 +188,57 @@ pub async fn start_recording(
     } else {
         None
     };
+    let user_dictionary = config.user_dictionary.clone();
     drop(config);
 
-    // Determine the effective mode string for the recorder filename.
-    let effective_mode = match processing_mode {
-        ProcessingMode::Dictate => "dictate",
-        ProcessingMode::Translate => "translate",
-        ProcessingMode::AiAssistant => "ai_assistant",
-        ProcessingMode::Edit => "edit",
+    // 1. 启动录音 — 返回 PCM 音频帧 channel。
+    let audio_rx = recorder_state.0.start().await?;
+
+    // 2. 通过 SessionOrchestrator 建立流式 STT 连接。
+    let session_config = SessionConfig {
+        mode: processing_mode.clone(),
+        context: context.clone(),
+        target_language,
+        user_dictionary,
+        stt_options: tingyuxuan_core::stt::STTOptions {
+            language: None,
+            prompt: None,
+        },
     };
 
-    // Determine cache directory for audio files.
-    let cache_dir = AppConfig::data_dir()
-        .map(|d| d.join("cache").join("audio"))
-        .map_err(|e| format!("Cannot determine cache directory: {e}"))?;
+    let managed_session = match SessionOrchestrator::start(&pipeline, session_config).await {
+        Ok(session) => session,
+        Err(e) => {
+            // STT 连接失败，停止录音。
+            let _ = recorder_state.0.stop().await;
+            return Err(format!("流式 STT 连接失败: {e}"));
+        }
+    };
 
-    // Start the actual recording via the actor.
-    let audio_path = recorder_state
-        .0
-        .start(&session_id, effective_mode, &cache_dir)
-        .await?;
+    // 3. 启动桥接 task：音频帧从 recorder → STT session。
+    let stt_audio_tx = managed_session.audio_sender();
+    tokio::spawn(async move {
+        bridge_audio(audio_rx, stt_audio_tx).await;
+    });
+
+    // Serialize context for history storage.
+    let context_json = serde_json::to_string(&context).ok();
+
+    // Determine the effective mode string for events/history.
+    let effective_mode = processing_mode.to_string();
 
     // Store active session.
-    let cancel_token = CancellationToken::new();
     let session = ActiveSession {
         session_id: session_id.clone(),
-        mode: processing_mode,
-        selected_text,
-        target_language,
-        app_context: app_context.clone(),
-        cancel_token,
+        managed_session: Some(managed_session),
+        started_at: std::time::Instant::now(),
     };
     *session_state.0.lock().await = Some(session);
 
     // Emit recording started event.
     let _ = event_bus.0.send(PipelineEvent::RecordingStarted {
         session_id: session_id.clone(),
-        mode: effective_mode.to_string(),
+        mode: effective_mode.clone(),
     });
 
     // Create a history record with status "recording".
@@ -229,12 +247,11 @@ pub async fn start_recording(
         let record = TranscriptRecord {
             id: session_id.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            mode: effective_mode.to_string(),
+            mode: effective_mode.clone(),
             raw_text: None,
             processed_text: None,
-            audio_path: Some(audio_path.to_string_lossy().to_string()),
             status: "recording".to_string(),
-            app_context,
+            context_json,
             duration_ms: None,
             language: None,
             error_message: None,
@@ -250,6 +267,24 @@ pub async fn start_recording(
     Ok(session_id)
 }
 
+/// 桥接 task：从 recorder 的 audio_rx 转发到 STT session 的 audio_tx。
+/// recorder stop 时 audio_rx 关闭，此 task 自动结束，同时 drop audio_tx 通知 STT。
+async fn bridge_audio(
+    mut audio_rx: tokio::sync::mpsc::Receiver<tingyuxuan_core::stt::streaming::AudioChunk>,
+    audio_tx: tokio::sync::mpsc::Sender<tingyuxuan_core::stt::streaming::AudioChunk>,
+) {
+    while let Some(chunk) = audio_rx.recv().await {
+        // 背压：try_send 失败时丢帧，STT 容忍。
+        if audio_tx.try_send(chunk).is_err() {
+            // Channel full or closed — STT 端可能已关闭。
+            if audio_tx.is_closed() {
+                break;
+            }
+        }
+    }
+    // audio_rx 关闭 → drop audio_tx → STT 收到结束信号。
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn stop_recording(
@@ -258,17 +293,13 @@ pub async fn stop_recording(
     event_bus: State<'_, EventBus>,
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
-    network_state: State<'_, NetworkState>,
-    queue_state: State<'_, QueueState>,
-    config_state: State<'_, ConfigState>,
+    _config_state: State<'_, ConfigState>,
     injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
-    use tingyuxuan_core::pipeline::queue::QueuedRecording;
+    // 1. 停止录音 — drop audio_tx，桥接 task 结束，STT 开始产生最终结果。
+    recorder_state.0.stop().await?;
 
-    // Stop the actual recording via the actor.
-    let (audio_path, duration_ms) = recorder_state.0.stop().await?;
-
-    // Take the active session.
+    // 2. Take the active session.
     let session = session_state
         .0
         .lock()
@@ -277,41 +308,10 @@ pub async fn stop_recording(
         .ok_or_else(|| "No active recording session".to_string())?;
 
     let session_id = session.session_id.clone();
+    let duration_ms = session.started_at.elapsed().as_millis() as u64;
 
-    // Emit recording stopped event with real duration.
-    let _ = event_bus
-        .0
-        .send(PipelineEvent::RecordingStopped { duration_ms });
-
-    // Check network status — if offline, queue for later processing.
-    let is_online = network_state.0.load(std::sync::atomic::Ordering::Acquire);
-
-    if !is_online {
-        let queued = QueuedRecording {
-            session_id: session_id.clone(),
-            audio_path,
-            mode: session.mode,
-            target_language: session.target_language,
-            selected_text: session.selected_text,
-            app_context: session.app_context,
-        };
-        queue_state.0.lock().await.enqueue(queued);
-
-        let _ = event_bus.0.send(PipelineEvent::QueuedForLater {
-            session_id: session_id.clone(),
-        });
-
-        // Update history status.
-        if let Ok(history) = history_state.0.try_lock() {
-            let _ = history.update_status(&session_id, "queued");
-        }
-
-        tracing::info!(
-            "Recording queued for later (offline): session={}",
-            session_id
-        );
-        return Ok("queued".to_string());
-    }
+    // Emit recording stopped event.
+    let _ = event_bus.0.send(PipelineEvent::RecordingStopped { duration_ms });
 
     // Get pipeline reference.
     let pipeline = pipeline_state
@@ -321,56 +321,62 @@ pub async fn stop_recording(
         .clone()
         .ok_or_else(|| "Pipeline not configured — check API keys in Settings".to_string())?;
 
-    // Read user dictionary from config for the processing request.
-    let user_dictionary = {
-        let config = config_state.0.read().await;
-        config.user_dictionary.clone()
-    };
-
-    // Build processing request with the actual recorded audio path.
-    let request = ProcessingRequest {
-        audio_path,
-        mode: session.mode,
-        app_context: session.app_context,
-        target_language: session.target_language,
-        selected_text: session.selected_text,
-        user_dictionary,
-    };
-
-    let cancel_token = session.cancel_token;
-    let history = history_state.0.clone();
+    // 取出 ManagedSession。
+    let managed_session = session
+        .managed_session
+        .ok_or_else(|| "No streaming session available".to_string())?;
 
     // Remember the mode for deciding whether to auto-inject.
-    let is_ai_assistant = matches!(request.mode, ProcessingMode::AiAssistant);
-    let injector = injector_state.0.clone();
+    let is_ai_assistant = matches!(managed_session.config().mode, ProcessingMode::AiAssistant);
 
-    // Spawn async processing task — does not block the command response.
+    let injector = injector_state.0.clone();
+    let event_tx = event_bus.0.clone();
+    let history = history_state.0.clone();
+
+    // 3. 异步处理：SessionOrchestrator::finish 处理完整流程。
     tokio::spawn(async move {
-        match pipeline.process_audio(&request, cancel_token).await {
-            Ok(processed_text) => {
+        match SessionOrchestrator::finish(&pipeline, managed_session).await {
+            SessionResult::Success {
+                raw_text,
+                processed_text,
+            } => {
                 if is_ai_assistant {
-                    // AI assistant mode: show result panel, don't auto-inject.
-                    // ProcessingComplete event is already emitted by Pipeline.
                     tracing::info!("AI assistant result ready (no auto-inject)");
                 } else {
-                    // Other modes: auto-inject text into the active application.
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     if let Err(e) = injector.inject_text(&processed_text) {
                         tracing::error!("Text injection failed: {}", e);
                     }
                 }
 
-                // Update history record.
-                if let Ok(history) = history.try_lock() {
-                    let _ = history.update_result(&session_id, &processed_text);
-                }
+                let h = history.lock().await;
+                let _ = h.update_processed(&session_id, &raw_text, &processed_text);
             }
-            Err(e) => {
-                tracing::error!("Pipeline processing failed: {}", e);
-                // Error event already emitted by the Pipeline.
-                if let Ok(history) = history.try_lock() {
-                    let _ = history.update_status(&session_id, "failed");
-                }
+            SessionResult::EmptyTranscript => {
+                tracing::warn!("STT returned empty transcript");
+                let _ = event_tx.send(PipelineEvent::Error {
+                    message: "未检测到语音内容，请重试".to_string(),
+                    user_action: tingyuxuan_core::error::UserAction::Retry,
+                    raw_text: None,
+                });
+                let h = history.lock().await;
+                let _ = h.update_status(&session_id, "failed");
+            }
+            SessionResult::Failed { error, raw_text } => {
+                tracing::error!("Pipeline processing failed: {error}");
+                let se = StructuredError::from(&error);
+                let _ = event_tx.send(PipelineEvent::Error {
+                    message: se.message,
+                    user_action: se.user_action,
+                    raw_text,
+                });
+                let h = history.lock().await;
+                let _ = h.update_status(&session_id, "failed");
+            }
+            SessionResult::Cancelled => {
+                tracing::info!("Session was cancelled");
+                let h = history.lock().await;
+                let _ = h.update_status(&session_id, "cancelled");
             }
         }
     });
@@ -385,14 +391,18 @@ pub async fn cancel_recording(
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
 ) -> Result<(), String> {
-    // Cancel the recording via the actor (deletes the WAV file).
+    // Cancel the recording via the actor.
     // Ignore errors — recording may have already been stopped.
     let _ = recorder_state.0.cancel().await;
 
     let session = session_state.0.lock().await.take();
     if let Some(session) = session {
         // Cancel any in-progress STT/LLM operations.
-        session.cancel_token.cancel();
+        if let Some(managed) = &session.managed_session {
+            managed.cancel();
+        }
+        // Drop managed session → closes WebSocket.
+        drop(session.managed_session);
 
         // Update history.
         let history = history_state.0.lock().await;
@@ -404,7 +414,7 @@ pub async fn cancel_recording(
 }
 
 // ---------------------------------------------------------------------------
-// Retry
+// Retry (重试 LLM 处理，使用历史记录中保存的 transcript)
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
@@ -422,13 +432,13 @@ pub async fn retry_transcription(
             .ok_or_else(|| format!("Record {} not found", id))?
     };
 
-    // 2. Verify the audio file still exists (may have been cleaned up).
-    let audio_path = record
-        .audio_path
-        .ok_or_else(|| "此记录没有关联的音频文件".to_string())?;
-    let audio_path = PathBuf::from(&audio_path);
-    if !audio_path.exists() {
-        return Err("音频文件已过期，无法重试".to_string());
+    // 2. 需要有原始转写文本才能重试 LLM。
+    let raw_text = record
+        .raw_text
+        .ok_or_else(|| "此记录没有原始转写文本，无法重试".to_string())?;
+
+    if raw_text.trim().is_empty() {
+        return Err("原始转写文本为空，无法重试".to_string());
     }
 
     // 3. Get pipeline.
@@ -440,12 +450,19 @@ pub async fn retry_transcription(
         .ok_or_else(|| "Pipeline 未配置，请先设置 API Key".to_string())?;
 
     // 4. Build processing request.
-    let request = ProcessingRequest {
-        audio_path,
-        mode: parse_mode(&record.mode),
-        app_context: record.app_context,
+    let context = record
+        .context_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+    let mode = record
+        .mode
+        .parse::<ProcessingMode>()
+        .unwrap_or(ProcessingMode::Dictate);
+    let request = tingyuxuan_core::pipeline::ProcessingRequest {
+        mode,
+        context,
         target_language: None,
-        selected_text: None,
         user_dictionary: Vec::new(),
     };
 
@@ -460,24 +477,25 @@ pub async fn retry_transcription(
 
     // 7. Spawn async processing.
     let history = history_state.0.clone();
-    let cancel = CancellationToken::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
     let tx = event_bus.0.clone();
     tokio::spawn(async move {
-        match pipeline.process_audio(&request, cancel).await {
+        match pipeline
+            .process_transcript(raw_text, &request, cancel)
+            .await
+        {
             Ok(processed_text) => {
                 let _ = tx.send(PipelineEvent::ProcessingComplete {
                     processed_text: processed_text.clone(),
                 });
-                if let Ok(h) = history.try_lock() {
-                    let _ = h.update_result(&id, &processed_text);
-                }
+                let h = history.lock().await;
+                let _ = h.update_result(&id, &processed_text);
                 tracing::info!("Retry succeeded for session {}", id);
             }
             Err(e) => {
                 tracing::error!("Retry failed for {}: {}", id, e);
-                if let Ok(h) = history.try_lock() {
-                    let _ = h.update_status(&id, "failed");
-                }
+                let h = history.lock().await;
+                let _ = h.update_status(&id, "failed");
             }
         }
     });
@@ -512,7 +530,8 @@ pub async fn test_stt_connection(config_state: State<'_, ConfigState>) -> Result
     let api_key = resolve_api_key("stt", &config.stt.api_key_ref)
         .ok_or_else(|| "No STT API key configured".to_string())?;
 
-    let provider = stt::create_stt_provider(&config.stt, api_key).map_err(|e| e.to_string())?;
+    let provider =
+        stt::create_streaming_stt_provider(&config.stt, api_key).map_err(|e| e.to_string())?;
 
     provider.test_connection().await.map_err(|e| e.to_string())
 }
@@ -669,17 +688,4 @@ pub async fn remove_dictionary_word(
     config.user_dictionary.retain(|w| w != &word);
     config.save().map_err(|e| e.to_string())?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn parse_mode(mode: &str) -> ProcessingMode {
-    match mode {
-        "translate" => ProcessingMode::Translate,
-        "ai_assistant" => ProcessingMode::AiAssistant,
-        "edit" => ProcessingMode::Edit,
-        _ => ProcessingMode::Dictate,
-    }
 }

@@ -1,37 +1,27 @@
-pub mod dashscope_asr;
+pub mod dashscope_streaming;
 pub mod provider;
-pub mod whisper;
+pub mod streaming;
 
-pub use provider::{STTOptions, STTProvider, STTResult};
+pub use provider::STTOptions;
+pub use streaming::{AudioChunk, StreamingSTTEvent, StreamingSTTProvider, StreamingSession};
 
 use crate::config::{STTConfig, STTProviderType};
 use crate::error::STTError;
 
-/// Create an STT provider from the given configuration.
+/// 创建流式 STT provider。
 ///
-/// The `api_key` parameter should contain the resolved API key (not the key reference).
-pub fn create_stt_provider(
+/// MVP 仅支持 DashScope Paraformer 流式识别。
+pub fn create_streaming_stt_provider(
     config: &STTConfig,
     api_key: String,
-) -> Result<Box<dyn STTProvider>, STTError> {
+) -> Result<Box<dyn StreamingSTTProvider>, STTError> {
     if api_key.is_empty() {
         return Err(STTError::NotConfigured);
     }
 
     match config.provider {
-        STTProviderType::Whisper => Ok(Box::new(whisper::WhisperProvider::new(
-            api_key,
-            config.base_url.clone(),
-            config.model.clone(),
-        )?)),
-        STTProviderType::DashScopeASR => Ok(Box::new(dashscope_asr::DashScopeASRProvider::new(
-            api_key,
-            config.base_url.clone(),
-            config.model.clone(),
-        )?)),
-        STTProviderType::Custom => {
-            // Custom providers are treated as Whisper-compatible (OpenAI API format).
-            Ok(Box::new(whisper::WhisperProvider::new(
+        STTProviderType::DashScopeStreaming => {
+            Ok(Box::new(dashscope_streaming::DashScopeStreamingProvider::new(
                 api_key,
                 config.base_url.clone(),
                 config.model.clone(),

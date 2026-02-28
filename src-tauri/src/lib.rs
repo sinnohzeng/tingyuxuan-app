@@ -6,7 +6,6 @@ mod tray;
 
 use state::AppStates;
 use tauri::{Emitter, Manager};
-use tingyuxuan_core::pipeline::ProcessingRequest;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,7 +19,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_shell::init()) // 用于 shell:default 权能（未来可能需要 open URL）
         .setup(|app| {
             // Build all application states (split into independent managed states).
             let states = AppStates::new()?;
@@ -34,16 +33,12 @@ pub fn run() {
 
             // ----------------------------------------------------------
             // Event bridge: forward pipeline events to the frontend,
-            // manage floating-bar window visibility, and handle
-            // network status changes (queue drain on restore).
+            // manage floating-bar window visibility, and track
+            // network status changes.
             // ----------------------------------------------------------
             let mut event_rx = states.event_bus.0.subscribe();
             let handle = app.handle().clone();
             let network_flag = states.network.0.clone();
-            let queue_arc = states.queue.0.clone();
-            let pipeline_arc = states.pipeline.0.clone();
-            let history_arc = states.history.0.clone();
-            let event_tx_clone = states.event_bus.0.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                 let event = match event_rx.recv().await {
@@ -66,7 +61,6 @@ pub fn run() {
                                 let _ = window.set_focus();
                             }
                             PipelineEvent::Error { .. } => {
-                                // Show floating bar on errors so user sees the error panel.
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
@@ -78,71 +72,9 @@ pub fn run() {
                         }
                     }
 
-                    // Track network status and drain offline queue on restore.
+                    // Track network status.
                     if let PipelineEvent::NetworkStatusChanged { online } = &event {
                         network_flag.store(*online, std::sync::atomic::Ordering::Release);
-
-                        if *online {
-                            // Network is back — drain the offline queue and process.
-                            let queued_items = queue_arc.lock().await.drain();
-                            if !queued_items.is_empty() {
-                                tracing::info!(
-                                    "Network restored — processing {} queued recording(s)",
-                                    queued_items.len()
-                                );
-                                let pipeline_opt = pipeline_arc.read().await.clone();
-                                if let Some(pipeline) = pipeline_opt {
-                                    for item in queued_items {
-                                        let p = pipeline.clone();
-                                        let h = history_arc.clone();
-                                        let tx = event_tx_clone.clone();
-                                        tokio::spawn(async move {
-                                            let request = ProcessingRequest {
-                                                audio_path: item.audio_path,
-                                                mode: item.mode,
-                                                app_context: item.app_context,
-                                                target_language: item.target_language,
-                                                selected_text: item.selected_text,
-                                                user_dictionary: Vec::new(),
-                                            };
-                                            let cancel = tokio_util::sync::CancellationToken::new();
-                                            match p.process_audio(&request, cancel).await {
-                                                Ok(processed_text) => {
-                                                    let _ = tx.send(
-                                                        PipelineEvent::ProcessingComplete {
-                                                            processed_text: processed_text.clone(),
-                                                        },
-                                                    );
-                                                    if let Ok(h) = h.try_lock() {
-                                                        let _ = h.update_result(
-                                                            &item.session_id,
-                                                            &processed_text,
-                                                        );
-                                                    }
-                                                    tracing::info!(
-                                                        "Queued recording processed: {}",
-                                                        item.session_id
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "Failed to process queued recording {}: {}",
-                                                        item.session_id,
-                                                        e
-                                                    );
-                                                    if let Ok(h) = h.try_lock() {
-                                                        let _ = h.update_status(
-                                                            &item.session_id,
-                                                            "failed",
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                        }
                     }
 
                     // Forward all events to the frontend.
@@ -169,31 +101,9 @@ pub fn run() {
                 drop(config);
 
                 let monitor = tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
-                let _monitor_token = monitor.start(states.event_bus.0.clone());
-                // _monitor_token is dropped when the app exits, stopping the monitor.
-            }
-
-            // ----------------------------------------------------------
-            // Recovery check: scan for unfinished recordings
-            // ----------------------------------------------------------
-            {
-                let handle2 = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(data_dir) = tingyuxuan_core::config::AppConfig::data_dir() {
-                        let cache_dir = data_dir.join("cache").join("audio");
-                        let unfinished =
-                            tingyuxuan_core::pipeline::recovery::scan_unfinished_recordings(
-                                &cache_dir,
-                            );
-                        if !unfinished.is_empty() {
-                            tracing::info!(
-                                "Found {} unfinished recording(s) from previous session",
-                                unfinished.len()
-                            );
-                            let _ = handle2.emit("recovery-available", &unfinished);
-                        }
-                    }
-                });
+                let monitor_token = monitor.start(states.event_bus.0.clone());
+                // Store monitor token in managed state to keep it alive.
+                app.manage(state::MonitorState(monitor_token));
             }
 
             // Register each state as a separate Tauri managed state.
@@ -203,7 +113,6 @@ pub fn run() {
             app.manage(states.event_bus);
             app.manage(states.session);
             app.manage(states.recorder);
-            app.manage(states.queue);
             app.manage(states.network);
             app.manage(states.injector);
             app.manage(states.detector);

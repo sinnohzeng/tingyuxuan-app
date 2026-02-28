@@ -1,21 +1,25 @@
 [package]
 name = "tingyuxuan-core"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Cross-platform core engine for TingYuXuan voice input tool"
 license = "LicenseRef-Proprietary"
 
 [features]
 default = ["audio"]
-audio = ["dep:cpal", "dep:hound"]
+audio = ["dep:cpal"]
+testing = []  # 开放内部构造器供集成测试使用
 
 [dependencies]
 # Audio (optional — disabled for Android JNI builds)
 cpal = { version = "0.17", optional = true }
-hound = { version = "3.5", optional = true }
 
 # HTTP client
-reqwest = { version = "0.13", features = ["json", "multipart", "stream"] }
+reqwest = { version = "0.13", features = ["json"] }
+
+# WebSocket (流式 STT)
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

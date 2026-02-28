@@ -7,17 +7,23 @@ use std::path::PathBuf;
 const CURRENT_CONFIG_VERSION: u32 = 1;
 
 /// Main application configuration.
+///
+/// Android 端只传 `stt`/`llm`/`language` 字段，其余用 `#[serde(default)]`
+/// 填充默认值，避免反序列化失败。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Schema version — used to detect and migrate old config files.
     /// Defaults to 0 for configs written before version tracking existed.
     #[serde(default)]
     pub config_version: u32,
+    #[serde(default)]
     pub general: GeneralConfig,
+    #[serde(default)]
     pub shortcuts: ShortcutConfig,
     pub language: LanguageConfig,
     pub stt: STTConfig,
     pub llm: LLMConfig,
+    #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub user_dictionary: Vec<String>,
@@ -28,6 +34,16 @@ pub struct GeneralConfig {
     pub auto_launch: bool,
     pub sound_feedback: bool,
     pub floating_bar_position: FloatingBarPosition,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            auto_launch: true,
+            sound_feedback: true,
+            floating_bar_position: FloatingBarPosition::BottomCenter,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +62,17 @@ pub struct ShortcutConfig {
     pub translate: String,
     pub ai_assistant: String,
     pub cancel: String,
+}
+
+impl Default for ShortcutConfig {
+    fn default() -> Self {
+        Self {
+            dictate: "alt_right".to_string(),
+            translate: "shift+alt_right".to_string(),
+            ai_assistant: "alt+space".to_string(),
+            cancel: "escape".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,12 +94,9 @@ pub struct STTConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum STTProviderType {
-    #[serde(rename = "whisper")]
-    Whisper,
-    #[serde(rename = "dashscope_asr")]
-    DashScopeASR,
-    #[serde(rename = "custom")]
-    Custom,
+    /// DashScope Paraformer 流式识别（WebSocket）— MVP 唯一 STT 选项。
+    #[serde(rename = "dashscope_streaming")]
+    DashScopeStreaming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,9 +122,34 @@ pub enum LLMProviderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
-    pub audio_retention_hours: u64,
-    pub failed_retention_days: u64,
-    pub max_cache_size_mb: u64,
+    /// 历史记录保留天数（流式架构不再写音频文件）。
+    #[serde(default = "default_history_retention_days")]
+    pub history_retention_days: u64,
+    // 向后兼容：忽略旧配置中的已移除字段。
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    audio_retention_hours: Option<u64>,
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    failed_retention_days: Option<u64>,
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    max_cache_size_mb: Option<u64>,
+}
+
+fn default_history_retention_days() -> u64 {
+    30
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            history_retention_days: 30,
+            audio_retention_hours: None,
+            failed_retention_days: None,
+            max_cache_size_mb: None,
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -124,10 +173,10 @@ impl Default for AppConfig {
                 variant: None,
             },
             stt: STTConfig {
-                provider: STTProviderType::Whisper,
+                provider: STTProviderType::DashScopeStreaming,
                 api_key_ref: String::new(),
                 base_url: None,
-                model: Some("whisper-1".to_string()),
+                model: Some("paraformer-realtime-v2".to_string()),
             },
             llm: LLMConfig {
                 provider: LLMProviderType::OpenAI,
@@ -136,9 +185,10 @@ impl Default for AppConfig {
                 model: "gpt-4o-mini".to_string(),
             },
             cache: CacheConfig {
-                audio_retention_hours: 24,
-                failed_retention_days: 7,
-                max_cache_size_mb: 500,
+                history_retention_days: 30,
+                audio_retention_hours: None,
+                failed_retention_days: None,
+                max_cache_size_mb: None,
             },
             user_dictionary: Vec::new(),
         }
@@ -262,15 +312,9 @@ impl AppConfig {
             return url.clone();
         }
         match self.stt.provider {
-            STTProviderType::Whisper => "https://api.openai.com/v1".to_string(),
-            STTProviderType::DashScopeASR => {
-                "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()
+            STTProviderType::DashScopeStreaming => {
+                "wss://dashscope.aliyuncs.com/api-ws/v1/inference/".to_string()
             }
-            STTProviderType::Custom => self
-                .stt
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8080".to_string()),
         }
     }
 }
@@ -279,6 +323,7 @@ impl AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderPreset {
     pub name: String,
+    pub llm_provider: LLMProviderType,
     pub llm_base_url: String,
     pub llm_models: Vec<String>,
     pub stt_provider: STTProviderType,
@@ -291,34 +336,16 @@ impl ProviderPreset {
         vec![
             ProviderPreset {
                 name: "阿里云 DashScope".to_string(),
+                llm_provider: LLMProviderType::DashScope,
                 llm_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
                 llm_models: vec![
                     "qwen-turbo".to_string(),
                     "qwen-plus".to_string(),
                     "qwen-max".to_string(),
                 ],
-                stt_provider: STTProviderType::DashScopeASR,
-                stt_base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
-                stt_model: Some("qwen2-audio-instruct".to_string()),
-            },
-            ProviderPreset {
-                name: "火山引擎 (豆包)".to_string(),
-                llm_base_url: "https://ark.cn-beijing.volces.com/api/v3".to_string(),
-                llm_models: vec![
-                    "doubao-1-5-pro-256k".to_string(),
-                    "doubao-1-5-lite-32k".to_string(),
-                ],
-                stt_provider: STTProviderType::Whisper,
+                stt_provider: STTProviderType::DashScopeStreaming,
                 stt_base_url: None,
-                stt_model: None,
-            },
-            ProviderPreset {
-                name: "OpenAI".to_string(),
-                llm_base_url: "https://api.openai.com/v1".to_string(),
-                llm_models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()],
-                stt_provider: STTProviderType::Whisper,
-                stt_base_url: Some("https://api.openai.com/v1".to_string()),
-                stt_model: Some("whisper-1".to_string()),
+                stt_model: Some("paraformer-realtime-v2".to_string()),
             },
         ]
     }
@@ -333,7 +360,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.llm.model, "gpt-4o-mini");
         assert_eq!(config.shortcuts.dictate, "alt_right");
-        assert_eq!(config.cache.audio_retention_hours, 24);
+        assert_eq!(config.cache.history_retention_days, 30);
     }
 
     #[test]
@@ -378,7 +405,7 @@ mod tests {
             "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
             "language": { "primary": "auto", "translation_target": "en", "variant": null },
-            "stt": { "provider": "whisper", "api_key_ref": "", "base_url": null, "model": "whisper-1" },
+            "stt": { "provider": "dashscope_streaming", "api_key_ref": "", "base_url": null, "model": "paraformer-realtime-v2" },
             "llm": { "provider": "openai", "api_key_ref": "", "base_url": null, "model": "gpt-4o-mini" },
             "cache": { "audio_retention_hours": 24, "failed_retention_days": 7, "max_cache_size_mb": 500 }
         }"#;
@@ -401,10 +428,8 @@ mod tests {
     #[test]
     fn test_provider_presets() {
         let presets = ProviderPreset::all();
-        assert_eq!(presets.len(), 3);
+        assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "阿里云 DashScope");
-        assert_eq!(presets[1].name, "火山引擎 (豆包)");
-        assert_eq!(presets[2].name, "OpenAI");
     }
 
     #[test]
@@ -420,7 +445,7 @@ mod tests {
             "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
             "language": { "primary": "auto", "translation_target": "en", "variant": null },
-            "stt": { "provider": "whisper", "api_key_ref": "", "base_url": null, "model": "whisper-1" },
+            "stt": { "provider": "dashscope_streaming", "api_key_ref": "", "base_url": null, "model": "paraformer-realtime-v2" },
             "llm": { "provider": "openai", "api_key_ref": "", "base_url": null, "model": "gpt-4o-mini" },
             "cache": { "audio_retention_hours": 24, "failed_retention_days": 7, "max_cache_size_mb": 500 }
         }"#;
@@ -445,7 +470,7 @@ mod tests {
             "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
             "language": { "primary": "zh", "translation_target": "en", "variant": null },
-            "stt": { "provider": "whisper", "api_key_ref": "test-key", "base_url": null, "model": "whisper-1" },
+            "stt": { "provider": "dashscope_streaming", "api_key_ref": "test-key", "base_url": null, "model": "paraformer-realtime-v2" },
             "llm": { "provider": "openai", "api_key_ref": "test-key", "base_url": null, "model": "gpt-4o" },
             "cache": { "audio_retention_hours": 48, "failed_retention_days": 7, "max_cache_size_mb": 500 }
         })).unwrap();
@@ -462,7 +487,8 @@ mod tests {
         // Original values preserved.
         assert_eq!(config.language.primary, "zh");
         assert_eq!(config.llm.model, "gpt-4o");
-        assert_eq!(config.cache.audio_retention_hours, 48);
+        // Old config has audio_retention_hours (ignored) but no history_retention_days → serde default 30.
+        assert_eq!(config.cache.history_retention_days, 30);
     }
 
     #[test]
@@ -471,5 +497,22 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.config_version, config.config_version);
+    }
+
+    #[test]
+    fn test_android_minimal_config_deserializes() {
+        // Android ConfigStore.buildConfigJson() 只提供 stt/llm/language/user_dictionary，
+        // general/shortcuts/cache 应使用 serde(default) 默认值。
+        let json = r#"{
+            "stt": { "provider": "dashscope_streaming", "api_key_ref": "test-key" },
+            "llm": { "provider": "openai", "api_key_ref": "test-key", "model": "gpt-4o-mini" },
+            "language": { "primary": "zh", "translation_target": "en" },
+            "user_dictionary": []
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        // 默认值应已填充。
+        assert!(config.general.auto_launch);
+        assert_eq!(config.shortcuts.dictate, "alt_right");
+        assert_eq!(config.cache.history_retention_days, 30);
     }
 }

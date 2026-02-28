@@ -10,22 +10,33 @@
 //! table**: each Pipeline instance is stored in a global `HashMap<u64, Arc<Pipeline>>`
 //! and the Kotlin side only sees an opaque `Long` handle ID.
 //!
+//! # Streaming Architecture
+//!
+//! 流式录音流程：
+//! 1. `startStreaming(handle, contextJson)` → 建立 WebSocket + 创建 session
+//! 2. `sendAudioChunk(handle, pcmData)` → 发送 PCM 帧到 STT
+//! 3. `stopStreaming(handle)` → 收集 STT 结果 → LLM 处理 → 返回结果 JSON
+//!
 //! # Runtime Management
 //!
 //! A single tokio `Runtime` is shared across all JNI calls via `OnceLock`,
-//! avoiding the overhead of creating a new runtime per call (~10-50ms + thread
-//! pool resource leaks).
+//! avoiding the overhead of creating a new runtime per call.
 
 mod handle;
 
 use handle::{get_handle, register_handle, remove_handle};
 use jni::EnvUnowned;
 use jni::errors::LogErrorAndDefault;
-use jni::objects::{JClass, JString};
+use jni::objects::{JClass, JShortArray, JString};
 use jni::sys::jlong;
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use tingyuxuan_core::context::InputContext;
+use tingyuxuan_core::error::StructuredError;
 use tingyuxuan_core::llm::LLMProvider;
-use tingyuxuan_core::pipeline::Pipeline;
+use tingyuxuan_core::llm::provider::ProcessingMode;
+use tingyuxuan_core::pipeline::{ManagedSession, Pipeline, SessionConfig, SessionOrchestrator, SessionResult};
+use tingyuxuan_core::stt::streaming::AudioChunk;
 
 /// 全局共享的 tokio Runtime，通过 OnceLock 懒初始化。
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -44,26 +55,60 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// JNI_OnLoad — 在 System.loadLibrary() 时自动调用。
-/// 初始化 Android logcat 日志输出。
+// ---------------------------------------------------------------------------
+// Streaming session state
+// ---------------------------------------------------------------------------
+
+/// 全局流式会话表。key = pipeline handle ID。
+static STREAMING_SESSIONS: OnceLock<Mutex<HashMap<u64, ManagedSession>>> = OnceLock::new();
+
+fn streaming_sessions() -> &'static Mutex<HashMap<u64, ManagedSession>> {
+    STREAMING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_managed_session(handle_id: u64, session: ManagedSession) -> Result<(), String> {
+    let mut map = streaming_sessions()
+        .lock()
+        .map_err(|_| "Streaming sessions mutex poisoned".to_string())?;
+    if map.contains_key(&handle_id) {
+        tracing::warn!(handle_id, "Replacing existing streaming session (resource leak)");
+    }
+    map.insert(handle_id, session);
+    Ok(())
+}
+
+fn take_managed_session(handle_id: u64) -> Result<ManagedSession, String> {
+    let mut map = streaming_sessions()
+        .lock()
+        .map_err(|_| "Streaming sessions mutex poisoned".to_string())?;
+    map.remove(&handle_id)
+        .ok_or_else(|| format!("No active streaming session for handle: {handle_id}"))
+}
+
+// ---------------------------------------------------------------------------
+// JNI_OnLoad
+// ---------------------------------------------------------------------------
+
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(
     _vm: *mut jni::sys::JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
-    // 初始化 android_logger → logcat
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Debug)
             .with_tag("TingYuXuanRust"),
     );
-    // 桥接 tracing → log → logcat
     let _ = tracing_log::LogTracer::init();
 
     tracing::info!("TingYuXuan JNI library loaded");
     jni::sys::JNI_VERSION_1_6
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// 构建错误 JSON 字符串，供 Kotlin 侧解析。
 fn error_json(error_code: &str, message: &str, user_action: &str) -> String {
@@ -76,49 +121,20 @@ fn error_json(error_code: &str, message: &str, user_action: &str) -> String {
     .to_string()
 }
 
-/// 从 PipelineError 映射到结构化错误 JSON。
-fn pipeline_error_to_json(e: &tingyuxuan_core::error::PipelineError) -> String {
-    use tingyuxuan_core::error::PipelineError;
-    match e {
-        PipelineError::Stt(stt_err) => {
-            use tingyuxuan_core::error::STTError;
-            match stt_err {
-                STTError::AuthFailed => {
-                    error_json("stt_auth_failed", &e.to_string(), "check_api_key")
-                }
-                STTError::Timeout(_) => error_json("timeout", &e.to_string(), "retry"),
-                STTError::NetworkError(_) => {
-                    error_json("network_error", &e.to_string(), "retry")
-                }
-                STTError::NotConfigured => {
-                    error_json("not_configured", &e.to_string(), "open_settings")
-                }
-                _ => error_json("stt_error", &e.to_string(), "retry"),
-            }
-        }
-        PipelineError::Llm(llm_err) => {
-            use tingyuxuan_core::error::LLMError;
-            match llm_err {
-                LLMError::AuthFailed => {
-                    error_json("llm_auth_failed", &e.to_string(), "check_api_key")
-                }
-                LLMError::Timeout => error_json("timeout", &e.to_string(), "retry"),
-                LLMError::NetworkError(_) => {
-                    error_json("network_error", &e.to_string(), "retry")
-                }
-                LLMError::NotConfigured => {
-                    error_json("not_configured", &e.to_string(), "open_settings")
-                }
-                _ => error_json("llm_error", &e.to_string(), "retry"),
-            }
-        }
-        PipelineError::Cancelled => error_json("cancelled", "Processing cancelled", "dismiss"),
-        PipelineError::Busy => error_json("busy", "Pipeline is busy", "retry"),
-        PipelineError::Audio(audio_err) => {
-            error_json("audio_error", &audio_err.to_string(), "retry")
-        }
-    }
+/// 从 StructuredError 构建 JSON 字符串。
+fn structured_error_to_json(se: &StructuredError) -> String {
+    serde_json::json!({
+        "success": false,
+        "error_code": se.error_code,
+        "message": se.message,
+        "user_action": format!("{:?}", se.user_action).to_lowercase(),
+    })
+    .to_string()
 }
+
+// ---------------------------------------------------------------------------
+// initPipeline / destroyPipeline
+// ---------------------------------------------------------------------------
 
 /// Initialize a new processing pipeline and return an opaque handle.
 ///
@@ -139,22 +155,22 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
         let config: tingyuxuan_core::config::AppConfig = match serde_json::from_str(&config_str) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Failed to parse config JSON: {e}");
+                tracing::warn!("Failed to parse config JSON: {e}");
                 return Ok(0);
             }
         };
 
-        // Create pipeline components from config.
         let stt_key = config.stt.api_key_ref.clone();
         let llm_key = config.llm.api_key_ref.clone();
 
-        let stt_provider = match tingyuxuan_core::stt::create_stt_provider(&config.stt, stt_key) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("Failed to create STT provider: {e}");
-                return Ok(0);
-            }
-        };
+        let stt_provider =
+            match tingyuxuan_core::stt::create_streaming_stt_provider(&config.stt, stt_key) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Failed to create STT provider: {e}");
+                    return Ok(0);
+                }
+            };
 
         let llm_base_url = config
             .llm
@@ -168,7 +184,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
         ) {
             Ok(p) => Box::new(p),
             Err(e) => {
-                tracing::error!("Failed to create LLM provider: {e}");
+                tracing::warn!("Failed to create LLM provider: {e}");
                 return Ok(0);
             }
         };
@@ -189,81 +205,10 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
     .resolve::<LogErrorAndDefault>()
 }
 
-/// Process an audio file through the pipeline.
-///
-/// Returns a JSON string with structured result including error_code and user_action
-/// on failure, enabling the Kotlin UI to show appropriate error messages.
-///
-/// # JNI Signature
-/// `(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;`
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_processAudio<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    handle: jlong,
-    audio_path: JString<'local>,
-    mode: JString<'local>,
-    selected_text: JString<'local>,
-) -> JString<'local> {
-    let _span = tracing::info_span!("jni_process_audio", handle).entered();
-
-    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
-        // Extract all JNI strings upfront to avoid borrow conflicts.
-        let audio_path_str: String = audio_path.try_to_string(env)?;
-        let mode_str: String = mode.try_to_string(env)?;
-        let selected_text_opt: Option<String> = selected_text
-            .try_to_string(env)
-            .ok()
-            .and_then(|s| if s.is_empty() { None } else { Some(s) });
-
-        let pipeline = match get_handle(handle as u64) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("Invalid handle: {e}");
-                let json = error_json("invalid_handle", &e, "dismiss");
-                return env.new_string(json);
-            }
-        };
-
-        let processing_mode = match mode_str.as_str() {
-            "translate" => tingyuxuan_core::llm::provider::ProcessingMode::Translate,
-            "ai_assistant" => tingyuxuan_core::llm::provider::ProcessingMode::AiAssistant,
-            "edit" => tingyuxuan_core::llm::provider::ProcessingMode::Edit,
-            _ => tingyuxuan_core::llm::provider::ProcessingMode::Dictate,
-        };
-
-        let request = tingyuxuan_core::pipeline::ProcessingRequest {
-            audio_path: std::path::PathBuf::from(audio_path_str),
-            mode: processing_mode,
-            app_context: None,
-            target_language: None,
-            selected_text: selected_text_opt,
-            user_dictionary: Vec::new(),
-        };
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-
-        // 使用全局共享的 tokio Runtime。
-        let rt = runtime();
-        let result = rt.block_on(pipeline.process_audio(&request, cancel));
-
-        let json_str = match result {
-            Ok(text) => serde_json::json!({ "success": true, "text": text }).to_string(),
-            Err(e) => {
-                tracing::error!("Pipeline processing failed: {e}");
-                pipeline_error_to_json(&e)
-            }
-        };
-
-        env.new_string(json_str)
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
 /// Destroy a pipeline handle, releasing the associated resources.
 ///
 /// # JNI Signature
-/// `(J)V` — takes handle (long), returns void.
+/// `(J)V`
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_destroyPipeline(
     _env: EnvUnowned,
@@ -272,12 +217,196 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_destroyPipeline(
 ) {
     let _span = tracing::info_span!("jni_destroy_pipeline", handle).entered();
 
+    // 同时清理可能残留的流式会话。
+    if let Ok(session) = take_managed_session(handle as u64) {
+        session.cancel();
+    }
+
     match remove_handle(handle as u64) {
         Ok(true) => tracing::info!(handle, "Pipeline destroyed"),
         Ok(false) => tracing::warn!(handle, "Attempted to destroy invalid pipeline handle"),
         Err(e) => tracing::error!(handle, "Failed to remove handle: {e}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Streaming API: startStreaming / sendAudioChunk / stopStreaming
+// ---------------------------------------------------------------------------
+
+/// 开始流式 STT 会话。
+///
+/// 建立 WebSocket 连接，准备接收音频帧。
+///
+/// # JNI Signature
+/// `(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;`
+/// 参数：handle, mode, contextJson
+/// 返回：JSON `{ "success": true }` 或错误 JSON
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_startStreaming<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    mode: JString<'local>,
+    context_json: JString<'local>,
+) -> JString<'local> {
+    let _span = tracing::info_span!("jni_start_streaming", handle).entered();
+
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let mode_str: String = mode.try_to_string(env)?;
+        let context: InputContext = context_json
+            .try_to_string(env)
+            .ok()
+            .and_then(|s| if s.is_empty() { None } else { Some(s) })
+            .and_then(|s| match serde_json::from_str(&s) {
+                Ok(ctx) => Some(ctx),
+                Err(e) => {
+                    tracing::warn!("Failed to parse InputContext JSON: {e}");
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        let pipeline = match get_handle(handle as u64) {
+            Ok(p) => p,
+            Err(e) => {
+                let json = error_json("invalid_handle", &e, "dismiss");
+                return env.new_string(json);
+            }
+        };
+
+        let processing_mode = mode_str
+            .parse::<ProcessingMode>()
+            .unwrap_or_else(|_| {
+                tracing::warn!("Unknown processing mode '{mode_str}', falling back to Dictate");
+                ProcessingMode::Dictate
+            });
+
+        let session_config = SessionConfig {
+            mode: processing_mode,
+            context,
+            target_language: None,
+            user_dictionary: Vec::new(),
+            stt_options: tingyuxuan_core::stt::STTOptions {
+                language: None,
+                prompt: None,
+            },
+        };
+
+        let rt = runtime();
+        let result = rt.block_on(SessionOrchestrator::start(&pipeline, session_config));
+
+        match result {
+            Ok(managed_session) => {
+                if let Err(e) = store_managed_session(handle as u64, managed_session) {
+                    let json = error_json("internal_error", &e, "retry");
+                    return env.new_string(json);
+                }
+                let json = serde_json::json!({ "success": true }).to_string();
+                env.new_string(json)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to start streaming: {e}");
+                let se = StructuredError::from(&e);
+                let json = structured_error_to_json(&se);
+                env.new_string(json)
+            }
+        }
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// 发送一帧 PCM 音频到流式 STT。
+///
+/// # JNI Signature
+/// `(J[S)Z`
+/// 参数：handle, pcmData (ShortArray)
+/// 返回：true 表示成功发送，false 表示会话不存在或已关闭
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_sendAudioChunk(
+    mut env: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    pcm_data: JShortArray,
+) -> bool {
+    env.with_env(|env| -> jni::errors::Result<bool> {
+        let map = match streaming_sessions().lock() {
+            Ok(m) => m,
+            Err(_) => return Ok(false),
+        };
+        let Some(session) = map.get(&(handle as u64)) else {
+            return Ok(false);
+        };
+
+        let len = pcm_data.len(&env)? as usize;
+        let mut buf = vec![0i16; len];
+        pcm_data.get_region(&env, 0, &mut buf)?;
+
+        Ok(session.send_audio(AudioChunk { samples: buf }))
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// 停止流式录音，收集 STT 结果，执行 LLM 处理。
+///
+/// 阻塞调用 — 等待 STT 最终结果和 LLM 处理完成。
+///
+/// # JNI Signature
+/// `(J)Ljava/lang/String;`
+/// 参数：handle
+/// 返回：JSON `{ "success": true, "text": "..." }` 或错误 JSON
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_stopStreaming<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> JString<'local> {
+    let _span = tracing::info_span!("jni_stop_streaming", handle).entered();
+
+    env.with_env(|env| -> jni::errors::Result<JString<'local>> {
+        let pipeline = match get_handle(handle as u64) {
+            Ok(p) => p,
+            Err(e) => {
+                let json = error_json("invalid_handle", &e, "dismiss");
+                return env.new_string(json);
+            }
+        };
+
+        let session = match take_managed_session(handle as u64) {
+            Ok(s) => s,
+            Err(e) => {
+                let json = error_json("no_session", &e, "dismiss");
+                return env.new_string(json);
+            }
+        };
+
+        let rt = runtime();
+        let json_str = rt.block_on(async {
+            match SessionOrchestrator::finish(&pipeline, session).await {
+                SessionResult::Success { processed_text, .. } => {
+                    serde_json::json!({ "success": true, "text": processed_text }).to_string()
+                }
+                SessionResult::EmptyTranscript => {
+                    error_json("stt_empty", "STT returned empty text", "retry")
+                }
+                SessionResult::Failed { error, .. } => {
+                    tracing::error!("Pipeline processing failed: {error}");
+                    let se = StructuredError::from(&error);
+                    structured_error_to_json(&se)
+                }
+                SessionResult::Cancelled => {
+                    error_json("cancelled", "Processing cancelled", "dismiss")
+                }
+            }
+        });
+
+        env.new_string(json_str)
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+// ---------------------------------------------------------------------------
+// Utility JNI functions
+// ---------------------------------------------------------------------------
 
 /// Validate a config JSON string without creating a pipeline.
 ///
@@ -293,8 +422,8 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_validateConfig<'local
         let config_str: String = config_json.try_to_string(env)?;
 
         let json = match serde_json::from_str::<tingyuxuan_core::config::AppConfig>(&config_str) {
-            Ok(_) => serde_json::json!({ "valid": true }).to_string(),
-            Err(e) => serde_json::json!({ "valid": false, "error": e.to_string() }).to_string(),
+            Ok(_) => serde_json::json!({ "success": true }).to_string(),
+            Err(e) => error_json("invalid_config", &e.to_string(), "open_settings"),
         };
 
         env.new_string(json)
@@ -320,9 +449,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
         let config: tingyuxuan_core::config::AppConfig = match serde_json::from_str(&config_str) {
             Ok(c) => c,
             Err(e) => {
-                let json =
-                    serde_json::json!({ "success": false, "error": format!("Invalid config: {e}") })
-                        .to_string();
+                let json = error_json("invalid_config", &format!("Invalid config: {e}"), "open_settings");
                 return env.new_string(json);
             }
         };
@@ -332,22 +459,13 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
         let json = match service_str.as_str() {
             "stt" => {
                 let stt_key = config.stt.api_key_ref.clone();
-                match tingyuxuan_core::stt::create_stt_provider(&config.stt, stt_key) {
+                match tingyuxuan_core::stt::create_streaming_stt_provider(&config.stt, stt_key) {
                     Ok(provider) => match rt.block_on(provider.test_connection()) {
                         Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                        Ok(false) => {
-                            serde_json::json!({ "success": false, "error": "Connection test failed" })
-                                .to_string()
-                        }
-                        Err(e) => {
-                            let msg = e.to_string();
-                            serde_json::json!({ "success": false, "error": msg }).to_string()
-                        }
+                        Ok(false) => error_json("stt_error", "Connection test failed", "check_api_key"),
+                        Err(e) => error_json("stt_error", &e.to_string(), "check_api_key"),
                     },
-                    Err(e) => {
-                        let msg = e.to_string();
-                        serde_json::json!({ "success": false, "error": msg }).to_string()
-                    }
+                    Err(e) => error_json("stt_error", &e.to_string(), "open_settings"),
                 }
             }
             "llm" => {
@@ -364,25 +482,18 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                 ) {
                     Ok(p) => Box::new(p),
                     Err(e) => {
-                        let json = serde_json::json!({ "success": false, "error": format!("LLM init failed: {e}") }).to_string();
+                        let json = error_json("llm_error", &format!("LLM init failed: {e}"), "open_settings");
                         return Ok(env.new_string(&json)?);
                     }
                 };
                 match rt.block_on(provider.test_connection()) {
                     Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                    Ok(false) => {
-                        serde_json::json!({ "success": false, "error": "Connection test failed" })
-                            .to_string()
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        serde_json::json!({ "success": false, "error": msg }).to_string()
-                    }
+                    Ok(false) => error_json("llm_error", "Connection test failed", "check_api_key"),
+                    Err(e) => error_json("llm_error", &e.to_string(), "check_api_key"),
                 }
             }
             other => {
-                serde_json::json!({ "success": false, "error": format!("Unknown service: {other}") })
-                    .to_string()
+                error_json("invalid_service", &format!("Unknown service: {other}"), "dismiss")
             }
         };
 
@@ -391,8 +502,10 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// Cancel an in-progress audio processing task.
-/// 当前实现为销毁并重建 pipeline（未来可改为 CancellationToken 传递）。
+/// Cancel an in-progress streaming session.
+///
+/// 不 take session — 只取消令牌。stopStreaming 仍能 take 并 finish。
+/// 这解决了 C2 竞争问题：cancelProcessing 与 stopStreaming 不再冲突。
 ///
 /// # JNI Signature
 /// `(J)V`
@@ -403,9 +516,20 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_cancelProcessing(
     handle: jlong,
 ) {
     let _span = tracing::info_span!("jni_cancel_processing", handle).entered();
-    // TODO: 传递 CancellationToken 进行取消。
-    // 当前通过 pipeline handle 无法直接取消，仅记录日志。
-    tracing::info!(handle, "Cancel processing requested (not yet implemented)");
+    let map = streaming_sessions().lock();
+    match map {
+        Ok(map) => {
+            if let Some(session) = map.get(&(handle as u64)) {
+                session.cancel();
+                tracing::info!(handle, "Streaming session cancelled");
+            } else {
+                tracing::info!(handle, "Cancel requested but no active session");
+            }
+        }
+        Err(_) => {
+            tracing::error!(handle, "Streaming sessions mutex poisoned");
+        }
+    }
 }
 
 /// Get the core library version string.
@@ -431,12 +555,12 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_getVersion<'local>(
 mod tests {
     use super::handle::{get_handle, remove_handle};
     use super::*;
+    use tingyuxuan_core::stt::streaming::AudioChunk;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_handle_register_get_remove() {
-        // We can't easily create a real Pipeline in tests without API keys,
-        // so we test the handle table mechanics via the get/remove interface.
-        // Note: handle module tests cover the core logic.
         assert!(get_handle(0).is_err());
         assert!(!remove_handle(0).unwrap());
     }
@@ -445,7 +569,6 @@ mod tests {
     fn test_runtime_singleton() {
         let rt1 = runtime();
         let rt2 = runtime();
-        // 确保返回的是同一个 Runtime 实例。
         assert!(std::ptr::eq(rt1, rt2));
     }
 
@@ -464,5 +587,53 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION");
         assert!(!version.is_empty());
         assert!(version.starts_with("0."));
+    }
+
+    #[test]
+    fn test_managed_session_store_and_take() {
+        let (tx, _rx) = mpsc::channel::<AudioChunk>(10);
+        let (_, event_rx) = mpsc::channel(10);
+
+        // 构造一个 ManagedSession 用于测试存取。
+        // 直接构造而非通过 SessionOrchestrator::start() 以避免需要 Pipeline。
+        let session = ManagedSession::new_for_testing(
+            tx,
+            event_rx,
+            SessionConfig {
+                mode: ProcessingMode::Dictate,
+                context: InputContext::default(),
+                target_language: None,
+                user_dictionary: Vec::new(),
+                stt_options: tingyuxuan_core::stt::STTOptions {
+                    language: None,
+                    prompt: None,
+                },
+            },
+            CancellationToken::new(),
+        );
+
+        let test_handle_id = 777_777_777u64;
+        store_managed_session(test_handle_id, session).unwrap();
+
+        // Take it.
+        let taken = take_managed_session(test_handle_id);
+        assert!(taken.is_ok());
+
+        // Should be gone now.
+        assert!(take_managed_session(test_handle_id).is_err());
+    }
+
+    #[test]
+    fn test_take_nonexistent_streaming_session() {
+        assert!(take_managed_session(666_666_666).is_err());
+    }
+
+    #[test]
+    fn test_structured_error_to_json() {
+        let se = StructuredError::from(&tingyuxuan_core::error::PipelineError::Cancelled);
+        let json = structured_error_to_json(&se);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["error_code"], "cancelled");
     }
 }

@@ -1,61 +1,43 @@
-use std::path::PathBuf;
-
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use crate::context::InputContext;
 use crate::error::PipelineError;
 use crate::llm::provider::{LLMInput, LLMProvider, ProcessingMode};
 use crate::pipeline::events::PipelineEvent;
 use crate::pipeline::retry::{RetryPolicy, execute_with_retry};
-use crate::stt::provider::{STTOptions, STTProvider};
+use crate::stt::provider::STTOptions;
+use crate::stt::streaming::{StreamingSTTProvider, StreamingSession};
 
-/// Extensible request struct for pipeline processing.
-///
-/// New fields can be added without breaking existing callers by providing
-/// sensible defaults.
+/// 处理请求 — 不再包含 audio_path（流式架构，音频通过 channel 传递）。
 #[derive(Debug, Clone)]
 pub struct ProcessingRequest {
-    pub audio_path: PathBuf,
     pub mode: ProcessingMode,
-    pub app_context: Option<String>,
+    pub context: InputContext,
     pub target_language: Option<String>,
-    pub selected_text: Option<String>,
     pub user_dictionary: Vec<String>,
 }
 
-impl ProcessingRequest {
-    /// Create a minimal request for dictation mode.
-    pub fn dictate(audio_path: impl Into<PathBuf>) -> Self {
-        Self {
-            audio_path: audio_path.into(),
-            mode: ProcessingMode::Dictate,
-            app_context: None,
-            target_language: None,
-            selected_text: None,
-            user_dictionary: Vec::new(),
-        }
-    }
-}
+// ProcessingRequest 使用 struct literal 构造，不提供便捷方法。
+// 所有字段均为 pub，调用者直接构造。
 
-/// Main pipeline orchestrator that coordinates STT and LLM processing.
+/// 管线编排器 — 协调流式 STT 和 LLM 处理。
 ///
-/// Holds trait-object references to the active STT and LLM providers, a
-/// broadcast channel for emitting progress events, and a retry policy.
+/// 新架构：
+/// - 录音开始时调用 `start_streaming()` 建立 STT WebSocket 连接
+/// - 录音期间音频帧通过 channel 实时发送到 STT
+/// - 录音结束后调用 `process_transcript()` 用 LLM 处理转写文本
 pub struct Pipeline {
-    stt: Box<dyn STTProvider>,
+    stt: Box<dyn StreamingSTTProvider>,
     llm: Box<dyn LLMProvider>,
     event_tx: broadcast::Sender<PipelineEvent>,
     retry_policy: RetryPolicy,
 }
 
 impl Pipeline {
-    /// Create a new pipeline.
-    ///
-    /// * `stt`      - The speech-to-text provider to use.
-    /// * `llm`      - The LLM provider to use.
-    /// * `event_tx` - Broadcast sender for pipeline events.
+    /// 创建新的管线。
     pub fn new(
-        stt: Box<dyn STTProvider>,
+        stt: Box<dyn StreamingSTTProvider>,
         llm: Box<dyn LLMProvider>,
         event_tx: broadcast::Sender<PipelineEvent>,
     ) -> Self {
@@ -67,81 +49,60 @@ impl Pipeline {
         }
     }
 
-    /// Subscribe to pipeline events.
+    /// 订阅管线事件。
     pub fn subscribe(&self) -> broadcast::Receiver<PipelineEvent> {
         self.event_tx.subscribe()
     }
 
-    /// Emit an event (best-effort; if there are no receivers we silently drop).
+    /// 发送事件（尽力交付，无接收者时静默丢弃）。
     fn emit(&self, event: PipelineEvent) {
-        let _ = self.event_tx.send(event);
+        if let Err(e) = self.event_tx.send(event) {
+            tracing::debug!("Event dropped (no receivers): {:?}", e.0);
+        }
     }
 
-    /// Run the full audio processing pipeline:
+    /// 开始流式 STT 会话。
     ///
-    /// 1. Transcribe the audio file via STT (with retry).
-    /// 2. Process the raw transcript via LLM (with retry).
-    /// 3. Return the final processed text.
-    ///
-    /// Pipeline events are emitted at each stage so the UI can update in
-    /// real time.  Pass a `CancellationToken` to allow the caller to abort
-    /// processing at any stage.
-    pub async fn process_audio(
+    /// 返回 [StreamingSession]，调用者通过 `audio_tx` 发送 PCM 帧，
+    /// 通过 `event_rx` 接收转写事件。
+    pub async fn start_streaming(
         &self,
+        options: &STTOptions,
+    ) -> Result<StreamingSession, PipelineError> {
+        self.emit(PipelineEvent::TranscriptionStarted);
+
+        let session = self
+            .stt
+            .start_stream(options)
+            .await
+            .map_err(|e| {
+                self.emit(PipelineEvent::Error {
+                    message: e.to_string(),
+                    user_action: e.user_action(),
+                    raw_text: None,
+                });
+                PipelineError::Stt(e)
+            })?;
+
+        Ok(session)
+    }
+
+    /// 用 LLM 处理转写文本。
+    ///
+    /// 在流式 STT 完成后调用，将原始转写文本通过 LLM 润色/翻译/AI 处理。
+    pub async fn process_transcript(
+        &self,
+        raw_text: String,
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
-        // ------------------------------------------------------------------
-        // Stage 1: Speech-to-Text
-        // ------------------------------------------------------------------
         if cancel_token.is_cancelled() {
             return Err(PipelineError::Cancelled);
         }
 
-        self.emit(PipelineEvent::TranscriptionStarted);
-
-        let stt_options = STTOptions {
-            language: None,
-            prompt: None,
-        };
-
-        let audio_path = &request.audio_path;
-        let stt_result = {
-            let stt = &self.stt;
-            let opts = &stt_options;
-            tokio::select! {
-                result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
-                    stt.transcribe(audio_path, opts).await
-                }) => result,
-                _ = cancel_token.cancelled() => {
-                    return Err(PipelineError::Cancelled);
-                }
-            }
-        };
-
-        let stt_result = match stt_result {
-            Ok(r) => r,
-            Err(stt_err) => {
-                self.emit(PipelineEvent::Error {
-                    message: stt_err.to_string(),
-                    user_action: stt_err.user_action(),
-                    raw_text: None,
-                });
-                return Err(PipelineError::Stt(stt_err));
-            }
-        };
-
-        let raw_text = stt_result.text;
         self.emit(PipelineEvent::TranscriptionComplete {
             raw_text: raw_text.clone(),
         });
-
-        // ------------------------------------------------------------------
-        // Stage 2: LLM Processing
-        // ------------------------------------------------------------------
-        if cancel_token.is_cancelled() {
-            return Err(PipelineError::Cancelled);
-        }
 
         self.emit(PipelineEvent::ProcessingStarted);
 
@@ -149,8 +110,7 @@ impl Pipeline {
             mode: request.mode.clone(),
             raw_transcript: raw_text.clone(),
             target_language: request.target_language.clone(),
-            selected_text: request.selected_text.clone(),
-            current_app: request.app_context.clone(),
+            context: request.context.clone(),
             user_dictionary: request.user_dictionary.clone(),
         };
 
@@ -163,6 +123,9 @@ impl Pipeline {
                 }) => result,
                 _ = cancel_token.cancelled() => {
                     return Err(PipelineError::Cancelled);
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                    Err(crate::error::LLMError::Timeout)
                 }
             }
         };
@@ -191,33 +154,56 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::InputContext;
     use crate::error::{LLMError, STTError};
     use crate::llm::provider::LLMResult;
-    use crate::stt::provider::STTResult;
+    use crate::stt::streaming::{AudioChunk, StreamingSTTEvent, STREAMING_CHANNEL_CAPACITY};
     use std::future::Future;
-    use std::path::Path;
     use std::pin::Pin;
+    use tokio::sync::mpsc;
 
-    // -- Mock STT provider --------------------------------------------------
+    // -- Mock Streaming STT ---------------------------------------------------
 
-    struct MockSTT {
-        text: String,
-    }
+    struct MockStreamingSTT;
 
-    impl STTProvider for MockSTT {
+    impl StreamingSTTProvider for MockStreamingSTT {
         fn name(&self) -> &str {
-            "mock-stt"
+            "mock-streaming-stt"
         }
-        fn transcribe<'a>(
+        fn start_stream<'a>(
             &'a self,
-            _audio_path: &'a Path,
             _options: &'a STTOptions,
-        ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
-            Box::pin(async move {
-                Ok(STTResult {
-                    text: self.text.clone(),
-                    language: "zh".to_string(),
-                    duration_seconds: 3.0,
+        ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
+            Box::pin(async {
+                let (audio_tx, mut audio_rx) = mpsc::channel(STREAMING_CHANNEL_CAPACITY);
+                let (event_tx, event_rx) = mpsc::channel(64);
+
+                // 模拟：接收音频帧后返回最终结果
+                tokio::spawn(async move {
+                    let mut received = false;
+                    while let Some(_chunk) = audio_rx.recv().await {
+                        if !received {
+                            let _ = event_tx
+                                .send(StreamingSTTEvent::Partial {
+                                    text: "你好".to_string(),
+                                    sentence_index: 0,
+                                })
+                                .await;
+                            received = true;
+                        }
+                    }
+                    // audio_tx 关闭后发送最终结果
+                    let _ = event_tx
+                        .send(StreamingSTTEvent::Final {
+                            text: "你好世界".to_string(),
+                            sentence_index: 0,
+                        })
+                        .await;
+                });
+
+                Ok(StreamingSession {
+                    audio_tx,
+                    event_rx,
                 })
             })
         }
@@ -228,18 +214,17 @@ mod tests {
         }
     }
 
-    struct FailingSTT;
+    struct FailingStreamingSTT;
 
-    impl STTProvider for FailingSTT {
+    impl StreamingSTTProvider for FailingStreamingSTT {
         fn name(&self) -> &str {
-            "failing-stt"
+            "failing-streaming-stt"
         }
-        fn transcribe<'a>(
+        fn start_stream<'a>(
             &'a self,
-            _audio_path: &'a Path,
             _options: &'a STTOptions,
-        ) -> Pin<Box<dyn Future<Output = Result<STTResult, STTError>> + Send + 'a>> {
-            Box::pin(async { Err(STTError::Timeout(15)) })
+        ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
+            Box::pin(async { Err(STTError::AuthFailed) })
         }
         fn test_connection(
             &self,
@@ -298,7 +283,7 @@ mod tests {
     // -- Helper -------------------------------------------------------------
 
     fn make_pipeline(
-        stt: Box<dyn STTProvider>,
+        stt: Box<dyn StreamingSTTProvider>,
         llm: Box<dyn LLMProvider>,
     ) -> (Pipeline, broadcast::Receiver<PipelineEvent>) {
         let (tx, rx) = broadcast::channel(32);
@@ -309,45 +294,78 @@ mod tests {
     // -- Tests --------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_happy_path() {
+    async fn test_streaming_happy_path() {
         let (pipeline, _rx) = make_pipeline(
-            Box::new(MockSTT {
-                text: "嗯 你好世界".to_string(),
-            }),
+            Box::new(MockStreamingSTT),
             Box::new(MockLLM {
                 response: "你好，世界。".to_string(),
             }),
         );
 
-        let request = ProcessingRequest::dictate("/tmp/fake.wav");
+        // 1. 开始流式会话
+        let options = STTOptions {
+            language: None,
+            prompt: None,
+        };
+        let session = pipeline.start_streaming(&options).await.unwrap();
+
+        // 2. 发送一帧音频
+        session
+            .audio_tx
+            .send(AudioChunk {
+                samples: vec![0i16; 320],
+            })
+            .await
+            .unwrap();
+
+        // 3. 关闭音频流（模拟录音停止）
+        drop(session.audio_tx);
+
+        // 4. 收集最终结果
+        let mut event_rx = session.event_rx;
+        let mut final_text = String::new();
+        while let Some(event) = event_rx.recv().await {
+            if let StreamingSTTEvent::Final { text, .. } = event {
+                final_text = text;
+            }
+        }
+
+        // 5. LLM 处理
+        let request = ProcessingRequest {
+            mode: ProcessingMode::Dictate,
+            context: InputContext::default(),
+            target_language: None,
+            user_dictionary: Vec::new(),
+        };
         let token = CancellationToken::new();
-        let result = pipeline.process_audio(&request, token).await;
+        let result = pipeline
+            .process_transcript(final_text, &request, token)
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "你好，世界。");
     }
 
     #[tokio::test]
-    async fn test_stt_failure_emits_error() {
+    async fn test_streaming_stt_failure() {
         let (pipeline, mut rx) = make_pipeline(
-            Box::new(FailingSTT),
+            Box::new(FailingStreamingSTT),
             Box::new(MockLLM {
                 response: "unused".to_string(),
             }),
         );
 
-        let request = ProcessingRequest::dictate("/tmp/fake.wav");
-        let token = CancellationToken::new();
-        let result = pipeline.process_audio(&request, token).await;
-
+        let options = STTOptions {
+            language: None,
+            prompt: None,
+        };
+        let result = pipeline.start_streaming(&options).await;
         assert!(result.is_err());
 
-        // Drain events and find the Error event.
+        // 应该有 Error 事件
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
-            if let PipelineEvent::Error { raw_text, .. } = event {
-                // STT failure should not include raw_text.
-                assert!(raw_text.is_none());
+            if matches!(event, PipelineEvent::Error { .. }) {
                 found_error = true;
             }
         }
@@ -357,23 +375,27 @@ mod tests {
     #[tokio::test]
     async fn test_llm_failure_includes_raw_text() {
         let (pipeline, mut rx) = make_pipeline(
-            Box::new(MockSTT {
-                text: "raw transcript".to_string(),
-            }),
+            Box::new(MockStreamingSTT),
             Box::new(FailingLLM),
         );
 
-        let request = ProcessingRequest::dictate("/tmp/fake.wav");
+        let request = ProcessingRequest {
+            mode: ProcessingMode::Dictate,
+            context: InputContext::default(),
+            target_language: None,
+            user_dictionary: Vec::new(),
+        };
         let token = CancellationToken::new();
-        let result = pipeline.process_audio(&request, token).await;
+        let result = pipeline
+            .process_transcript("raw transcript".to_string(), &request, token)
+            .await;
 
         assert!(result.is_err());
 
-        // Drain events and find the Error event.
+        // Error 事件应包含 raw_text
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
             if let PipelineEvent::Error { raw_text, .. } = event {
-                // LLM failure should include the raw transcript.
                 assert_eq!(raw_text, Some("raw transcript".to_string()));
                 found_error = true;
             }
@@ -382,45 +404,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancellation_before_stt() {
+    async fn test_cancellation_before_llm() {
         let (pipeline, _rx) = make_pipeline(
-            Box::new(MockSTT {
-                text: "should not reach".to_string(),
-            }),
+            Box::new(MockStreamingSTT),
             Box::new(MockLLM {
-                response: "should not reach".to_string(),
+                response: "unused".to_string(),
             }),
         );
 
-        let request = ProcessingRequest::dictate("/tmp/fake.wav");
+        let request = ProcessingRequest {
+            mode: ProcessingMode::Dictate,
+            context: InputContext::default(),
+            target_language: None,
+            user_dictionary: Vec::new(),
+        };
         let token = CancellationToken::new();
         token.cancel();
 
-        let result = pipeline.process_audio(&request, token).await;
+        let result = pipeline
+            .process_transcript("hello".to_string(), &request, token)
+            .await;
         assert!(matches!(result, Err(PipelineError::Cancelled)));
     }
 
     #[tokio::test]
     async fn test_processing_request_with_translate() {
         let (pipeline, _rx) = make_pipeline(
-            Box::new(MockSTT {
-                text: "你好世界".to_string(),
-            }),
+            Box::new(MockStreamingSTT),
             Box::new(MockLLM {
                 response: "Hello, world.".to_string(),
             }),
         );
 
         let request = ProcessingRequest {
-            audio_path: PathBuf::from("/tmp/fake.wav"),
             mode: ProcessingMode::Translate,
-            app_context: None,
+            context: InputContext::default(),
             target_language: Some("en".to_string()),
-            selected_text: None,
             user_dictionary: Vec::new(),
         };
         let token = CancellationToken::new();
-        let result = pipeline.process_audio(&request, token).await;
+        let result = pipeline
+            .process_transcript("你好世界".to_string(), &request, token)
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Hello, world.");
@@ -430,9 +455,7 @@ mod tests {
     fn test_subscribe() {
         let (tx, _) = broadcast::channel(16);
         let pipeline = Pipeline::new(
-            Box::new(MockSTT {
-                text: String::new(),
-            }),
+            Box::new(MockStreamingSTT),
             Box::new(MockLLM {
                 response: String::new(),
             }),
@@ -440,6 +463,5 @@ mod tests {
         );
 
         let _rx = pipeline.subscribe();
-        // Just verify it compiles and doesn't panic.
     }
 }

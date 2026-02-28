@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod audio;
 pub mod config;
+pub mod context;
 pub mod error;
 pub mod history;
 pub mod llm;

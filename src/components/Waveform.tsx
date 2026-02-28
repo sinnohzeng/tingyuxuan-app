@@ -13,6 +13,29 @@ const LERP_FACTOR = 0.3;
 export default function Waveform({ levels, isActive }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const prevHeightsRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
+  const sizeRef = useRef({ width: 0, height: 0 });
+
+  // 监听尺寸变化，避免每次 levels 更新都调用 getBoundingClientRect()
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // 初始化尺寸
+    const rect = canvas.getBoundingClientRect();
+    sizeRef.current = { width: rect.width, height: rect.height };
+
+    // ResizeObserver 可能在 jsdom 等测试环境中不可用
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        sizeRef.current = { width, height };
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -22,13 +45,13 @@ export default function Waveform({ levels, isActive }: WaveformProps) {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    const { width, height } = sizeRef.current;
+    if (width === 0 || height === 0) return;
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
 
-    const width = rect.width;
-    const height = rect.height;
     const barWidth = (width - BAR_GAP * (BAR_COUNT - 1)) / BAR_COUNT;
     const maxBarHeight = height - 4; // 2px padding top/bottom
 
@@ -65,9 +88,13 @@ export default function Waveform({ levels, isActive }: WaveformProps) {
       const y = (height - currentHeight) / 2;
 
       ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.roundRect(x, y, barWidth, currentHeight, barWidth / 2);
-      ctx.fill();
+      if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, currentHeight, barWidth / 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(x, y, barWidth, currentHeight);
+      }
     }
   }, [levels, isActive]);
 

@@ -33,8 +33,6 @@ pub enum PipelineEvent {
     },
     /// Network reachability changed.
     NetworkStatusChanged { online: bool },
-    /// The recording was saved to the offline queue for later processing.
-    QueuedForLater { session_id: String },
     /// The current recording was cancelled by the user.
     RecordingCancelled,
 }

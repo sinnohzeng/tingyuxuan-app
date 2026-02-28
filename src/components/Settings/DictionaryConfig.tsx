@@ -38,12 +38,14 @@ export default function DictionaryConfig() {
   }, [newWord, words]);
 
   const handleRemove = useCallback(async (word: string) => {
+    // 乐观更新：先移除，失败时回滚
+    setWords((prev) => prev.filter((w) => w !== word));
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("remove_dictionary_word", { word });
-      setWords((prev) => prev.filter((w) => w !== word));
     } catch {
-      // Dev mode
+      // 删除失败，回滚
+      setWords((prev) => [...prev, word]);
     }
   }, []);
 

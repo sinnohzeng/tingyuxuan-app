@@ -74,10 +74,11 @@ export const useAppStore = create<AppStore>((set) => ({
       rawTranscript: rawText ?? null,
     }),
   clearError: () =>
-    set({ errorMessage: null, errorAction: null, rawTranscript: null }),
+    set({ recordingState: "idle", errorMessage: null, errorAction: null, rawTranscript: null }),
   setAiResult: (aiResult) => set({ aiResult }),
   setIsOnline: (isOnline) => set({ isOnline }),
   setConfig: (config) => set({ config }),
+  // isOnline is global network state, intentionally not reset per session
   reset: () =>
     set({
       recordingState: "idle",
