@@ -364,10 +364,10 @@ impl MacOSContextDetector {
         let text = clipboard_read().ok().flatten();
 
         // 恢复原始剪贴板（尽力而为）
-        if let Some(original) = saved {
-            if let Err(e) = clipboard_write(&original) {
-                tracing::warn!("Clipboard restore failed: {e}");
-            }
+        if let Some(original) = saved
+            && let Err(e) = clipboard_write(&original)
+        {
+            tracing::warn!("Clipboard restore failed: {e}");
         }
 
         text.filter(|t| !t.is_empty())
@@ -567,10 +567,10 @@ impl FnKeyMonitor {
 impl Drop for FnKeyMonitor {
     fn drop(&mut self) {
         tracing::info!("FnKeyMonitor dropping, stopping RunLoop");
-        if let Ok(guard) = self.run_loop.lock() {
-            if let Some(ref run_loop) = *guard {
-                run_loop.stop();
-            }
+        if let Ok(guard) = self.run_loop.lock()
+            && let Some(ref run_loop) = *guard
+        {
+            run_loop.stop();
         }
     }
 }
@@ -680,14 +680,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_constants_valid() {
-        assert!(DIRECT_INPUT_THRESHOLD > 0);
-        assert!(MAX_UNICODE_PER_EVENT > 0);
-        assert!(CLIPBOARD_RESTORE_DELAY.as_millis() > 0);
-        assert!(CMD_C_PROCESS_DELAY.as_millis() > 0);
-    }
-
-    #[test]
     fn test_direct_input_threshold_consistent_with_linux() {
         // 与 Linux inject_text 中的 200 字节阈值保持一致
         assert_eq!(DIRECT_INPUT_THRESHOLD, 200);
@@ -697,6 +689,13 @@ mod tests {
     fn test_max_unicode_per_event() {
         // CGEventKeyboardSetUnicodeString 的硬限制
         assert_eq!(MAX_UNICODE_PER_EVENT, 20);
+    }
+
+    #[test]
+    fn test_delays_configured() {
+        // 验证延迟值合理（非零且在预期范围内）
+        assert_eq!(CLIPBOARD_RESTORE_DELAY.as_millis(), 100);
+        assert_eq!(CMD_C_PROCESS_DELAY.as_millis(), 50);
     }
 
     #[test]
@@ -714,7 +713,7 @@ mod tests {
         let text = "你好世界这是一段较长的中文文本测试啊啊啊啊啊啊啊";
         let utf16: Vec<u16> = text.encode_utf16().collect();
         let chunks: Vec<&[u16]> = utf16.chunks(MAX_UNICODE_PER_EVENT).collect();
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
         for chunk in &chunks {
             assert!(chunk.len() <= MAX_UNICODE_PER_EVENT);
         }

@@ -175,7 +175,7 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
                 tracing::warn!("Failed to register macOS platform hotkeys: {e}");
             }
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
