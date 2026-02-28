@@ -27,6 +27,12 @@
 # --- EncryptedSharedPreferences ---
 -keep class androidx.security.crypto.** { *; }
 
+# --- Tink 加密库（EncryptedSharedPreferences 依赖） ---
+# 这些注解仅在编译时使用，R8 可安全忽略
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn javax.annotation.concurrent.**
+
 # --- JSON 解析 ---
 -keep class org.json.** { *; }
 
