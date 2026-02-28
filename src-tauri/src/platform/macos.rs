@@ -20,9 +20,6 @@ const DIRECT_INPUT_THRESHOLD: usize = 200;
 /// `CGEventKeyboardSetUnicodeString` 的硬限制为 20。
 const MAX_UNICODE_PER_EVENT: usize = 20;
 
-/// 剪贴板恢复延迟 — 等待目标应用处理粘贴。
-const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(100);
-
 /// Cmd+C 处理延迟 — 等待目标应用响应（仅 AX fallback 路径）。
 const CMD_C_PROCESS_DELAY: Duration = Duration::from_millis(50);
 
@@ -584,7 +581,6 @@ impl Drop for FnKeyMonitor {
 /// - Fn 键（听写）: 通过 FnKeyMonitor CGEventTap 实现
 /// - ⌥T（翻译）、⌃Space（AI 助手）、Escape（取消）: 通过 tauri-plugin-global-shortcut
 pub fn register_platform_hotkeys(app: &tauri::App) -> Result<Option<FnKeyMonitor>, PlatformError> {
-    use tauri::Emitter;
     use tauri_plugin_global_shortcut::{
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };
@@ -694,7 +690,6 @@ mod tests {
     #[test]
     fn test_delays_configured() {
         // 验证延迟值合理（非零且在预期范围内）
-        assert_eq!(CLIPBOARD_RESTORE_DELAY.as_millis(), 100);
         assert_eq!(CMD_C_PROCESS_DELAY.as_millis(), 50);
     }
 

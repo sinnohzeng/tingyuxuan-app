@@ -42,14 +42,14 @@ pub fn sanitize_for_typing(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 跨平台共享工具函数（Linux + macOS 子进程模式共用）
+// 跨平台共享工具函数
 // ---------------------------------------------------------------------------
 
 /// Run a command with a timeout. Returns None on failure or timeout.
 ///
 /// 使用轮询方式等待子进程完成（10ms 间隔），超时后 kill。
 /// `std::process::Child` 尚未稳定 `wait_timeout`，这是可移植的回退方案。
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn run_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
