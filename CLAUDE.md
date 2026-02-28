@@ -11,8 +11,8 @@
 | 层 | 技术 |
 |----|------|
 | Desktop | Tauri 2.10 + React 19 + Zustand 5 + Tailwind CSS 4 (Linux, macOS, Windows) |
-| Android | Kotlin (AGP 9.0.1 内置) + Compose (BOM 2026.01.01) + InputMethodService |
-| Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.32 |
+| Android | Kotlin (AGP 9.0.1 内置) + Compose (BOM 2026.02.00) + InputMethodService |
+| Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.38 |
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
 | Testing | 116 Rust + 44 vitest + 13 JNI + 7 Android 单元测试 |
 
@@ -32,8 +32,8 @@ docs/                     DDD 文档体系
 
 ```bash
 # 测试
-cargo test -p tingyuxuan-core          # 117 Rust tests
-npm test                                # 26 frontend tests
+cargo test -p tingyuxuan-core          # 116 Rust tests
+npm test                                # 44 frontend tests
 npx tsc --noEmit                        # TypeScript 类型检查
 
 # 本机无法完整编译 Tauri（缺 webkit2gtk 头文件），但可以：
@@ -72,9 +72,13 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 - **Artifact 路径**：`upload-artifact@v4` 保留相对目录结构；`download-artifact@v4` 在 `<artifact-name>/` 子目录下展开
 - **Android 构建链**：`cargo-ndk` 编译 .so → 复制到 `jniLibs/` → `gradlew assembleRelease`
 
+### 跨平台 #[cfg] 代码验证（重要）
+
+`#[cfg(target_os = "...")]` 门控的代码**只能被对应平台 CI 验证**。本地 Linux clippy 完全跳过 macOS/Windows 代码。常见陷阱包括 core-graphics C 绑定缺少 PartialEq、!Send 原始指针类型、API 风格差异等。详见 `docs/guides/ci-release-notes.md` #13、#19–#23。
+
 ## 开发约定
 
-- **语言**：UI 和文档用中文，commit message 用英文，代码注释中文
+- **语言**：UI 和文档用中文，commit message 用中文，代码注释中文
 - **文档驱动 (DDD)**：文档是功能规格，代码实现文档描述
 - **唯一真值 (SSOT)**：每类信息只有一个权威来源，跨文档引用不重复
 - **快捷键默认值**：Linux/Windows: RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）；macOS: Fn（听写）、⌥T（翻译）、⌃Space（AI 助手）、Esc（取消）

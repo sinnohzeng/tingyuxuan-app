@@ -32,10 +32,11 @@
 
 ```
 src-tauri/src/platform/
-├── mod.rs        # trait 定义 + sanitize_for_typing + 类型别名
-├── error.rs      # PlatformError (thiserror)
-├── linux.rs      # LinuxTextInjector + LinuxContextDetector
-└── windows.rs    # (Step 1-2 添加)
+├── mod.rs        # trait 定义 + sanitize_for_typing + 类型别名 + inject_via_clipboard 共享函数
+├── error.rs      # PlatformError (thiserror) + PermissionStatus 枚举
+├── linux.rs      # LinuxTextInjector + LinuxContextDetector（CLI 工具链）
+├── macos.rs      # MacOSTextInjector + MacOSContextDetector + FnKeyMonitor（原生 API）
+└── windows.rs    # WindowsTextInjector + WindowsContextDetector（Win32 API）
 ```
 
 ## 后果

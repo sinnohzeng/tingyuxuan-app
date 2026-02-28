@@ -1,6 +1,13 @@
 # CI/CD Release 构建踩坑记录
 
-本文档记录 v0.4.0 Release 工作流构建过程中遇到的问题及解决方案，供后续维护参考。
+本文档记录各版本 CI/Release 构建过程中遇到的问题及解决方案，供后续维护参考。
+
+| 版本 | 条目 | 主题 |
+|------|------|------|
+| v0.4.0 | #1–#9 | Tauri 2.x、AGP 9.0.1、Release 工作流 |
+| v0.5.0 | #10–#12 | cpal 0.17、Android 交叉编译、Cargo.lock |
+| v0.6.0 | #13–#18 | Windows clippy、R8 Tink、macOS 权限 / 沙箱 / DMG / CI |
+| v0.7.0 | #19–#23 | macOS 原生重构：core-graphics API 陷阱、!Send 安全、cfg 门控 |
 
 ---
 
@@ -199,15 +206,15 @@ git push origin v0.4.0
 
 ---
 
-## 13. Windows clippy collapsible_if
+## 13. 跨平台 #[cfg] 代码的 clippy 盲区
 
-**问题**：Windows CI clippy 报错 `this if statement can be collapsed`，但 Linux 本地 clippy 不报错。
+**问题**：Windows CI clippy 报错 `this if statement can be collapsed`，但 Linux 本地 clippy 不报错。v0.7.0 中 macOS clippy 也报了同类问题（collapsible_if、unused import、Send 安全等），本地同样无法检出。
 
-**原因**：`windows.rs` 中的嵌套 `if let` 语句只在 Windows 平台编译（`#[cfg(windows)]`），本地 Linux clippy 不检查该文件。
+**原因**：`#[cfg(target_os = "...")]` 条件编译门控的代码，在不匹配的平台上被完全跳过。本地 Linux 开发机的 `cargo clippy` 只检查 Linux 代码，Windows 和 macOS 平台代码完全不可见。
 
-**解决**：将嵌套 `if let` 合并为 `if let ... && let ...` 语法（Rust 2024 edition 支持 let chains）。
+**解决**：将嵌套 `if let` 合并为 `if let ... && let ...` 语法（Rust 2024 edition let chains）。
 
-> **规则**：`#[cfg(windows)]` 平台专属代码需要通过 CI 的 Windows 构建来验证 clippy 合规性。
+> **规则**：**任何** `#[cfg]` 门控的平台专属代码只能被对应平台的 CI runner 验证。本地 Linux clippy 无法替代 Windows/macOS CI 检查。手动审查时需额外注意这些文件的 clippy 合规性。
 
 ---
 
@@ -285,6 +292,106 @@ env:
 **答案**：macOS 自带 WebKit、CoreAudio、CoreGraphics 等框架，无需额外安装系统依赖。CI 只需 Rust toolchain + Node.js。
 
 > **规则**：macOS CI job 比 Linux 简单 — 无 `apt-get` 步骤，直接 clippy/test/build。
+
+---
+
+## 19. core-graphics 0.24: CGEventType 不实现 PartialEq
+
+**问题**：macOS CI clippy 报错 `binary operation == cannot be applied to type CGEventType`。
+
+**原因**：core-graphics 0.24 的 `CGEventType` 是 C enum 绑定，没有 derive `PartialEq`。无法直接用 `==` 比较。
+
+**解决**：通过 `as u32` 转换后比较原始值：
+```rust
+// 错误：event_type == CGEventType::TapDisabledByTimeout
+// 正确：
+let raw = event_type as u32;
+if raw == 0xFFFFFFFE || raw == 0xFFFFFFFF {  // Timeout / UserInput
+    // handle tap disabled
+}
+```
+
+> **规则**：core-graphics C 绑定类型不一定实现 Rust trait（PartialEq、Debug 等）。使用前检查文档或源码。
+
+---
+
+## 20. CGEventTap / CFRunLoopSource 是 !Send
+
+**问题**：macOS CI 报错 `*mut __CFRunLoopSource cannot be sent between threads safely`。将 `CGEventTap` 在主线程创建后 `move` 到监听线程时触发。
+
+**原因**：`CGEventTap` 和 `CFRunLoopSource` 内含 `*mut c_void` 原始指针，Rust 编译器不认为它们是 `Send` 安全的。
+
+**解决**：所有 !Send 资源必须在使用它们的线程内创建。将 `CGEventTap::new()` 和 `create_runloop_source()` 移到 `thread::spawn` 闭包内部，通过 `mpsc::sync_channel` 将初始化结果传回调用者：
+```rust
+let (tx, rx) = std::sync::mpsc::sync_channel(1);
+thread::spawn(move || {
+    // 在线程内创建 !Send 资源
+    let tap = CGEventTap::new(...)?;
+    let source = tap.mach_port.create_runloop_source(0)?;
+    tx.send(Ok(()))?;
+    CFRunLoop::run_current();
+});
+rx.recv()??; // 等待初始化完成
+```
+
+> **规则**：macOS Core Foundation / Core Graphics 的 C 绑定类型几乎都是 !Send。需要跨线程使用时，必须在目标线程内创建，不能在外部创建后 move。
+
+---
+
+## 21. core-graphics 0.24: tap.mach_port 是字段而非方法
+
+**问题**：macOS CI 报错 `no method named mach_port_create_runloop_source found for struct CGEventTap`。
+
+**原因**：core-graphics 0.24 的 `CGEventTap` 将 `mach_port` 暴露为 **公有字段**（`pub mach_port: CFMachPort`），不是方法。`create_runloop_source` 是 `CFMachPort` 上的方法。
+
+**解决**：
+```rust
+// 错误：tap.mach_port_create_runloop_source(0)
+// 正确：tap.mach_port.create_runloop_source(0)
+```
+
+> **规则**：core-graphics 0.24 API 风格偏向字段暴露而非 getter 方法。查阅 [docs.rs/core-graphics](https://docs.rs/core-graphics) 确认 API。
+
+---
+
+## 22. 模块级 #[cfg] 门控下的冗余内部 #[cfg]
+
+**问题**：macOS 代码中每个函数/struct 上都标注了 `#[cfg(target_os = "macos")]`，但整个 `macos` 模块在 `mod.rs` 中已被 `#[cfg(target_os = "macos")]` 门控。
+
+**影响**：冗余 `#[cfg]` 不影响编译正确性，但增加维护负担，且内部 `#[cfg(not(target_os = "macos"))]` 分支永远不会执行（dead code）。
+
+**解决**：移除模块内所有冗余的 `#[cfg(target_os = "macos")]` 标注。仅保留测试子模块中的 `#[cfg(target_os = "macos")]`（用于区分跨平台测试和 macOS 专属集成测试）。
+
+> **规则**：`mod.rs` 中对整个模块文件做了 `#[cfg]` 门控后，模块内部不需要再重复相同的 `#[cfg]`。`#[cfg(not(...))]` 分支在门控模块内更是无意义的 dead code。
+
+---
+
+## 23. macOS clippy let-chain 与常量断言
+
+**问题**：macOS CI clippy 报了一系列 lint 警告（均因 `-D warnings` 升级为错误）：
+- `collapsible_if`：嵌套 `if let` 可合并
+- `assertions_on_constants`：`assert!(CONST > 0)` 值恒为 true
+- `len_zero`：`vec.len() >= 1` 应改为 `!vec.is_empty()`
+- `needless_return`：函数末尾的 `return Ok(())`
+- `unused_imports`：重构后残留的 `use tauri::Emitter`
+
+**解决**：
+```rust
+// collapsible_if → let-chain（Rust 2024 edition）
+if let Ok(guard) = mutex.lock()
+    && let Some(ref val) = *guard
+{
+    val.stop();
+}
+
+// assertions_on_constants → 改为精确值断言
+assert_eq!(THRESHOLD, 200);  // 代替 assert!(THRESHOLD > 0)
+
+// len_zero
+assert!(!chunks.is_empty());  // 代替 chunks.len() >= 1
+```
+
+> **规则**：CI 使用 `cargo clippy -- -D warnings`（所有警告视为错误）。Rust 2024 edition 支持 let-chain 语法，clippy 会要求合并嵌套 `if let`。
 
 ---
 

@@ -2,98 +2,145 @@
 
 ## 模块职责
 
-文本注入模块负责将处理后的文本插入到用户光标所在位置，并检测当前上下文信息（活动窗口名称、选中文本）。该模块根据 Linux 显示服务器类型（X11 / Wayland）自动选择对应的 CLI 工具链。
+文本注入模块负责将处理后的文本插入到用户光标所在位置，并检测当前上下文信息（活动窗口名称、选中文本等）。通过平台抽象层（见 [ADR-0006](../architecture/adr/0006-platform-abstraction-layer.md)），各平台使用原生 API 或最合适的工具链实现相同的 trait 接口。
 
 **源文件:**
 
-- `src-tauri/src/text_injector.rs` -- 文本注入逻辑
-- `src-tauri/src/context.rs` -- 上下文检测逻辑
+```
+src-tauri/src/platform/
+├── mod.rs        # TextInjector + ContextDetector trait 定义、类型别名、共享工具函数
+├── error.rs      # PlatformError (thiserror)、PermissionStatus 枚举
+├── linux.rs      # LinuxTextInjector + LinuxContextDetector
+├── macos.rs      # MacOSTextInjector + MacOSContextDetector + FnKeyMonitor
+└── windows.rs    # WindowsTextInjector + WindowsContextDetector
+```
 
 ---
 
-## 关键类型定义
-
-### DisplayServer
+## 核心 Trait
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DisplayServer {
-    X11,
-    Wayland,
-    Unknown,
+pub trait TextInjector {
+    fn inject_text(&self, text: &str) -> Result<(), PlatformError>;
+}
+
+pub trait ContextDetector {
+    fn collect_context(&self) -> InputContext;
 }
 ```
 
-运行时枚举，标识当前 Linux 桌面使用的显示服务器协议。所有公开函数在执行前都会调用 `detect_display_server()` 以确定工具链。
+通过编译时类型别名实现零开销分发：
+
+```rust
+#[cfg(target_os = "linux")]   pub type PlatformInjector = linux::LinuxTextInjector;
+#[cfg(target_os = "macos")]   pub type PlatformInjector = macos::MacOSTextInjector;
+#[cfg(target_os = "windows")] pub type PlatformInjector = windows::WindowsTextInjector;
+```
 
 ---
 
-## Public API
+## 文本注入策略
 
-### 文本注入 (`text_injector.rs`)
-
-| 函数 | 签名 | 说明 |
-|------|------|------|
-| `detect_display_server()` | `fn detect_display_server() -> DisplayServer` | 依次检查 `XDG_SESSION_TYPE`、`WAYLAND_DISPLAY`、`DISPLAY` 环境变量，返回对应的 DisplayServer 枚举值 |
-| `inject_text(text)` | `fn inject_text(text: &str) -> Result<(), String>` | 主入口。根据文本长度选择注入策略（见下方策略表），根据 DisplayServer 选择工具链 |
-
-**注入策略:**
+所有平台共享统一的自适应策略：**短文本直接键入、长文本剪贴板粘贴**。
 
 | 条件 | 策略 | 说明 |
 |------|------|------|
-| `text.len() < 200` | 直接模拟键入 | X11: `xdotool type --clearmodifiers --`; Wayland: `wtype --` |
-| `text.len() >= 200` | 剪贴板粘贴 | 保存当前剪贴板 -> 写入文本到剪贴板 -> 模拟 Ctrl+V -> 等待 100ms -> 恢复原始剪贴板 |
+| `text.len() <= 200` | 直接键入 | 逐字符/逐块模拟键盘输入，不扰动剪贴板 |
+| `text.len() > 200` | 剪贴板粘贴 | 保存剪贴板 → 写入文本 → 粘贴 → 等待 100ms → 恢复原始剪贴板 |
 
-**各 DisplayServer 工具链:**
+### 各平台实现
 
-| DisplayServer | 直接键入 | 剪贴板读写 | 粘贴快捷键 |
-|---------------|----------|-----------|-----------|
-| X11 | `xdotool type --clearmodifiers --` | `xclip -selection clipboard` (stdin pipe) | `xdotool key --clearmodifiers ctrl+v` |
-| Wayland | `wtype --` | `wl-copy` (stdin pipe) / `wl-paste` | `wtype -M ctrl v -m ctrl` |
-| Unknown | `ydotool type --` | 不支持（仅直接键入） | 不支持 |
+| 平台 | 直接键入 | 剪贴板读写 | 粘贴快捷键 |
+|------|---------|-----------|-----------|
+| **Linux X11** | `xdotool type --clearmodifiers --` | `xclip -selection clipboard` (stdin pipe) | `xdotool key --clearmodifiers ctrl+v` |
+| **Linux Wayland** | `wtype --` | `wl-copy` (stdin pipe) / `wl-paste` | `wtype -M ctrl v -m ctrl` |
+| **macOS** | `CGEvent::set_string()` (每 20 个 UTF-16 code unit 一块) | `arboard` crate（原生 NSPasteboard） | `CGEvent` 模拟 Cmd+V |
+| **Windows** | `SendInput` + `KEYEVENTF_UNICODE` (批量 syscall) | Win32 `OpenClipboard` + `CF_UNICODETEXT` | `SendInput` 模拟 Ctrl+V |
 
-### 上下文检测 (`context.rs`)
+### 输入预处理
 
-| 函数 | 签名 | 说明 |
-|------|------|------|
-| `get_active_window_name()` | `fn get_active_window_name() -> Option<String>` | 获取当前焦点窗口的标题。X11: `xdotool getactivewindow getwindowname`; Wayland: `wlrctl toplevel find focused` |
-| `get_selected_text()` | `fn get_selected_text() -> Option<String>` | 获取当前选中的文本。X11: `xclip -selection primary -o`; Wayland: `wl-paste --primary` |
+所有平台在注入前调用 `sanitize_for_typing(text)` 预处理文本，过滤可能干扰键盘模拟的控制字符。
 
 ---
 
-## 错误处理策略
+## 上下文检测
 
-- **返回类型**: `Result<(), String>`（注入函数）和 `Option<String>`（上下文函数）
-- **注入失败**: 将外部命令的错误信息格式化为 `String` 返回。调用方（`commands.rs`）通过 `tracing::error!` 记录日志但不会中断主流程
-- **上下文检测失败**: 返回 `None`，静默降级。外部工具不存在或执行失败时不会产生 panic
-- **剪贴板恢复失败**: 使用 `let _ =` 忽略错误，确保不因恢复失败阻塞主流程
-- **输出编码**: 使用 `String::from_utf8_lossy()` 处理外部命令输出，非 UTF-8 字节被替换为 U+FFFD
+### InputContext 结构
+
+```rust
+pub struct InputContext {
+    pub app_name: Option<String>,         // 当前应用名称
+    pub window_title: Option<String>,     // 当前窗口标题
+    pub clipboard_text: Option<String>,   // 剪贴板内容
+    pub selected_text: Option<String>,    // 选中文本
+    pub app_package: Option<String>,      // Android 包名（桌面端 None）
+    pub browser_url: Option<String>,      // 浏览器 URL（需扩展，后续迭代）
+    // ... 其他扩展字段
+}
+```
+
+### 各平台采集方式
+
+| 信号 | Linux | macOS | Windows |
+|------|-------|-------|---------|
+| **应用名称** | `xdotool getactivewindow getwindowclassname` (X11) / 窗口标题 (Wayland) | AXUIElement: `AXFocusedApplication` → `AXTitle` | `GetForegroundWindow` + `GetWindowTextW` |
+| **窗口标题** | `xdotool getactivewindow getwindowname` (X11) / `wlrctl toplevel find focused` (Wayland) | AXUIElement: `AXFocusedWindow` → `AXTitle` | `GetForegroundWindow` + `GetWindowTextW` |
+| **选中文本** | `xclip -selection primary -o` (X11) / `wl-paste --primary` (Wayland) | AXUIElement: `AXFocusedUIElement` → `AXSelectedText`；fallback: 模拟 Cmd+C | 模拟 Ctrl+C + 读剪贴板 |
+| **剪贴板** | `xclip -selection clipboard -o` / `wl-paste` | `arboard` crate 读取 | Win32 `OpenClipboard` + `CF_UNICODETEXT` |
+| **并发策略** | 4 项并行（`thread::scope`，每项 200ms 超时） | 全同步顺序执行（AXUIElement <1ms） | 全同步顺序执行 |
+
+### macOS 上下文采集的优势 (v0.7.0)
+
+macOS 使用 AXUIElement API 直接查询，相比 Linux/Windows 的 Cmd+C / Ctrl+C 模拟方式：
+- **不扰动剪贴板**：`AXSelectedText` 直接读取选中文本
+- **无竞态条件**：`selected_text` 和 `clipboard_text` 采集不再冲突
+- **极低延迟**：每项查询 <1ms（vs Linux 每项 ~200ms）
+
+---
+
+## 权限管理 (macOS)
+
+macOS 需要两个独立权限才能正常工作：
+
+| 权限 | 用途 | 检测 API |
+|------|------|---------|
+| **Accessibility（辅助功能）** | CGEvent 模拟按键、AXUIElement 查询 | `AXIsProcessTrusted()` |
+| **Input Monitoring（输入监控）** | CGEventTap 监听 Fn 键 | `CGPreflightListenEventAccess()` |
+
+权限状态通过四值枚举返回：
+
+```rust
+pub enum PermissionStatus {
+    Granted,
+    AccessibilityRequired,
+    InputMonitoringRequired,
+    BothRequired,
+}
+```
+
+前端 `PermissionGuide` 组件每 2 秒自动轮询权限状态，用户授权后即时更新 UI。
+
+---
+
+## 错误处理
+
+- **统一错误类型**: `PlatformError`（thiserror 派生）
+  - `InjectionFailed(String)` — 文本注入失败
+  - `ClipboardError(String)` — 剪贴板操作失败
+  - `ToolNotFound { tool: String }` — 外部工具缺失（仅 Linux）
+  - `PermissionDenied { permission: String }` — 权限不足（仅 macOS）
+- **上下文检测**: 返回 `Option<String>`，静默降级
+- **剪贴板恢复**: 尽力而为（`if let Err(e) = ...`），不阻塞主流程
 
 ---
 
 ## 测试覆盖
 
-当前此模块 **没有自动化测试**。原因：
+| 测试类型 | 覆盖范围 |
+|----------|---------|
+| 常量一致性测试 | `DIRECT_INPUT_THRESHOLD == 200`、`MAX_UNICODE_PER_EVENT == 20` |
+| UTF-16 分块测试 | ASCII、CJK、Emoji、混合文本的分块正确性 |
+| Linux 环境检测测试 | `detect_display_server()` 环境变量 mock |
+| macOS 集成测试 (`#[cfg(target_os = "macos")]`) | 剪贴板读写、CGEvent 直接输入、AXUIElement 查询、权限检测（均为 no-panic 测试） |
 
-1. 所有功能依赖外部 CLI 工具（`xdotool`、`xclip`、`wtype` 等），需要运行中的显示服务器
-2. `inject_text()` 会产生真实的键盘输入事件，无法在 CI 环境中安全执行
-3. `detect_display_server()` 依赖环境变量，可以通过设置环境变量进行单元测试，但目前未实现
-
-**建议的测试方向:**
-
-- 对 `detect_display_server()` 编写单元测试（mock 环境变量）
-- 对注入策略选择逻辑（长度阈值 200）编写单元测试
-- 集成测试需在带有 display server 的环境中运行（如 Xvfb）
-
----
-
-## 已知局限性
-
-1. **仅支持 Linux**: 没有 macOS（`osascript`/`pbcopy`）或 Windows（`SendKeys`/`clip`）实现
-2. **依赖外部 CLI 工具**: 需要用户安装 `xdotool`、`xclip`（X11）或 `wtype`、`wl-copy`、`wl-paste`（Wayland）以及可选的 `wlrctl`、`ydotool`。工具缺失时运行时报错
-3. **同步阻塞**: `inject_text()` 在剪贴板路径下会 `std::thread::sleep(100ms)` 阻塞当前线程。在 Tauri async command 中调用时需注意
-4. **无 UTF-8 验证**: 直接将 `text.as_bytes()` 写入 stdin，不验证文本是否包含对目标工具有问题的字符
-5. **Wayland 支持不完整**: `wlrctl` 并非所有 Wayland compositor 都支持；`wtype` 需要 `wlr-virtual-keyboard-unstable-v1` 协议
-6. **无控制字符过滤**: 注入文本中的制表符、换行符等控制字符会被原样传递给 `xdotool`/`wtype`，可能产生意外行为
-7. **Unknown fallback 有限**: `ydotool` 仅支持直接键入，不支持剪贴板路径。且 `ydotool` 需要 root 权限或 `input` 组权限
-8. **`--` 分隔符安全**: `xdotool type` 和 `wtype` 调用使用 `--` 分隔符防止文本被误解析为命令行参数。但剪贴板路径通过 stdin pipe 传输，本身是安全的
+> **注意**：文本注入和上下文检测的完整功能测试需要 GUI 环境（显示服务器 / 窗口管理器），无法在 headless CI 中运行。macOS 集成测试使用 `let _ =` 仅验证不 panic。
