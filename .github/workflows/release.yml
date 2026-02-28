@@ -219,11 +219,65 @@ jobs:
           name: android-artifacts
           path: android/app/build/outputs/apk/release/*.apk
 
+  build-macos:
+    name: Build macOS Packages
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-
+
+      - run: npm ci
+
+      - name: Build Tauri app
+        run: npx tauri build
+
+      # ── Code Signing (macOS) ─────────────────────────────────
+      # macOS apps should be signed with a Developer ID Application certificate
+      # and notarized via Apple's notary service to avoid Gatekeeper warnings.
+      # Steps:
+      #   1. Store certificate as GitHub Secret: MACOS_CERTIFICATE (base64-encoded .p12)
+      #   2. Store password as: MACOS_CERTIFICATE_PASSWORD
+      #   3. Create temporary keychain:
+      #      echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+      #      security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+      #      security default-keychain -s build.keychain
+      #      security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+      #      security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+      #      security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+      #   4. Notarize:
+      #      xcrun notarytool submit <DMG> --apple-id "$APPLE_ID" --password "$APPLE_ID_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+      #      xcrun stapler staple <DMG>
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
+
   # ── Stage 2: Create Release (fan-in) ──────────────────────────
 
   create-release:
     name: Create GitHub Release
-    needs: [build-linux, build-windows, build-android]
+    needs: [build-linux, build-windows, build-android, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -257,6 +311,11 @@ jobs:
             [ -f "$f" ] && cp "$f" "release-files/TingYuXuan-v${VERSION}-$(basename "$f")"
           done
           for f in artifacts/windows-artifacts/nsis/*.exe; do
+            [ -f "$f" ] && cp "$f" "release-files/TingYuXuan-v${VERSION}-$(basename "$f")"
+          done
+
+          # macOS
+          for f in artifacts/macos-artifacts/dmg/*.dmg; do
             [ -f "$f" ] && cp "$f" "release-files/TingYuXuan-v${VERSION}-$(basename "$f")"
           done
 

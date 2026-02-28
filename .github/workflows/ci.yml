@@ -78,6 +78,33 @@ jobs:
       - name: cargo test (tingyuxuan-core)
         run: cargo test --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core
 
+  rust-check-macos:
+    name: Rust Check (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: cargo clippy (macOS)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: cargo test (tingyuxuan-core)
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p tingyuxuan-core
+
   frontend-check:
     name: Frontend Check
     runs-on: ubuntu-latest
@@ -147,6 +174,39 @@ jobs:
     name: Build (Windows)
     needs: [rust-check-windows, frontend-check]
     runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Rust backend
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release -p tingyuxuan-app
+
+  build-macos:
+    name: Build (macOS)
+    needs: [rust-check-macos, frontend-check]
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 

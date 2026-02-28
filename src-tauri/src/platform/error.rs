@@ -9,6 +9,8 @@ pub enum PlatformError {
     ClipboardError(String),
     #[error("Platform tool not found: {tool}")]
     ToolNotFound { tool: String },
+    #[error("Permission denied: {permission}")]
+    PermissionDenied { permission: String },
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }

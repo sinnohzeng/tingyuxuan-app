@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-app"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
 license = "LicenseRef-Proprietary"
@@ -14,12 +14,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust", "windows-native", "apple-native"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+arboard = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

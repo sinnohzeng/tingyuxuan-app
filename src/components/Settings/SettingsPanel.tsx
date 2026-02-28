@@ -7,6 +7,7 @@ import GeneralConfig from "./GeneralConfig";
 import DictionaryConfig from "./DictionaryConfig";
 import HistoryPanel from "./HistoryPanel";
 import SetupWizard from "./SetupWizard";
+import PermissionGuide from "./PermissionGuide";
 
 type Tab = "general" | "api" | "shortcuts" | "language" | "dictionary" | "history";
 
@@ -25,6 +26,7 @@ export default function SettingsPanel() {
   const [localConfig, setLocalConfig] = useState<AppConfig | null>(null);
   const [saveStatus, setSaveStatus] = useState<string>("");
   const [showWizard, setShowWizard] = useState(false);
+  const [showPermissionGuide, setShowPermissionGuide] = useState(false);
 
   // Listen for open-history event from tray menu.
   // 使用 ref 确保异步 listen() resolve 后仍能正确清理。
@@ -66,7 +68,13 @@ export default function SettingsPanel() {
 
         // Check if this is the first launch (no API keys configured).
         const isFirst = await invoke<boolean>("is_first_launch");
-        if (isFirst) setShowWizard(true);
+        if (isFirst) {
+          setShowWizard(true);
+        } else {
+          // 非首次启动：检查平台权限（macOS 辅助功能 + 输入监控）
+          const perm = await invoke<string>("check_platform_permissions");
+          if (perm !== "granted") setShowPermissionGuide(true);
+        }
       } catch {
         // Dev mode fallback
         const defaultConfig: AppConfig = {
@@ -143,8 +151,18 @@ export default function SettingsPanel() {
       <SetupWizard
         config={localConfig}
         onUpdate={updateConfig}
-        onComplete={() => setShowWizard(false)}
+        onComplete={() => {
+          setShowWizard(false);
+          // 首次设置完成后检查平台权限（macOS 需要辅助功能授权）
+          setShowPermissionGuide(true);
+        }}
       />
+    );
+  }
+
+  if (showPermissionGuide) {
+    return (
+      <PermissionGuide onComplete={() => setShowPermissionGuide(false)} />
     );
   }
 

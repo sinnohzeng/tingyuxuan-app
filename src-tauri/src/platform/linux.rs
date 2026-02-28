@@ -2,44 +2,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use super::error::PlatformError;
-use super::{ContextDetector, TextInjector};
+use super::{ContextDetector, TextInjector, run_with_timeout};
 use tingyuxuan_core::context::InputContext;
-
-/// Run a command with a timeout (200ms). Returns None on failure or timeout.
-///
-/// std::process::Child has no wait_timeout; polling with sleep(10ms) is the
-/// portable fallback until std stabilizes `Child::wait_timeout`.
-fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    let output = child.wait_with_output().ok()?;
-                    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    return if text.is_empty() { None } else { Some(text) };
-                }
-                return None;
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::warn!("Subprocess timed out after {:?}", timeout);
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    }
-}
 
 /// Detects the current display server type.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,6 +50,8 @@ fn clipboard_read_x11() -> Result<Option<String>, PlatformError> {
 }
 
 fn clipboard_write_x11(text: &str) -> Result<(), PlatformError> {
+    use std::io::Write;
+
     let mut child = Command::new("xclip")
         .args(["-selection", "clipboard"])
         .stdin(std::process::Stdio::piped())
@@ -94,12 +60,13 @@ fn clipboard_write_x11(text: &str) -> Result<(), PlatformError> {
             tool: format!("xclip: {e}"),
         })?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| PlatformError::ClipboardError(format!("Failed to write to xclip: {e}")))?;
-    }
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| PlatformError::ClipboardError("xclip stdin not available".into()))?
+        .write_all(text.as_bytes())
+        .map_err(|e| PlatformError::ClipboardError(format!("Failed to write to xclip: {e}")))?;
+
     child
         .wait()
         .map_err(|e| PlatformError::ClipboardError(format!("xclip failed: {e}")))?;
@@ -126,6 +93,8 @@ fn clipboard_read_wayland() -> Result<Option<String>, PlatformError> {
 }
 
 fn clipboard_write_wayland(text: &str) -> Result<(), PlatformError> {
+    use std::io::Write;
+
     let mut child = Command::new("wl-copy")
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -133,12 +102,15 @@ fn clipboard_write_wayland(text: &str) -> Result<(), PlatformError> {
             tool: format!("wl-copy: {e}"),
         })?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
-        stdin.write_all(text.as_bytes()).map_err(|e| {
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| PlatformError::ClipboardError("wl-copy stdin not available".into()))?
+        .write_all(text.as_bytes())
+        .map_err(|e| {
             PlatformError::ClipboardError(format!("Failed to write to wl-copy: {e}"))
         })?;
-    }
+
     child
         .wait()
         .map_err(|e| PlatformError::ClipboardError(format!("wl-copy failed: {e}")))?;
@@ -153,28 +125,8 @@ fn simulate_paste_wayland() -> Result<(), PlatformError> {
     Ok(())
 }
 
-/// Clipboard inject pattern shared across display servers:
-/// save → write → paste → restore.
-fn inject_via_clipboard(
-    text: &str,
-    read_fn: fn() -> Result<Option<String>, PlatformError>,
-    write_fn: fn(&str) -> Result<(), PlatformError>,
-    paste_fn: fn() -> Result<(), PlatformError>,
-) -> Result<(), PlatformError> {
-    let saved = read_fn()?;
-    write_fn(text)?;
-    paste_fn()?;
-
-    // Restore clipboard after a brief delay.
-    if let Some(original) = saved {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Err(e) = write_fn(&original) {
-            tracing::warn!("Clipboard restore failed: {e}");
-        }
-    }
-
-    Ok(())
-}
+// inject_via_clipboard 已提取到 mod.rs 作为跨平台共享函数
+use super::inject_via_clipboard;
 
 // ---------------------------------------------------------------------------
 // TextInjector

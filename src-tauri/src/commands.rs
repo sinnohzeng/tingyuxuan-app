@@ -688,3 +688,43 @@ pub async fn remove_dictionary_word(
     config.save().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Platform Permissions (macOS)
+// ---------------------------------------------------------------------------
+
+/// 检查 macOS 平台权限状态。
+///
+/// macOS 需要 Accessibility + Input Monitoring 权限，返回四值状态。
+/// 其他平台始终返回 "granted"。
+#[tauri::command]
+pub async fn check_platform_permissions() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = crate::platform::macos::check_permissions();
+        // 序列化为 snake_case 字符串（与 serde rename_all 一致）
+        serde_json::to_string(&status)
+            .map(|s| s.trim_matches('"').to_string())
+            .map_err(|e| format!("Serialization error: {e}"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok("granted".to_string())
+    }
+}
+
+/// 打开系统权限设置页面。
+///
+/// `target` 参数可选：
+/// - `"input_monitoring"` → 输入监控面板
+/// - 其他值或 None → 辅助功能面板（默认）
+#[tauri::command]
+pub async fn open_permission_settings(target: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::open_permission_settings_for(target.as_deref());
+    }
+    let _ = target; // 非 macOS 平台忽略参数
+    Ok(())
+}

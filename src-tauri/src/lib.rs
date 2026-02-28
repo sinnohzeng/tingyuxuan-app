@@ -145,6 +145,8 @@ pub fn run() {
             commands::delete_history_batch,
             commands::clear_history,
             commands::is_first_launch,
+            commands::check_platform_permissions,
+            commands::open_permission_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TingYuXuan");
@@ -155,7 +157,36 @@ pub fn run() {
 /// If a shortcut fails to register (e.g. another app has claimed it, or we're
 /// on Wayland where global shortcuts may not work), we log a warning but do NOT
 /// abort startup.
+///
+/// macOS: Fn 键通过 CGEventTap 监听（在 platform::macos 模块中），
+/// 其余快捷键通过 tauri-plugin-global-shortcut。
+/// Linux/Windows: 全部通过 tauri-plugin-global-shortcut。
 fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    {
+        match platform::macos::register_platform_hotkeys(app) {
+            Ok(fn_monitor) => {
+                // 保持 FnKeyMonitor 存活（存入 managed state）
+                if let Some(monitor) = fn_monitor {
+                    app.manage(state::FnKeyMonitorState(Some(monitor)));
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to register macOS platform hotkeys: {e}");
+            }
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        register_standard_shortcuts(app)
+    }
+}
+
+/// Linux/Windows 标准快捷键注册。
+#[cfg(not(target_os = "macos"))]
+fn register_standard_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_global_shortcut::{
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };

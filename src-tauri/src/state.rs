@@ -45,6 +45,12 @@ pub struct DetectorState(pub PlatformDetector);
 #[allow(dead_code)]
 pub struct MonitorState(pub tokio_util::sync::CancellationToken);
 
+/// macOS Fn 键监听器状态 — 持有 FnKeyMonitor 使其在应用生命周期内存活。
+/// 在非 macOS 平台上不使用。
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub struct FnKeyMonitorState(pub Option<crate::platform::macos::FnKeyMonitor>);
+
 /// Tracks the in-progress recording/processing session.
 ///
 /// ManagedSession 封装了 STT 会话、取消令牌和配置。

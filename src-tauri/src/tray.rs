@@ -4,19 +4,27 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 
+use crate::platform;
+
 pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let dictate_item = MenuItem::with_id(app, "dictate", "开始听写   RAlt", true, None::<&str>)?;
+    let labels = platform::shortcut_labels();
+
+    let dictate_label = format!("开始听写   {}", labels.dictate);
+    let translate_label = format!("开始翻译   {}", labels.translate);
+    let ai_label = format!("AI 助手    {}", labels.ai_assistant);
+
+    let dictate_item = MenuItem::with_id(app, "dictate", &dictate_label, true, None::<&str>)?;
     let translate_item = MenuItem::with_id(
         app,
         "translate",
-        "开始翻译   Shift+RAlt",
+        &translate_label,
         true,
         None::<&str>,
     )?;
     let ai_item = MenuItem::with_id(
         app,
         "ai_assistant",
-        "AI 助手    Alt+Space",
+        &ai_label,
         true,
         None::<&str>,
     )?;

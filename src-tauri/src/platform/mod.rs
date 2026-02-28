@@ -1,6 +1,8 @@
 mod error;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
@@ -39,19 +41,149 @@ pub fn sanitize_for_typing(text: &str) -> String {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// 跨平台共享工具函数（Linux + macOS 子进程模式共用）
+// ---------------------------------------------------------------------------
+
+/// Run a command with a timeout. Returns None on failure or timeout.
+///
+/// 使用轮询方式等待子进程完成（10ms 间隔），超时后 kill。
+/// `std::process::Child` 尚未稳定 `wait_timeout`，这是可移植的回退方案。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    let output = child.wait_with_output().ok()?;
+                    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    return if text.is_empty() { None } else { Some(text) };
+                }
+                return None;
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!("Subprocess timed out after {:?}", timeout);
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// 剪贴板恢复延迟 — 等待目标应用处理粘贴后再恢复原始剪贴板内容。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CLIPBOARD_RESTORE_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// 剪贴板注入通用流程: save → write → paste → restore。
+///
+/// Linux 和 macOS 都使用这个函数指针模式将平台特定的剪贴板操作组合起来。
+/// Windows 使用 Win32 API 直接实现，不走此路径。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn inject_via_clipboard(
+    text: &str,
+    read_fn: fn() -> Result<Option<String>, PlatformError>,
+    write_fn: fn(&str) -> Result<(), PlatformError>,
+    paste_fn: fn() -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let saved = read_fn()?;
+    write_fn(text)?;
+    paste_fn()?;
+
+    // Restore clipboard after a brief delay.
+    if let Some(original) = saved {
+        std::thread::sleep(CLIPBOARD_RESTORE_DELAY);
+        if let Err(e) = write_fn(&original) {
+            tracing::warn!("Clipboard restore failed: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 平台统一接口类型
+// ---------------------------------------------------------------------------
+
+/// 快捷键显示标签（用于托盘菜单等 UI 展示）。
+#[allow(dead_code)] // cancel 字段在 tray 中暂未单独显示
+pub struct ShortcutLabels {
+    pub dictate: &'static str,
+    pub translate: &'static str,
+    pub ai_assistant: &'static str,
+    pub cancel: &'static str,
+}
+
+/// 平台权限状态（macOS 细分为辅助功能 + 输入监控两个独立权限）。
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // 仅在 macOS 上使用，但类型定义需跨平台可用
+pub enum PermissionStatus {
+    /// 所有必要权限已授予
+    Granted,
+    /// 仅缺少辅助功能权限
+    AccessibilityRequired,
+    /// 仅缺少输入监控权限
+    InputMonitoringRequired,
+    /// 两项权限都需要
+    BothRequired,
+}
+
+/// 获取当前平台的快捷键显示标签。
+pub fn shortcut_labels() -> ShortcutLabels {
+    #[cfg(target_os = "macos")]
+    {
+        macos::shortcut_labels()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        ShortcutLabels {
+            dictate: "RAlt",
+            translate: "Shift+RAlt",
+            ai_assistant: "Alt+Space",
+            cancel: "Esc",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Compile-time type aliases — zero overhead, no Box/dyn
+// ---------------------------------------------------------------------------
+
 #[cfg(target_os = "linux")]
 pub type PlatformInjector = linux::LinuxTextInjector;
 #[cfg(target_os = "linux")]
 pub type PlatformDetector = linux::LinuxContextDetector;
+
+#[cfg(target_os = "macos")]
+pub type PlatformInjector = macos::MacOSTextInjector;
+#[cfg(target_os = "macos")]
+pub type PlatformDetector = macos::MacOSContextDetector;
 
 #[cfg(target_os = "windows")]
 pub type PlatformInjector = windows::WindowsTextInjector;
 #[cfg(target_os = "windows")]
 pub type PlatformDetector = windows::WindowsContextDetector;
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-compile_error!("Unsupported platform: only Linux and Windows are supported for desktop builds");
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+compile_error!(
+    "Unsupported platform: only Linux, macOS, and Windows are supported for desktop builds"
+);
 
 // ---------------------------------------------------------------------------
 // Tests

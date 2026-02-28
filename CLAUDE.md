@@ -10,11 +10,11 @@
 
 | 层 | 技术 |
 |----|------|
-| Desktop | Tauri 2.10 + React 19 + Zustand 5 + Tailwind CSS 4 |
+| Desktop | Tauri 2.10 + React 19 + Zustand 5 + Tailwind CSS 4 (Linux, macOS, Windows) |
 | Android | Kotlin (AGP 9.0.1 内置) + Compose (BOM 2026.01.01) + InputMethodService |
 | Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.32 |
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
-| Testing | 117 Rust + 26 vitest + 7 JNI + 4 Android 单元测试 |
+| Testing | 116 Rust + 44 vitest + 13 JNI + 7 Android 单元测试 |
 
 ## 项目结构
 
@@ -67,7 +67,7 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 
 ### GitHub Actions Release 工作流
 
-- **架构**：fan-out/fan-in — 3 个 build job 各自 `upload-artifact`，1 个 `create-release` job 统一 `download-artifact` + 创建 Release
+- **架构**：fan-out/fan-in — 4 个 build job (Linux, Windows, macOS, Android) 各自 `upload-artifact`，1 个 `create-release` job 统一 `download-artifact` + 创建 Release
 - **Tag 触发**：tags 必须和 commits **分开推送**，否则可能不触发 `on: push: tags`
 - **Artifact 路径**：`upload-artifact@v4` 保留相对目录结构；`download-artifact@v4` 在 `<artifact-name>/` 子目录下展开
 - **Android 构建链**：`cargo-ndk` 编译 .so → 复制到 `jniLibs/` → `gradlew assembleRelease`
@@ -77,6 +77,6 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 - **语言**：UI 和文档用中文，commit message 用英文，代码注释中文
 - **文档驱动 (DDD)**：文档是功能规格，代码实现文档描述
 - **唯一真值 (SSOT)**：每类信息只有一个权威来源，跨文档引用不重复
-- **快捷键默认值**：RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）
+- **快捷键默认值**：Linux/Windows: RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）；macOS: Fn（听写）、⌥T（翻译）、⌃Space（AI 助手）、Esc（取消）
 - **Mock 音频**：`TINGYUXUAN_MOCK_AUDIO=1` 环境变量启用录音 mock 模式
 - **许可证**：Source-Available（代码公开仅供参考和学习），详见 LICENSE

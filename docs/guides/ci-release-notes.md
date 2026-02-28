@@ -228,6 +228,66 @@ git push origin v0.4.0
 
 ---
 
+## 15. macOS 构建：CGEventTap 需要 Input Monitoring 权限
+
+**问题**：macOS 上 Fn 键监听使用 `CGEventTap`，需要 **Input Monitoring** 权限（非辅助功能权限）。
+
+**原因**：macOS 10.15+ 将 Input Monitoring 从 Accessibility 中独立出来。`CGEventTap` 监听键盘事件需要 Input Monitoring，而 `CGEventPost` 模拟按键需要 Accessibility。
+
+**解决**：
+- Entitlements.plist 禁用沙箱（`com.apple.security.app-sandbox = false`）
+- 首次启动引导用户授予两个独立权限
+- `check_permissions()` 通过 `AXIsProcessTrusted()` 检测辅助功能权限
+
+> **规则**：macOS 文本注入类应用需要 Accessibility + Input Monitoring 两个独立权限，不能只请求其一。
+
+---
+
+## 16. macOS 构建：非沙箱应用必须禁用 App Sandbox
+
+**问题**：Tauri 应用需要调用 System Events（AppleScript）和 CGEvent，App Sandbox 会阻止这些操作。
+
+**原因**：沙箱限制了 AppleScript 自动化、全局事件监听、剪贴板操作等功能。Typeless 等同类应用均禁用沙箱。
+
+**解决**：`Entitlements.plist` 设置 `com.apple.security.app-sandbox = false`，同时启用：
+- `com.apple.security.automation.apple-events = true`
+- `com.apple.security.device.audio-input = true`
+
+> **规则**：语音输入 + 全局注入类应用无法在沙箱内运行，需禁用 App Sandbox。
+
+---
+
+## 17. macOS Release：DMG 构建与代码签名
+
+**问题**：未签名 DMG 在 macOS 上会被 Gatekeeper 拦截。
+
+**临时方案**：暂无 Apple Developer 账号，先出未签名版。用户右键 → "打开" 可绕过 Gatekeeper。
+
+**后续方案**：购买 Apple Developer 账号后，在 Release workflow 中启用签名 + 公证：
+```yaml
+env:
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  APPLE_ID: ${{ secrets.APPLE_ID }}
+  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+```
+
+> **规则**：macOS 分发必须签名 + 公证才能免 Gatekeeper 弹窗。Release workflow 中已预留签名步骤注释。
+
+---
+
+## 18. macOS CI：无需安装系统依赖
+
+**问题**：Linux CI 需要 `apt-get install libasound2-dev libwebkit2gtk-4.1-dev` 等，macOS 是否类似？
+
+**答案**：macOS 自带 WebKit、CoreAudio、CoreGraphics 等框架，无需额外安装系统依赖。CI 只需 Rust toolchain + Node.js。
+
+> **规则**：macOS CI job 比 Linux 简单 — 无 `apt-get` 步骤，直接 clippy/test/build。
+
+---
+
 ## Quick Reference: AGP 9.0 迁移清单
 
 - [ ] Gradle wrapper → 9.1.0+
