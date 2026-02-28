@@ -260,10 +260,10 @@ fn inject_via_clipboard(text: &str) -> Result<(), PlatformError> {
     clipboard_write(text)?;
     simulate_paste()?;
     std::thread::sleep(Duration::from_millis(100));
-    if let Some(original) = saved {
-        if let Err(e) = clipboard_write(&original) {
-            tracing::warn!("Clipboard restore failed: {e}");
-        }
+    if let Some(original) = saved
+        && let Err(e) = clipboard_write(&original)
+    {
+        tracing::warn!("Clipboard restore failed: {e}");
     }
     Ok(())
 }
@@ -397,10 +397,10 @@ fn copy_selection_via_clipboard() -> Option<String> {
     let text = clipboard_read().ok().flatten();
 
     // Restore original clipboard (best-effort).
-    if let Some(original) = saved {
-        if let Err(e) = clipboard_write(&original) {
-            tracing::warn!("Clipboard restore failed: {e}");
-        }
+    if let Some(original) = saved
+        && let Err(e) = clipboard_write(&original)
+    {
+        tracing::warn!("Clipboard restore failed: {e}");
     }
 
     text.filter(|t| !t.is_empty())
