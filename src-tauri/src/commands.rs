@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tauri::State;
+use tracing::Instrument;
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::error::StructuredError;
@@ -57,6 +58,7 @@ fn check_max_len(s: &str, max: usize, field_name: &str) -> Result<(), String> {
 ///
 /// `service` is "stt" or "llm".
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
     // Validate service name against whitelist.
     if !VALID_KEY_SERVICES.contains(&service.as_str()) {
@@ -76,6 +78,7 @@ pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
 
 /// Retrieve an API key from the OS keychain.  Returns `None` if no key is stored.
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
     if !VALID_KEY_SERVICES.contains(&service.as_str()) {
         return Err(format!("无效的服务名称: {service}（允许: stt, llm）"));
@@ -120,19 +123,35 @@ pub fn build_pipeline(
     config: &AppConfig,
     event_tx: &tokio::sync::broadcast::Sender<PipelineEvent>,
 ) -> Option<Arc<Pipeline>> {
-    let stt_key = resolve_api_key("stt", &config.stt.api_key_ref)?;
-    let llm_key = resolve_api_key("llm", &config.llm.api_key_ref)?;
+    let stt_key = resolve_api_key("stt", &config.stt.api_key_ref).or_else(|| {
+        tracing::warn!("Pipeline build skipped: no STT API key");
+        None
+    })?;
+    let llm_key = resolve_api_key("llm", &config.llm.api_key_ref).or_else(|| {
+        tracing::warn!("Pipeline build skipped: no LLM API key");
+        None
+    })?;
 
-    let stt_provider = stt::create_streaming_stt_provider(&config.stt, stt_key).ok()?;
+    let stt_provider = stt::create_streaming_stt_provider(&config.stt, stt_key)
+        .map_err(|e| tracing::error!(error = %e, "Failed to create STT provider"))
+        .ok()?;
 
     let llm_base_url = config
         .llm
         .base_url
         .clone()
         .unwrap_or_else(|| config.llm_base_url());
-    let llm_provider =
-        Box::new(OpenAICompatProvider::new(llm_key, llm_base_url, config.llm.model.clone()).ok()?);
+    let llm_provider = Box::new(
+        OpenAICompatProvider::new(llm_key, llm_base_url, config.llm.model.clone())
+            .map_err(|e| tracing::error!(error = %e, "Failed to create LLM provider"))
+            .ok()?,
+    );
 
+    tracing::info!(
+        stt_provider = config.stt.provider.as_str(),
+        llm_model = config.llm.model.as_str(),
+        "Pipeline built successfully"
+    );
     Some(Arc::new(Pipeline::new(
         stt_provider,
         llm_provider,
@@ -165,6 +184,12 @@ pub async fn start_recording(
         .ok_or_else(|| "请先在设置中配置 STT 和 LLM 的 API Key".to_string())?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
+    let session_span = tracing::info_span!("session",
+        session_id = %session_id,
+        mode = tracing::field::Empty,
+    );
+    let _guard = session_span.enter();
+
     let mut processing_mode = mode
         .parse::<ProcessingMode>()
         .unwrap_or(ProcessingMode::Dictate);
@@ -224,11 +249,15 @@ pub async fn start_recording(
     // Determine the effective mode string for events/history.
     let effective_mode = processing_mode.to_string();
 
+    // 记录 effective mode
+    tracing::Span::current().record("mode", effective_mode.as_str());
+
     // Store active session.
     let session = ActiveSession {
         session_id: session_id.clone(),
         managed_session: Some(managed_session),
         started_at: std::time::Instant::now(),
+        session_span: session_span.clone(),
     };
     *session_state.0.lock().await = Some(session);
 
@@ -256,11 +285,6 @@ pub async fn start_recording(
         let _ = history.save_transcript(&record);
     }
 
-    tracing::info!(
-        "Recording started: session={}, mode={}",
-        session_id,
-        effective_mode
-    );
     Ok(session_id)
 }
 
@@ -306,6 +330,7 @@ pub async fn stop_recording(
 
     let session_id = session.session_id.clone();
     let duration_ms = session.started_at.elapsed().as_millis() as u64;
+    let session_span = session.session_span.clone();
 
     // Emit recording stopped event.
     let _ = event_bus
@@ -333,58 +358,60 @@ pub async fn stop_recording(
     let history = history_state.0.clone();
 
     // 3. 异步处理：SessionOrchestrator::finish 处理完整流程。
-    tokio::spawn(async move {
-        match SessionOrchestrator::finish(&pipeline, managed_session).await {
-            SessionResult::Success {
-                raw_text,
-                processed_text,
-            } => {
-                if is_ai_assistant {
-                    tracing::info!("AI assistant result ready (no auto-inject)");
-                } else {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    if let Err(e) = injector.inject_text(&processed_text) {
-                        tracing::error!("Text injection failed: {}", e);
-                    }
-                }
-
-                let h = history.lock().await;
-                let _ = h.update_processed(&session_id, &raw_text, &processed_text);
-            }
-            SessionResult::EmptyTranscript => {
-                tracing::warn!("STT returned empty transcript");
-                let _ = event_tx.send(PipelineEvent::Error {
-                    message: "未检测到语音内容，请重试".to_string(),
-                    user_action: tingyuxuan_core::error::UserAction::Retry,
-                    raw_text: None,
-                });
-                let h = history.lock().await;
-                let _ = h.update_status(&session_id, "failed");
-            }
-            SessionResult::Failed { error, raw_text } => {
-                tracing::error!("Pipeline processing failed: {error}");
-                let se = StructuredError::from(&error);
-                let _ = event_tx.send(PipelineEvent::Error {
-                    message: se.message,
-                    user_action: se.user_action,
+    tokio::spawn(
+        async move {
+            match SessionOrchestrator::finish(&pipeline, managed_session).await {
+                SessionResult::Success {
                     raw_text,
-                });
-                let h = history.lock().await;
-                let _ = h.update_status(&session_id, "failed");
-            }
-            SessionResult::Cancelled => {
-                tracing::info!("Session was cancelled");
-                let h = history.lock().await;
-                let _ = h.update_status(&session_id, "cancelled");
+                    processed_text,
+                } => {
+                    if is_ai_assistant {
+                        tracing::info!("AI assistant result ready (no auto-inject)");
+                    } else {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                        if let Err(e) = injector.inject_text(&processed_text) {
+                            tracing::error!("Text injection failed: {}", e);
+                        }
+                    }
+
+                    let h = history.lock().await;
+                    let _ = h.update_processed(&session_id, &raw_text, &processed_text);
+                }
+                SessionResult::EmptyTranscript => {
+                    tracing::warn!("STT returned empty transcript");
+                    let _ = event_tx.send(PipelineEvent::Error {
+                        message: "未检测到语音内容，请重试".to_string(),
+                        user_action: tingyuxuan_core::error::UserAction::Retry,
+                        raw_text: None,
+                    });
+                    let h = history.lock().await;
+                    let _ = h.update_status(&session_id, "failed");
+                }
+                SessionResult::Failed { error, raw_text } => {
+                    tracing::error!("Pipeline processing failed: {error}");
+                    let se = StructuredError::from(&error);
+                    let _ = event_tx.send(PipelineEvent::Error {
+                        message: se.message,
+                        user_action: se.user_action,
+                        raw_text,
+                    });
+                    let h = history.lock().await;
+                    let _ = h.update_status(&session_id, "failed");
+                }
+                SessionResult::Cancelled => {
+                    tracing::info!("Session was cancelled");
+                    let h = history.lock().await;
+                    let _ = h.update_status(&session_id, "cancelled");
+                }
             }
         }
-    });
-
-    tracing::info!("Recording stopped, processing started");
+        .instrument(session_span),
+    );
     Ok("processing".to_string())
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn cancel_recording(
     session_state: State<'_, SessionState>,
     history_state: State<'_, HistoryState>,
@@ -417,6 +444,7 @@ pub async fn cancel_recording(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all, fields(id = %id))]
 pub async fn retry_transcription(
     id: String,
     pipeline_state: State<'_, PipelineState>,
@@ -507,6 +535,7 @@ pub async fn retry_transcription(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn inject_text(
     text: String,
     injector_state: State<'_, InjectorState>,
@@ -524,6 +553,7 @@ pub async fn inject_text(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn test_stt_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
     let config = config_state.0.read().await;
     let api_key = resolve_api_key("stt", &config.stt.api_key_ref)
@@ -536,6 +566,7 @@ pub async fn test_stt_connection(config_state: State<'_, ConfigState>) -> Result
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
     let config = config_state.0.read().await;
     let api_key = resolve_api_key("llm", &config.llm.api_key_ref)
@@ -557,17 +588,20 @@ pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn is_first_launch(pipeline_state: State<'_, PipelineState>) -> Result<bool, String> {
     Ok(pipeline_state.0.read().await.is_none())
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn get_config(config_state: State<'_, ConfigState>) -> Result<AppConfig, String> {
     let config = config_state.0.read().await;
     Ok(config.clone())
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn save_config(
     config: AppConfig,
     config_state: State<'_, ConfigState>,
@@ -593,6 +627,7 @@ pub async fn save_config(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn get_recent_history(
     limit: u32,
     history_state: State<'_, HistoryState>,
@@ -602,6 +637,7 @@ pub async fn get_recent_history(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn search_history(
     query: String,
     limit: u32,
@@ -614,6 +650,7 @@ pub async fn search_history(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn get_history_page(
     limit: u32,
     offset: u32,
@@ -624,6 +661,7 @@ pub async fn get_history_page(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn delete_history(
     id: String,
     history_state: State<'_, HistoryState>,
@@ -633,6 +671,7 @@ pub async fn delete_history(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn delete_history_batch(
     ids: Vec<String>,
     history_state: State<'_, HistoryState>,
@@ -642,6 +681,7 @@ pub async fn delete_history_batch(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn clear_history(history_state: State<'_, HistoryState>) -> Result<u64, String> {
     let history = history_state.0.lock().await;
     history.clear_all().map_err(|e| e.to_string())
@@ -652,12 +692,14 @@ pub async fn clear_history(history_state: State<'_, HistoryState>) -> Result<u64
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn get_dictionary(config_state: State<'_, ConfigState>) -> Result<Vec<String>, String> {
     let config = config_state.0.read().await;
     Ok(config.user_dictionary.clone())
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn add_dictionary_word(
     word: String,
     config_state: State<'_, ConfigState>,
@@ -679,6 +721,7 @@ pub async fn add_dictionary_word(
 }
 
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn remove_dictionary_word(
     word: String,
     config_state: State<'_, ConfigState>,
@@ -698,6 +741,7 @@ pub async fn remove_dictionary_word(
 /// macOS 需要 Accessibility + Input Monitoring 权限，返回四值状态。
 /// 其他平台始终返回 "granted"。
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn check_platform_permissions() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
@@ -720,6 +764,7 @@ pub async fn check_platform_permissions() -> Result<String, String> {
 /// - `"input_monitoring"` → 输入监控面板
 /// - 其他值或 None → 辅助功能面板（默认）
 #[tauri::command]
+#[tracing::instrument(skip_all)]
 pub async fn open_permission_settings(target: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {

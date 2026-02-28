@@ -8,14 +8,12 @@ use state::AppStates;
 use tauri::{Emitter, Manager};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "tingyuxuan=info".into()),
-        )
-        .init();
+    let _log_guard = init_tracing();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -78,6 +76,9 @@ pub fn run() {
                         }
 
                         // Forward all events to the frontend.
+                        if !matches!(&event, PipelineEvent::VolumeUpdate { .. }) {
+                            tracing::debug!("Forwarding pipeline event to frontend");
+                        }
                         let _ = handle.emit("pipeline-event", &event);
                     }
                 }
@@ -253,6 +254,8 @@ fn register_standard_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::erro
 async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
     use crate::state::RecorderState;
 
+    tracing::debug!(action, "Shortcut triggered");
+
     match action {
         "cancel" => {
             // Cancel is always safe to call — it's a no-op if not recording.
@@ -262,6 +265,7 @@ async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
             // Toggle behaviour: if already recording, stop; otherwise start.
             let recorder = handle.state::<RecorderState>();
             let is_recording = recorder.0.is_recording().await;
+            tracing::debug!(mode, is_recording, "Toggle recording");
 
             if is_recording {
                 let _ = handle.emit("shortcut-action", "stop");
@@ -271,4 +275,38 @@ async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
         }
         _ => {}
     }
+}
+
+/// 初始化 tracing subscriber：终端 + 可选日志文件。
+/// 返回 guard 以保证文件写入器在 app 生命周期内存活。
+fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| "tingyuxuan=info".into());
+
+    // 终端输出层（开发时看这个）
+    let stderr_layer = fmt::layer().with_span_events(FmtSpan::NEW | FmtSpan::CLOSE);
+
+    // 文件输出层（用户 bug report 时看这个）
+    let (file_layer, guard) = match tingyuxuan_core::config::AppConfig::data_dir() {
+        Ok(data_dir) => {
+            let log_dir = data_dir.join("logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let file_appender = tracing_appender::rolling::daily(log_dir, "tingyuxuan.log");
+            let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+            let layer = fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE);
+            (Some(layer), Some(guard))
+        }
+        Err(_) => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer) // Option<Layer> impl Layer — None 时为 noop
+        .init();
+
+    guard
 }

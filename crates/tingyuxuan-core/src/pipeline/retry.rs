@@ -50,7 +50,12 @@ where
 
     for attempt in 0..=policy.max_retries {
         match operation().await {
-            Ok(value) => return Ok(value),
+            Ok(value) => {
+                if attempt > 0 {
+                    tracing::info!(attempt = attempt + 1, "Operation succeeded after retry");
+                }
+                return Ok(value);
+            }
             Err(err) => {
                 // If this was the last allowed attempt, propagate the error.
                 if attempt == policy.max_retries {

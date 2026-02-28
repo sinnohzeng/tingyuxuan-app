@@ -1,6 +1,9 @@
 import { useState, useCallback } from "react";
 import { PROVIDER_PRESETS } from "../../lib/providers";
+import { createLogger } from "../../lib/logger";
 import type { AppConfig, STTProviderType, LLMProviderType } from "../../lib/types";
+
+const log = createLogger("SetupWizard");
 
 interface SetupWizardProps {
   config: AppConfig;
@@ -66,7 +69,7 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
         await invoke("save_api_key", { service: "llm", key: sttApiKey.trim() });
       }
     } catch (e) {
-      console.warn("Tauri unavailable:", e);
+      log.warn("Tauri unavailable", e);
     }
     setStep(3);
   }, [sttApiKey, llmApiKey, isSameKey]);
@@ -96,7 +99,7 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
         setLlmTestResult("failed");
       }
     } catch (e) {
-      console.warn("Tauri unavailable:", e);
+      log.warn("Tauri unavailable", e);
       setSttTestResult("failed");
       setLlmTestResult("failed");
     }
@@ -108,7 +111,7 @@ export default function SetupWizard({ config, onUpdate, onComplete }: SetupWizar
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_config", { config });
     } catch (e) {
-      console.warn("Tauri unavailable:", e);
+      log.warn("Tauri unavailable", e);
     }
     onComplete();
   }, [config, onComplete]);

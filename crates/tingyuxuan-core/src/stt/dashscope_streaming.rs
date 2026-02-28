@@ -109,6 +109,11 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
     ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
         Box::pin(async move {
             let task_id = uuid::Uuid::new_v4().to_string();
+            let _span = tracing::info_span!("stt_ws",
+                task_id = %task_id,
+                model = %self.model,
+            )
+            .entered();
 
             // 建立 WebSocket 连接（携带 Bearer token）
             let request = build_ws_request(&self.ws_url, self.api_key.expose_secret())?;
@@ -116,9 +121,11 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
                 tokio_tungstenite::connect_async_tls_with_config(request, None, false, None)
                     .await
                     .map_err(|e| {
+                        tracing::error!(error = %e, "WebSocket connection failed");
                         STTError::NetworkError(format!("WebSocket connection failed: {e}"))
                     })?;
 
+            tracing::debug!("WebSocket connected");
             let (mut ws_sink, mut ws_source) = ws_stream.split();
 
             // 发送 StartTranscription
@@ -132,6 +139,7 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
 
             // 等待 TranscriptionStarted 确认
             wait_for_started(&mut ws_source).await?;
+            tracing::debug!("STT transcription started");
 
             // 创建 channel
             let (audio_tx, mut audio_rx) = mpsc::channel::<AudioChunk>(STREAMING_CHANNEL_CAPACITY);

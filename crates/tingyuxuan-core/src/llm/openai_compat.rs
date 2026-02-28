@@ -56,6 +56,8 @@ impl OpenAICompatProvider {
         &self,
         messages: Vec<ChatMessage>,
     ) -> Result<ChatCompletionResponse, LLMError> {
+        let _span = tracing::debug_span!("llm_http", model = %self.model).entered();
+
         let body = ChatCompletionRequest {
             model: self.model.clone(),
             messages,
@@ -71,8 +73,10 @@ impl OpenAICompatProvider {
             .await
             .map_err(|e| {
                 if e.is_timeout() {
+                    tracing::warn!("LLM request timed out");
                     LLMError::Timeout
                 } else {
+                    tracing::error!(error = %e, "LLM network error");
                     LLMError::NetworkError(e.to_string())
                 }
             })?;
@@ -85,6 +89,7 @@ impl OpenAICompatProvider {
                 .await
                 .unwrap_or_else(|_| String::from("<failed to read body>"));
 
+            tracing::warn!(status = status_code, "LLM API error response");
             return Err(match status_code {
                 401 => LLMError::AuthFailed,
                 429 => LLMError::RateLimited,
@@ -93,10 +98,16 @@ impl OpenAICompatProvider {
             });
         }
 
-        response
+        let resp = response
             .json::<ChatCompletionResponse>()
             .await
-            .map_err(|e| LLMError::InvalidResponse(e.to_string()))
+            .map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
+
+        if let Some(ref usage) = resp.usage {
+            tracing::debug!(tokens = usage.total_tokens, "LLM response received");
+        }
+
+        Ok(resp)
     }
 }
 

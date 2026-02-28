@@ -5,6 +5,7 @@ import type {
   UserAction,
   AppConfig,
 } from "../lib/types";
+import { setLogSession } from "../lib/logger";
 
 interface AppStore {
   // Recording state
@@ -79,8 +80,9 @@ export const useAppStore = create<AppStore>((set) => ({
   setIsOnline: (isOnline) => set({ isOnline }),
   setConfig: (config) => set({ config }),
   // isOnline is global network state, intentionally not reset per session
-  reset: () =>
-    set({
+  reset: () => {
+    setLogSession(null);
+    return set({
       recordingState: "idle",
       recordingMode: "dictate",
       volumeLevels: [],
@@ -90,5 +92,6 @@ export const useAppStore = create<AppStore>((set) => ({
       errorAction: null,
       rawTranscript: null,
       aiResult: null,
-    }),
+    });
+  },
 }));

@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-app"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
 license = "LicenseRef-Proprietary"
@@ -20,6 +20,7 @@ chrono = "0.4"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

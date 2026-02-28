@@ -166,18 +166,21 @@ async fn run_actor(
 fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
     match cmd {
         RecorderCommand::Start { reply } => {
+            tracing::debug!("Recorder command: Start");
             let result = recorder.start().map_err(|e| e.to_string());
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");
             }
         }
         RecorderCommand::Stop { reply } => {
+            tracing::debug!("Recorder command: Stop");
             let result = recorder.stop().map_err(|e| e.to_string());
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");
             }
         }
         RecorderCommand::Cancel { reply } => {
+            tracing::debug!("Recorder command: Cancel");
             let result = recorder.cancel().map_err(|e| e.to_string());
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");

@@ -127,6 +127,7 @@ impl SessionOrchestrator {
         pipeline: &Pipeline,
         config: SessionConfig,
     ) -> Result<ManagedSession, PipelineError> {
+        tracing::info!(mode = %config.mode, "Starting streaming STT session");
         let streaming_session = pipeline.start_streaming(&config.stt_options).await?;
 
         Ok(ManagedSession {
@@ -163,7 +164,19 @@ impl SessionOrchestrator {
             }
         };
 
-        let collect_result = Self::collect_stt_results(event_rx, &session.cancel_token).await;
+        let collect_result = {
+            let _span = tracing::info_span!("stt_collect").entered();
+            match Self::collect_stt_results(event_rx, &session.cancel_token).await {
+                Ok(text) => {
+                    tracing::info!(len = text.len(), "STT transcript collected");
+                    Ok(text)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "STT collection failed");
+                    Err(e)
+                }
+            }
+        };
 
         let transcript = match collect_result {
             Ok(text) if text.trim().is_empty() => return SessionResult::EmptyTranscript,
@@ -219,6 +232,7 @@ impl SessionOrchestrator {
                 event = event_rx.recv() => {
                     match event {
                         Some(StreamingSTTEvent::Final { text, sentence_index }) => {
+                            tracing::debug!(sentence_index, "STT sentence final");
                             finals.push((sentence_index, text));
                         }
                         Some(StreamingSTTEvent::Error(e)) => {
@@ -237,6 +251,7 @@ impl SessionOrchestrator {
                     return Err(PipelineError::Cancelled);
                 }
                 _ = &mut timeout => {
+                    tracing::warn!(timeout_secs = STT_COLLECT_TIMEOUT_SECS, "STT collection timed out");
                     return Err(PipelineError::Stt(
                         crate::error::STTError::Timeout(STT_COLLECT_TIMEOUT_SECS),
                     ));

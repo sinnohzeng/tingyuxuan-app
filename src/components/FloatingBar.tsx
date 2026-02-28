@@ -1,9 +1,12 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../stores/appStore";
 import type { PipelineEvent, UserAction } from "../lib/types";
+import { createLogger, setLogSession } from "../lib/logger";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
 import ResultPanel from "./ResultPanel";
+
+const log = createLogger("FloatingBar");
 
 /** Mode display labels */
 const MODE_LABELS: Record<string, string> = {
@@ -104,8 +107,13 @@ export default function FloatingBar() {
         // Pipeline events from the Rust backend
         const u1 = await listen<PipelineEvent>("pipeline-event", (event) => {
           const data = event.payload;
+          if (data.type !== "VolumeUpdate") {
+            log.debug(`pipeline-event: ${data.type}`, data);
+          }
           switch (data.type) {
             case "RecordingStarted":
+              setLogSession(data.session_id);
+              log.info(`session started: mode=${data.mode}`);
               store.setSessionId(data.session_id);
               store.setRecordingState("recording");
               break;
@@ -123,12 +131,14 @@ export default function FloatingBar() {
               // STT done, keep processing state
               break;
             case "ProcessingComplete":
+              log.info("processing complete");
               if (useAppStore.getState().recordingMode === "ai_assistant") {
                 store.setAiResult(data.processed_text);
               }
               store.setRecordingState("done");
               break;
             case "Error": {
+              log.warn(`pipeline error: ${data.message}`, { action: data.user_action });
               const knownActions: UserAction[] = ["Retry", "InsertRawOrRetry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
               const action = knownActions.includes(data.user_action as UserAction)
                 ? (data.user_action as UserAction)
@@ -151,6 +161,7 @@ export default function FloatingBar() {
           const action = event.payload as string;
           const { invoke } = await import("@tauri-apps/api/core");
           const currentState = useAppStore.getState().recordingState;
+          log.debug(`shortcut: ${action}`, { currentState });
 
           switch (action) {
             case "cancel":
@@ -188,6 +199,7 @@ export default function FloatingBar() {
   }, []);
 
   const handleCancel = useCallback(async () => {
+    log.info("user action: cancel");
     setRecordingState("cancelled");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -198,6 +210,7 @@ export default function FloatingBar() {
   }, [setRecordingState]);
 
   const handleConfirm = useCallback(async () => {
+    log.info("user action: confirm");
     setRecordingState("processing");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -208,6 +221,7 @@ export default function FloatingBar() {
   }, [setRecordingState]);
 
   const handleRetry = useCallback(async () => {
+    log.info("user action: retry");
     const currentSession = useAppStore.getState().sessionId;
     if (!currentSession) {
       reset();

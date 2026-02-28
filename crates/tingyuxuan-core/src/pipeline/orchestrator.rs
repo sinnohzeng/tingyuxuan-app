@@ -69,6 +69,7 @@ impl Pipeline {
         &self,
         options: &STTOptions,
     ) -> Result<StreamingSession, PipelineError> {
+        let _span = tracing::info_span!("stt_connect").entered();
         self.emit(PipelineEvent::TranscriptionStarted);
 
         let session = self.stt.start_stream(options).await.map_err(|e| {
@@ -92,6 +93,12 @@ impl Pipeline {
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
+        let _span = tracing::info_span!("llm_process",
+            mode = %request.mode,
+            raw_len = raw_text.len(),
+        )
+        .entered();
+
         if cancel_token.is_cancelled() {
             return Err(PipelineError::Cancelled);
         }

@@ -74,6 +74,12 @@ impl AudioRecorder {
             audio_tx: None,
         };
 
+        if mock_mode {
+            tracing::info!("AudioRecorder initialized (mock mode)");
+        } else {
+            tracing::info!("AudioRecorder initialized");
+        }
+
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             stream: None,
@@ -114,6 +120,7 @@ impl AudioRecorder {
             inner.rms_levels.clear();
         }
 
+        tracing::debug!(mock = self.mock_mode, "Starting audio capture");
         if self.mock_mode {
             self.start_mock_stream()?;
         } else {
@@ -148,6 +155,15 @@ impl AudioRecorder {
         if let Some(handle) = self.mock_thread.take() {
             let _ = handle.join();
         }
+
+        let samples = {
+            let guard = self
+                .inner
+                .lock()
+                .expect("RecorderInner: lock poisoned in stop() log");
+            guard.sample_count
+        };
+        tracing::info!(samples, "Audio recording stopped");
 
         Ok(())
     }

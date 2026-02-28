@@ -60,6 +60,8 @@ pub struct ActiveSession {
     pub managed_session: Option<ManagedSession>,
     /// 录音开始时间（用于计算 duration_ms）。
     pub started_at: std::time::Instant,
+    /// 贯穿 session 生命周期的 tracing span（从 start_recording 传播到 stop_recording 的 async finish task）。
+    pub session_span: tracing::Span,
 }
 
 /// Helper to create all managed states used by the application.
