@@ -161,6 +161,73 @@ git push origin v0.4.0
 
 ---
 
+## 10. cpal 0.17 SampleRate 类型变更
+
+**问题**：Windows CI clippy 报错 `u32 is a primitive type and therefore doesn't have fields`，Linux 本地编译通过。
+
+**原因**：cpal 0.17 将 `SampleRate` 从 `pub struct SampleRate(pub u32)` 改为 `pub type SampleRate = u32`。代码中 `max_sample_rate().0` 在旧版本用于提取内部 `u32` 值，在新版本中 `.0` 对 `u32` 无效。
+
+**解决**：移除 `.0` 字段访问，直接使用 `max_sample_rate()` 返回的 `u32` 值。
+
+> **规则**：升级 cpal 版本后注意 `SampleRate` 类型变更。Linux 本地编译不能代替 Windows CI 检查（`#[cfg]` 条件编译可能隐藏平台差异）。
+
+---
+
+## 11. tokio-tungstenite native-tls 导致 Android 交叉编译失败
+
+**问题**：Android Release 构建报错 `Could not find directory of OpenSSL installation`。
+
+**原因**：`tokio-tungstenite` 使用 `native-tls` feature，底层依赖 `openssl-sys`。Android NDK 交叉编译环境没有预装 OpenSSL。而 `reqwest 0.13` 默认使用 rustls，不依赖 OpenSSL。
+
+**解决**：将 `tokio-tungstenite` 从 `features = ["native-tls"]` 改为 `features = ["rustls-tls-webpki-roots"]`。rustls 是纯 Rust 实现，无需系统 OpenSSL。
+
+> **规则**：涉及 TLS 的依赖在 Android 交叉编译时，优先使用 rustls 系列 feature。`reqwest 0.13+` 默认已使用 rustls。
+
+---
+
+## 12. Cargo.lock 与安全审计
+
+**问题**：CI `cargo audit --file src-tauri/Cargo.lock` 报错文件不存在。
+
+**原因**：(1) `.gitignore` 中包含 `Cargo.lock`，导致 lock 文件未提交。(2) 项目使用 Cargo workspace，`Cargo.lock` 位于 workspace 根目录，不在 `src-tauri/`。
+
+**解决**：
+1. 从 `.gitignore` 移除 `Cargo.lock`（应用项目应该提交 lock 文件）
+2. CI 改为 `cargo audit --file Cargo.lock`（指向根目录的 lock 文件）
+
+> **规则**：Rust 应用（非库）应该提交 `Cargo.lock`。Workspace 项目的 `Cargo.lock` 在 workspace 根目录。
+
+---
+
+## 13. Windows clippy collapsible_if
+
+**问题**：Windows CI clippy 报错 `this if statement can be collapsed`，但 Linux 本地 clippy 不报错。
+
+**原因**：`windows.rs` 中的嵌套 `if let` 语句只在 Windows 平台编译（`#[cfg(windows)]`），本地 Linux clippy 不检查该文件。
+
+**解决**：将嵌套 `if let` 合并为 `if let ... && let ...` 语法（Rust 2024 edition 支持 let chains）。
+
+> **规则**：`#[cfg(windows)]` 平台专属代码需要通过 CI 的 Windows 构建来验证 clippy 合规性。
+
+---
+
+## 14. R8 Tink 加密库注解缺失
+
+**问题**：Android Release R8 minification 报错 `Missing class com.google.errorprone.annotations.*`。
+
+**原因**：`EncryptedSharedPreferences` 依赖 Google Tink 加密库，Tink 引用了 `errorprone` 和 `javax.annotation` 编译时注解。R8 默认要求所有引用的类必须存在。
+
+**解决**：在 `proguard-rules.pro` 中添加：
+```
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn javax.annotation.concurrent.**
+```
+
+> **规则**：使用 `EncryptedSharedPreferences` 或 Tink 库时，需要配套的 ProGuard/R8 dontwarn 规则。
+
+---
+
 ## Quick Reference: AGP 9.0 迁移清单
 
 - [ ] Gradle wrapper → 9.1.0+
