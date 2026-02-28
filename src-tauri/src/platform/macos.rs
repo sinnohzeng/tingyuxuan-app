@@ -5,9 +5,7 @@ use super::error::PlatformError;
 use super::{ContextDetector, TextInjector, inject_via_clipboard};
 use tingyuxuan_core::context::InputContext;
 
-#[cfg(target_os = "macos")]
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
-#[cfg(target_os = "macos")]
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 // ---------------------------------------------------------------------------
@@ -33,16 +31,13 @@ const CMD_C_PROCESS_DELAY: Duration = Duration::from_millis(50);
 const CONTEXT_TIMEOUT: Duration = Duration::from_millis(200);
 
 // macOS virtual key codes (from Events.h / HIToolbox)
-#[cfg(target_os = "macos")]
 const KVK_ANSI_V: CGKeyCode = 0x09;
-#[cfg(target_os = "macos")]
 const KVK_ANSI_C: CGKeyCode = 0x08;
 
 // ---------------------------------------------------------------------------
 // AXUIElement FFI 绑定 — macOS Accessibility API
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "macos")]
 mod ax {
     use std::ffi::c_void;
 
@@ -170,43 +165,24 @@ mod ax {
 // ---------------------------------------------------------------------------
 
 fn clipboard_read() -> Result<Option<String>, PlatformError> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
-            PlatformError::ClipboardError(format!("Failed to access clipboard: {e}"))
-        })?;
-        match clipboard.get_text() {
-            Ok(text) if !text.is_empty() => Ok(Some(text)),
-            Ok(_) => Ok(None),
-            Err(arboard::Error::ContentNotAvailable) => Ok(None),
-            Err(e) => Err(PlatformError::ClipboardError(format!(
-                "Clipboard read failed: {e}"
-            ))),
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(None)
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| PlatformError::ClipboardError(format!("Failed to access clipboard: {e}")))?;
+    match clipboard.get_text() {
+        Ok(text) if !text.is_empty() => Ok(Some(text)),
+        Ok(_) => Ok(None),
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(e) => Err(PlatformError::ClipboardError(format!(
+            "Clipboard read failed: {e}"
+        ))),
     }
 }
 
 fn clipboard_write(text: &str) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
-            PlatformError::ClipboardError(format!("Failed to access clipboard: {e}"))
-        })?;
-        clipboard
-            .set_text(text)
-            .map_err(|e| PlatformError::ClipboardError(format!("Clipboard write failed: {e}")))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = text;
-        Err(PlatformError::ClipboardError("Not on macOS".into()))
-    }
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| PlatformError::ClipboardError(format!("Failed to access clipboard: {e}")))?;
+    clipboard
+        .set_text(text)
+        .map_err(|e| PlatformError::ClipboardError(format!("Clipboard write failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +193,6 @@ fn clipboard_write(text: &str) -> Result<(), PlatformError> {
 ///
 /// 每个 CGEvent 最多携带 20 个 UTF-16 code unit（`CGEventKeyboardSetUnicodeString` 限制）。
 /// 长文本自动分块，每块发送 key-down + key-up 事件对。
-#[cfg(target_os = "macos")]
 fn type_text_directly(text: &str) -> Result<(), PlatformError> {
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|_| PlatformError::InjectionFailed("Failed to create CGEventSource".into()))?;
@@ -245,27 +220,15 @@ fn type_text_directly(text: &str) -> Result<(), PlatformError> {
 
 /// 通过 CGEvent 模拟 Cmd+V 粘贴。
 fn simulate_cmd_v() -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
-    {
-        simulate_key_with_cmd(KVK_ANSI_V)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err(PlatformError::InjectionFailed(
-            "macOS CGEvent called on non-macOS platform".to_string(),
-        ))
-    }
+    simulate_key_with_cmd(KVK_ANSI_V)
 }
 
 /// 通过 CGEvent 模拟 Cmd+C 复制（用于获取选中文本的 fallback 路径）。
-#[cfg(target_os = "macos")]
 fn simulate_cmd_c() -> Result<(), PlatformError> {
     simulate_key_with_cmd(KVK_ANSI_C)
 }
 
 /// 模拟 Cmd+key 按键组合。
-#[cfg(target_os = "macos")]
 fn simulate_key_with_cmd(keycode: CGKeyCode) -> Result<(), PlatformError> {
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|_| PlatformError::InjectionFailed("Failed to create CGEventSource".into()))?;
@@ -304,15 +267,7 @@ impl TextInjector for MacOSTextInjector {
 
         if text.len() <= DIRECT_INPUT_THRESHOLD {
             // 短文本：CGEvent 直接输入，不扰动剪贴板
-            #[cfg(target_os = "macos")]
-            {
-                type_text_directly(&text)
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                Err(PlatformError::InjectionFailed("Not on macOS".into()))
-            }
+            type_text_directly(&text)
         } else {
             // 长文本：剪贴板注入（save → write → Cmd+V → restore）
             inject_via_clipboard(&text, clipboard_read, clipboard_write, simulate_cmd_v)
@@ -338,42 +293,26 @@ impl MacOSContextDetector {
     /// 获取当前前台应用名称。
     /// AXUIElement: system-wide → kAXFocusedApplicationAttribute → kAXTitleAttribute
     fn get_app_name(&self) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            let system_wide = unsafe { ax::AXUIElementCreateSystemWide() };
-            if system_wide.is_null() {
-                return None;
-            }
-            let _sys = ax::OwnedCFRef(system_wide);
-            let focused_app = ax::ax_get_element_attr(system_wide, "AXFocusedApplication")?;
-            ax::ax_get_string_attr(focused_app.0, "AXTitle")
+        let system_wide = unsafe { ax::AXUIElementCreateSystemWide() };
+        if system_wide.is_null() {
+            return None;
         }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
+        let _sys = ax::OwnedCFRef(system_wide);
+        let focused_app = ax::ax_get_element_attr(system_wide, "AXFocusedApplication")?;
+        ax::ax_get_string_attr(focused_app.0, "AXTitle")
     }
 
     /// 获取当前前台窗口标题。
     /// AXUIElement: focused app → kAXFocusedWindowAttribute → kAXTitleAttribute
     fn get_window_title(&self) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            let system_wide = unsafe { ax::AXUIElementCreateSystemWide() };
-            if system_wide.is_null() {
-                return None;
-            }
-            let _sys = ax::OwnedCFRef(system_wide);
-            let focused_app = ax::ax_get_element_attr(system_wide, "AXFocusedApplication")?;
-            let focused_window = ax::ax_get_element_attr(focused_app.0, "AXFocusedWindow")?;
-            ax::ax_get_string_attr(focused_window.0, "AXTitle")
+        let system_wide = unsafe { ax::AXUIElementCreateSystemWide() };
+        if system_wide.is_null() {
+            return None;
         }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
+        let _sys = ax::OwnedCFRef(system_wide);
+        let focused_app = ax::ax_get_element_attr(system_wide, "AXFocusedApplication")?;
+        let focused_window = ax::ax_get_element_attr(focused_app.0, "AXFocusedWindow")?;
+        ax::ax_get_string_attr(focused_window.0, "AXTitle")
     }
 
     /// 读取剪贴板内容（唯一需要读剪贴板的场景）。
@@ -386,26 +325,17 @@ impl MacOSContextDetector {
     /// AXUIElement 路径：focused app → kAXFocusedUIElementAttribute → kAXSelectedTextAttribute
     /// 完全不碰剪贴板，消除了与 get_clipboard_text 之间的竞态。
     fn get_selected_text(&self) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            // 首先尝试 AXUIElement 直接读取
-            if let Some(text) = self.get_selected_text_via_ax() {
-                return Some(text);
-            }
-
-            // Fallback: 模拟 Cmd+C（仅在 AX 查询失败时使用）
-            tracing::debug!("AX selected text query failed, falling back to Cmd+C");
-            self.get_selected_text_via_cmd_c()
+        // 首先尝试 AXUIElement 直接读取
+        if let Some(text) = self.get_selected_text_via_ax() {
+            return Some(text);
         }
 
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
+        // Fallback: 模拟 Cmd+C（仅在 AX 查询失败时使用）
+        tracing::debug!("AX selected text query failed, falling back to Cmd+C");
+        self.get_selected_text_via_cmd_c()
     }
 
     /// AXUIElement 直接读取选中文本。
-    #[cfg(target_os = "macos")]
     fn get_selected_text_via_ax(&self) -> Option<String> {
         let system_wide = unsafe { ax::AXUIElementCreateSystemWide() };
         if system_wide.is_null() {
@@ -419,7 +349,6 @@ impl MacOSContextDetector {
 
     /// Fallback: 通过模拟 Cmd+C 获取选中文本。
     /// 流程: 保存剪贴板 → 清空 → Cmd+C → 读取 → 恢复。
-    #[cfg(target_os = "macos")]
     fn get_selected_text_via_cmd_c(&self) -> Option<String> {
         let saved = clipboard_read().ok()?;
 
@@ -489,14 +418,12 @@ impl ContextDetector for MacOSContextDetector {
 /// - 正确存储监听线程的 CFRunLoop（非主线程的）
 /// - Drop 时调用 run_loop.stop() 优雅停止
 /// - 自动检测 TapDisabledByTimeout/TapDisabledByUserInput 并重新启用
-#[cfg(target_os = "macos")]
 pub struct FnKeyMonitor {
     /// 监听线程的 CFRunLoop 引用，用于 Drop 时停止
     run_loop: std::sync::Arc<std::sync::Mutex<Option<core_foundation::runloop::CFRunLoop>>>,
     _thread: std::thread::JoinHandle<()>,
 }
 
-#[cfg(target_os = "macos")]
 impl FnKeyMonitor {
     /// Fn flag 在 CGEventFlags 中的位掩码 (NX_SECONDARYFNMASK)
     const FN_FLAG_MASK: u64 = 0x0080_0000;
@@ -504,30 +431,70 @@ impl FnKeyMonitor {
     /// 启动 Fn 键监听。Fn 按下时 emit("shortcut-action", "dictate")。
     ///
     /// 需要 Input Monitoring 权限（系统设置 > 隐私与安全性 > 输入监控）。
+    ///
+    /// 注意：CGEventTap 和 CFRunLoopSource 包含原始指针（!Send），
+    /// 必须在监听线程内创建，不能跨线程移动。通过 channel 传递初始化结果。
     pub fn start(app: tauri::AppHandle) -> Result<Self, PlatformError> {
+        use std::sync::{Arc, Mutex};
+
+        // 在线程间传递 RunLoop 引用
+        let run_loop_holder: Arc<Mutex<Option<core_foundation::runloop::CFRunLoop>>> =
+            Arc::new(Mutex::new(None));
+        let run_loop_for_thread = run_loop_holder.clone();
+
+        // Channel: 线程初始化成功/失败后通知调用者
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), PlatformError>>(1);
+
+        let thread = std::thread::Builder::new()
+            .name("fn-key-monitor".into())
+            .spawn(move || {
+                // CGEventTap 是 !Send，必须在监听线程内创建
+                if let Err(e) = Self::run_event_loop(app, run_loop_for_thread, &tx) {
+                    let _ = tx.send(Err(e));
+                }
+            })
+            .map_err(|e| {
+                PlatformError::InjectionFailed(format!(
+                    "Failed to spawn Fn key monitor thread: {e}"
+                ))
+            })?;
+
+        // 等待线程初始化完成
+        let result = rx.recv().map_err(|_| {
+            PlatformError::InjectionFailed(
+                "Fn key monitor thread failed to initialize (channel closed)".into(),
+            )
+        })?;
+        result?;
+
+        Ok(Self {
+            run_loop: run_loop_holder,
+            _thread: thread,
+        })
+    }
+
+    /// 在当前线程内创建 CGEventTap 并运行 CFRunLoop。
+    ///
+    /// 所有 !Send 资源（CGEventTap、CFRunLoopSource）在此函数内创建和消费，
+    /// 不跨线程边界。
+    fn run_event_loop(
+        app: tauri::AppHandle,
+        run_loop_holder: std::sync::Arc<
+            std::sync::Mutex<Option<core_foundation::runloop::CFRunLoop>>,
+        >,
+        tx: &std::sync::mpsc::SyncSender<Result<(), PlatformError>>,
+    ) -> Result<(), PlatformError> {
         use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
         use core_graphics::event::{
             CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
         };
-        use std::sync::{
-            Arc, Barrier, Mutex,
-            atomic::{AtomicBool, Ordering},
-        };
+        use std::sync::atomic::{AtomicBool, Ordering};
         use tauri::Emitter;
 
-        // 追踪 Fn 键当前状态，防止重复触发
-        let fn_pressed = Arc::new(AtomicBool::new(false));
+        let fn_pressed = std::sync::Arc::new(AtomicBool::new(false));
         let fn_pressed_clone = fn_pressed.clone();
+        let fn_flag_mask = Self::FN_FLAG_MASK;
 
-        // 在线程间传递 RunLoop 引用
-        let run_loop_holder: Arc<Mutex<Option<CFRunLoop>>> = Arc::new(Mutex::new(None));
-        let run_loop_for_thread = run_loop_holder.clone();
-
-        // Barrier 同步：主线程和监听线程各 wait 一次，确保 RunLoop 已存储
-        let barrier = Arc::new(Barrier::new(2));
-        let barrier_thread = barrier.clone();
-
-        // 创建 CGEventTap 监听 kCGEventFlagsChanged 事件
         let tap = CGEventTap::new(
             CGEventTapLocation::HID,
             CGEventTapPlacement::HeadInsertEventTap,
@@ -548,15 +515,13 @@ impl FnKeyMonitor {
                 }
 
                 let flags = event.get_flags().bits();
-                let fn_now = (flags & Self::FN_FLAG_MASK) != 0;
+                let fn_now = (flags & fn_flag_mask) != 0;
                 let fn_was = fn_pressed_clone.load(Ordering::Relaxed);
 
                 if fn_now && !fn_was {
-                    // Fn 按下 → toggle 录音
                     fn_pressed_clone.store(true, Ordering::Relaxed);
                     let _ = app.emit("shortcut-action", "dictate");
                 } else if !fn_now && fn_was {
-                    // Fn 释放 → 仅更新状态
                     fn_pressed_clone.store(false, Ordering::Relaxed);
                 }
 
@@ -566,7 +531,7 @@ impl FnKeyMonitor {
         .map_err(|_| {
             PlatformError::InjectionFailed(
                 "Failed to create CGEventTap for Fn key. \
-             Ensure Input Monitoring permission is granted."
+                 Ensure Input Monitoring permission is granted."
                     .into(),
             )
         })?;
@@ -577,45 +542,28 @@ impl FnKeyMonitor {
             )
         })?;
 
-        // 在独立线程中运行 CFRunLoop
-        let thread = std::thread::Builder::new()
-            .name("fn-key-monitor".into())
-            .spawn(move || {
-                let run_loop = CFRunLoop::get_current();
+        let run_loop = CFRunLoop::get_current();
 
-                // 存储 RunLoop 引用供 Drop 使用
-                {
-                    let mut holder = run_loop_for_thread.lock().unwrap();
-                    *holder = Some(run_loop.clone());
-                }
+        // 存储 RunLoop 引用供 Drop 使用
+        {
+            let mut holder = run_loop_holder.lock().unwrap();
+            *holder = Some(run_loop.clone());
+        }
 
-                run_loop.add_source(&run_loop_source, unsafe { kCFRunLoopCommonModes });
-                tap.enable();
-                tracing::info!("FnKeyMonitor started on dedicated thread");
+        run_loop.add_source(&run_loop_source, unsafe { kCFRunLoopCommonModes });
+        tap.enable();
+        tracing::info!("FnKeyMonitor started on dedicated thread");
 
-                // 通知主线程：RunLoop 已就绪
-                barrier_thread.wait();
+        // 通知调用者：初始化成功
+        let _ = tx.send(Ok(()));
 
-                CFRunLoop::run_current();
-                tracing::info!("FnKeyMonitor stopped");
-            })
-            .map_err(|e| {
-                PlatformError::InjectionFailed(format!(
-                    "Failed to spawn Fn key monitor thread: {e}"
-                ))
-            })?;
+        CFRunLoop::run_current();
+        tracing::info!("FnKeyMonitor stopped");
 
-        // 等待监听线程 RunLoop 就绪
-        barrier.wait();
-
-        Ok(Self {
-            run_loop: run_loop_holder,
-            _thread: thread,
-        })
+        Ok(())
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Drop for FnKeyMonitor {
     fn drop(&mut self) {
         tracing::info!("FnKeyMonitor dropping, stopping RunLoop");
@@ -635,7 +583,6 @@ impl Drop for FnKeyMonitor {
 ///
 /// - Fn 键（听写）: 通过 FnKeyMonitor CGEventTap 实现
 /// - ⌥T（翻译）、⌃Space（AI 助手）、Escape（取消）: 通过 tauri-plugin-global-shortcut
-#[cfg(target_os = "macos")]
 pub fn register_platform_hotkeys(app: &tauri::App) -> Result<Option<FnKeyMonitor>, PlatformError> {
     use tauri::Emitter;
     use tauri_plugin_global_shortcut::{
@@ -699,7 +646,6 @@ pub fn shortcut_labels() -> super::ShortcutLabels {
 ///
 /// - Accessibility: `AXIsProcessTrusted()` (<0.1ms)
 /// - Input Monitoring: `CGPreflightListenEventAccess()` (<0.1ms)
-#[cfg(target_os = "macos")]
 pub fn check_permissions() -> super::PermissionStatus {
     let accessibility = unsafe { ax::AXIsProcessTrusted() };
     let input_monitoring = unsafe { ax::CGPreflightListenEventAccess() };
@@ -716,7 +662,6 @@ pub fn check_permissions() -> super::PermissionStatus {
 ///
 /// - `target == Some("input_monitoring")` → 输入监控面板
 /// - 其他 → 辅助功能面板（默认）
-#[cfg(target_os = "macos")]
 pub fn open_permission_settings_for(target: Option<&str>) {
     let pane = match target {
         Some("input_monitoring") => "Privacy_ListenEvent",
