@@ -534,19 +534,16 @@ impl FnKeyMonitor {
             CGEventTapOptions::ListenOnly,
             vec![CGEventType::FlagsChanged],
             move |_proxy, event_type, event| {
-                // 系统可能因超时或安全模式禁用 tap，自动重新启用。
-                // 注意: 在 ListenOnly callback 中无法直接访问 tap 引用来调用 enable()，
-                // 需要使用 raw FFI。此处通过 CGEventTapEnable(mach_port, true) 实现。
-                if event_type == CGEventType::TapDisabledByTimeout
-                    || event_type == CGEventType::TapDisabledByUserInput
-                {
+                // 系统可能因超时或安全模式禁用 tap，记录日志。
+                // CGEventType 未实现 PartialEq，需通过 u32 比较。
+                // kCGEventTapDisabledByTimeout = 0xFFFFFFFE
+                // kCGEventTapDisabledByUserInput = 0xFFFFFFFF
+                let event_type_raw = event_type as u32;
+                if event_type_raw == 0xFFFFFFFE || event_type_raw == 0xFFFFFFFF {
                     tracing::warn!(
-                        "CGEventTap disabled by system ({:?}), re-enabling",
-                        event_type
+                        "CGEventTap disabled by system (type=0x{:X}), will auto-recover",
+                        event_type_raw
                     );
-                    // tap 引用在 callback 外部，此处仅记录日志。
-                    // 实际重新启用在 RunLoop source 回调中处理（core-graphics 库会
-                    // 在下次事件循环中自动恢复 ListenOnly tap）。
                     return None;
                 }
 
@@ -574,7 +571,7 @@ impl FnKeyMonitor {
             )
         })?;
 
-        let run_loop_source = tap.mach_port_create_runloop_source(0).map_err(|_| {
+        let run_loop_source = tap.mach_port.create_runloop_source(0).map_err(|_| {
             PlatformError::InjectionFailed(
                 "Failed to create run loop source for Fn key monitor".into(),
             )
@@ -862,14 +859,15 @@ mod tests {
 
         #[test]
         fn test_check_permissions_no_panic() {
+            use crate::platform::PermissionStatus;
             let status = check_permissions();
             // 返回四值之一即可
             assert!(matches!(
                 status,
-                super::super::PermissionStatus::Granted
-                    | super::super::PermissionStatus::AccessibilityRequired
-                    | super::super::PermissionStatus::InputMonitoringRequired
-                    | super::super::PermissionStatus::BothRequired
+                PermissionStatus::Granted
+                    | PermissionStatus::AccessibilityRequired
+                    | PermissionStatus::InputMonitoringRequired
+                    | PermissionStatus::BothRequired
             ));
         }
 
