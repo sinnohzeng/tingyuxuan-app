@@ -63,6 +63,8 @@ pub struct ActiveSession {
     pub session_id: String,
     /// 录音参数（模式、上下文、目标语言、词典）。
     pub config: ProcessingRequest,
+    /// 录音开始时锁定的 Pipeline 引用 — 防止 save_config 在录音期间重建 pipeline 导致 TOCTOU。
+    pub pipeline: Arc<Pipeline>,
     /// 取消令牌 — 用于取消录音或处理中的 LLM 调用。
     pub cancel_token: CancellationToken,
     /// 录音开始时间（用于计算 duration_ms）。

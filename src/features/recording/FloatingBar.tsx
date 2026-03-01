@@ -97,6 +97,7 @@ export default function FloatingBar() {
   // Listen for Tauri pipeline events and shortcut actions
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
+    let cleaned = false;
 
     async function setupListeners() {
       try {
@@ -149,6 +150,8 @@ export default function FloatingBar() {
               break;
           }
         });
+        // 如果 cleanup 已在 await 期间执行，立即取消注册。
+        if (cleaned) { u1(); return; }
         unlisteners.push(u1);
 
         // Shortcut actions from global shortcuts
@@ -183,6 +186,7 @@ export default function FloatingBar() {
               break;
           }
         });
+        if (cleaned) { u2(); return; }
         unlisteners.push(u2);
       } catch {
         // Not running in Tauri - that's fine for dev mode
@@ -190,7 +194,10 @@ export default function FloatingBar() {
     }
 
     setupListeners();
-    return () => unlisteners.forEach((fn) => fn());
+    return () => {
+      cleaned = true;
+      unlisteners.forEach((fn) => fn());
+    };
   }, []);
 
   const handleCancel = useCallback(async () => {

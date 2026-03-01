@@ -2,6 +2,8 @@ use std::future::Future;
 use tokio::time::{Duration, sleep};
 use tokio_util::sync::CancellationToken;
 
+use crate::error::Retryable;
+
 /// Configuration for retry behaviour with exponential back-off.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -25,17 +27,7 @@ impl Default for RetryPolicy {
 
 /// Execute an async operation with retries according to the given policy.
 ///
-/// The `operation` closure is called repeatedly until it succeeds, is
-/// cancelled, or all retries are exhausted.  Between attempts the function
-/// sleeps with exponential back-off, but the sleep is interruptible by the
-/// cancellation token.
-///
-/// # Type parameters
-///
-/// * `F`   - A closure that returns a future producing `Result<T, E>`.
-/// * `Fut` - The future type returned by `F`.
-/// * `T`   - The success type.
-/// * `E`   - The error type.
+/// 不可重试的错误（如认证失败）会立即返回，不浪费重试次数。
 pub async fn execute_with_retry<F, Fut, T, E>(
     policy: &RetryPolicy,
     cancel_token: &CancellationToken,
@@ -44,7 +36,7 @@ pub async fn execute_with_retry<F, Fut, T, E>(
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: std::fmt::Debug,
+    E: std::fmt::Debug + Retryable,
 {
     let mut delay_ms = policy.initial_delay_ms;
 
@@ -57,6 +49,11 @@ where
                 return Ok(value);
             }
             Err(err) => {
+                // 不可重试的确定性错误（401 认证失败等）直接返回。
+                if !err.is_retryable() {
+                    return Err(err);
+                }
+
                 // If this was the last allowed attempt, propagate the error.
                 if attempt == policy.max_retries {
                     return Err(err);
@@ -99,6 +96,26 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// 测试用的可重试错误。
+    #[derive(Debug, PartialEq)]
+    struct TestError(&'static str);
+
+    impl Retryable for TestError {
+        fn is_retryable(&self) -> bool {
+            true
+        }
+    }
+
+    /// 测试用的不可重试错误。
+    #[derive(Debug, PartialEq)]
+    struct NonRetryableError(&'static str);
+
+    impl Retryable for NonRetryableError {
+        fn is_retryable(&self) -> bool {
+            false
+        }
+    }
+
     fn token() -> CancellationToken {
         CancellationToken::new()
     }
@@ -114,7 +131,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
+        let result: Result<&str, TestError> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -138,11 +155,11 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
+        let result: Result<&str, TestError> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
-                if n < 2 { Err("fail") } else { Ok("recovered") }
+                if n < 2 { Err(TestError("fail")) } else { Ok("recovered") }
             }
         })
         .await;
@@ -162,18 +179,44 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, &token(), || {
+        let result: Result<&str, TestError> = execute_with_retry(&policy, &token(), || {
             let c = c.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
-                Err("always fails")
+                Err(TestError("always fails"))
             }
         })
         .await;
 
-        assert_eq!(result.unwrap_err(), "always fails");
+        assert_eq!(result.unwrap_err(), TestError("always fails"));
         // initial attempt + 1 retry = 2
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_non_retryable_error_skips_retry() {
+        let policy = RetryPolicy {
+            max_retries: 5,
+            initial_delay_ms: 10,
+            backoff_factor: 1.0,
+        };
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result: Result<&str, NonRetryableError> =
+            execute_with_retry(&policy, &token(), || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Err(NonRetryableError("auth failed"))
+                }
+            })
+            .await;
+
+        assert_eq!(result.unwrap_err(), NonRetryableError("auth failed"));
+        // 不可重试 → 只执行 1 次，不重试。
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -189,7 +232,7 @@ mod tests {
         let c = counter.clone();
         let cancel_clone = cancel.clone();
 
-        let result: Result<&str, &str> = execute_with_retry(&policy, &cancel, || {
+        let result: Result<&str, TestError> = execute_with_retry(&policy, &cancel, || {
             let c = c.clone();
             let cancel_clone = cancel_clone.clone();
             async move {
@@ -198,12 +241,12 @@ mod tests {
                     // Cancel after first failure, during the retry delay.
                     cancel_clone.cancel();
                 }
-                Err("fail")
+                Err(TestError("fail"))
             }
         })
         .await;
 
-        assert_eq!(result.unwrap_err(), "fail");
+        assert_eq!(result.unwrap_err(), TestError("fail"));
         // Should have stopped after at most 2 attempts (cancelled during delay).
         assert!(counter.load(Ordering::SeqCst) <= 2);
     }

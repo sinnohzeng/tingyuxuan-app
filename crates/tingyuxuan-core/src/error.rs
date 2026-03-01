@@ -1,5 +1,10 @@
 use thiserror::Error;
 
+/// 判断错误是否可重试的 trait。
+pub trait Retryable {
+    fn is_retryable(&self) -> bool;
+}
+
 /// User-facing action to show when an error occurs.
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum UserAction {
@@ -93,6 +98,17 @@ impl LLMError {
             LLMError::RateLimited => UserAction::WaitAndRetry,
             _ => UserAction::Retry,
         }
+    }
+
+}
+
+impl Retryable for LLMError {
+    /// 认证失败（401）、配置缺失等确定性错误不应重试。
+    fn is_retryable(&self) -> bool {
+        !matches!(
+            self,
+            LLMError::AuthFailed | LLMError::NotConfigured | LLMError::InputTooLarge(_)
+        )
     }
 }
 
@@ -233,5 +249,23 @@ mod tests {
         let e = PipelineError::Llm(LLMError::NotConfigured);
         let se = StructuredError::from(&e);
         assert_eq!(se.error_code, "not_configured");
+    }
+
+    #[test]
+    fn test_retryable_errors() {
+        // 可重试：网络超时、网络错误、限流、服务器错误。
+        assert!(LLMError::Timeout.is_retryable());
+        assert!(LLMError::NetworkError("err".into()).is_retryable());
+        assert!(LLMError::RateLimited.is_retryable());
+        assert!(LLMError::ServerError(500, "err".into()).is_retryable());
+        assert!(LLMError::InvalidResponse("err".into()).is_retryable());
+    }
+
+    #[test]
+    fn test_non_retryable_errors() {
+        // 不可重试：认证失败、配置缺失、输入过大。
+        assert!(!LLMError::AuthFailed.is_retryable());
+        assert!(!LLMError::NotConfigured.is_retryable());
+        assert!(!LLMError::InputTooLarge("too big".into()).is_retryable());
     }
 }

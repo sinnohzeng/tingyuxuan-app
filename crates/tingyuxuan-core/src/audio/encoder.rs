@@ -77,7 +77,12 @@ impl AudioBuffer {
         let bits_per_sample: u16 = 16;
         let byte_rate = self.sample_rate * self.channels as u32 * 2;
         let block_align = self.channels * 2;
-        let data_size = self.samples.len() as u32 * 2;
+        let data_size = u32::try_from(self.samples.len() * 2).map_err(|_| {
+            AudioError::StreamError(format!(
+                "音频数据过大：{} 字节超出 WAV 格式 4GB 限制",
+                self.samples.len() * 2
+            ))
+        })?;
         let file_size = 36 + data_size;
 
         let mut buf = Vec::with_capacity(44 + data_size as usize);

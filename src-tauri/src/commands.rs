@@ -160,8 +160,8 @@ pub async fn start_recording(
     pipeline_state: State<'_, PipelineState>,
     detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
-    // Validate pipeline is available before starting recording.
-    let _pipeline = pipeline_state
+    // 获取 pipeline 引用并存入 session，防止 save_config 在录音期间重建 pipeline（TOCTOU）。
+    let pipeline = pipeline_state
         .0
         .read()
         .await
@@ -209,7 +209,7 @@ pub async fn start_recording(
     // 记录 effective mode
     session_span.record("mode", effective_mode.as_str());
 
-    // Store active session.
+    // Store active session（pipeline 在此锁定，stop_recording 直接使用）。
     let session = ActiveSession {
         session_id: session_id.clone(),
         config: ProcessingRequest {
@@ -218,6 +218,7 @@ pub async fn start_recording(
             target_language,
             user_dictionary,
         },
+        pipeline,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         started_at: std::time::Instant::now(),
         session_span: session_span.clone(),
@@ -255,7 +256,7 @@ pub async fn start_recording(
 #[allow(clippy::too_many_arguments)]
 pub async fn stop_recording(
     session_state: State<'_, SessionState>,
-    pipeline_state: State<'_, PipelineState>,
+    _pipeline_state: State<'_, PipelineState>,
     event_bus: State<'_, EventBus>,
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
@@ -265,7 +266,7 @@ pub async fn stop_recording(
     // 1. 停止录音 → 获取累积的 AudioBuffer。
     let buffer = recorder_state.0.stop().await?;
 
-    // 2. Take the active session.
+    // 2. Take the active session（包含录音开始时锁定的 pipeline 引用）。
     let session = session_state
         .0
         .lock()
@@ -294,13 +295,8 @@ pub async fn stop_recording(
         return Ok("empty".to_string());
     }
 
-    // 4. Get pipeline reference.
-    let pipeline = pipeline_state
-        .0
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| "Pipeline not configured — check API keys in Settings".to_string())?;
+    // 4. 使用 session 中锁定的 pipeline 引用（无 TOCTOU 风险）。
+    let pipeline = session.pipeline;
 
     // Remember the mode for deciding whether to auto-inject.
     let is_ai_assistant = matches!(session.config.mode, ProcessingMode::AiAssistant);

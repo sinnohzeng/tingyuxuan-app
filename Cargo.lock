@@ -5190,6 +5190,7 @@ dependencies = [
  "chrono",
  "cpal",
  "directories",
+ "futures-util",
  "hound",
  "reqwest",
  "rusqlite",

@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures_util::StreamExt as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -205,7 +205,7 @@ impl LLMProvider for MultimodalProvider {
     fn process<'a>(
         &'a self,
         input: &'a ProcessingInput,
-    ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
         Box::pin(async move {
             let system_prompt = build_multimodal_system_prompt(
                 &input.mode,
@@ -227,7 +227,7 @@ impl LLMProvider for MultimodalProvider {
 
     fn test_connection(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, LLMError>> + Send + '_>> {
         Box::pin(async move {
             // 发送一个简短的文本请求来验证连接和认证。
             let body = serde_json::json!({
