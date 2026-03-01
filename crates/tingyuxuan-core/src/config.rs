@@ -278,11 +278,27 @@ impl AppConfig {
         }
     }
 
+    /// 校验配置值有效性。保存前调用。
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.llm.model.trim().is_empty() {
+            return Err(ConfigError::ValidationError("LLM model 不能为空".into()));
+        }
+        if let Some(ref url) = self.llm.base_url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(ConfigError::ValidationError(
+                    format!("无效的 base_url: {url}（需以 http:// 或 https:// 开头）"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Save config to file (write-to-temp + rename 原子写入)。
     ///
     /// 先写入临时文件，成功后 rename 覆盖目标文件，
     /// 避免写入中断导致配置文件损坏。
     pub fn save(&self) -> Result<(), ConfigError> {
+        self.validate()?;
         let path = Self::config_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -531,5 +547,32 @@ mod tests {
         assert!(config.general.auto_launch);
         assert_eq!(config.shortcuts.dictate, "alt_right");
         assert_eq!(config.cache.history_retention_days, 30);
+    }
+
+    #[test]
+    fn test_validate_default_config() {
+        let config = AppConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_model_rejected() {
+        let mut config = AppConfig::default();
+        config.llm.model = "  ".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_base_url_rejected() {
+        let mut config = AppConfig::default();
+        config.llm.base_url = Some("not-a-url".to_string());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_valid_base_url() {
+        let mut config = AppConfig::default();
+        config.llm.base_url = Some("https://api.example.com/v1".to_string());
+        assert!(config.validate().is_ok());
     }
 }

@@ -592,9 +592,7 @@ pub async fn check_platform_permissions() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let status = crate::platform::macos::check_permissions();
-        serde_json::to_string(&status)
-            .map(|s| s.trim_matches('"').to_string())
-            .map_err(|e| format!("Serialization error: {e}"))
+        Ok(status.as_str().to_string())
     }
 
     #[cfg(not(target_os = "macos"))]

@@ -143,6 +143,18 @@ pub enum PermissionStatus {
     BothRequired,
 }
 
+#[allow(dead_code)]
+impl PermissionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::AccessibilityRequired => "accessibility_required",
+            Self::InputMonitoringRequired => "input_monitoring_required",
+            Self::BothRequired => "both_required",
+        }
+    }
+}
+
 /// 获取当前平台的快捷键显示标签。
 pub fn shortcut_labels() -> ShortcutLabels {
     #[cfg(target_os = "macos")]

@@ -68,6 +68,8 @@ pub enum ConfigError {
     JsonError(#[from] serde_json::Error),
     #[error("Config directory not found")]
     NoDirFound,
+    #[error("Config validation error: {0}")]
+    ValidationError(String),
 }
 
 #[derive(Error, Debug)]
