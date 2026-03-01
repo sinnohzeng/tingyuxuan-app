@@ -477,29 +477,34 @@ impl AudioRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Helper: create a recorder in mock mode for testing.
     fn mock_recorder() -> AudioRecorder {
-        // SAFETY: Tests run with TINGYUXUAN_MOCK_AUDIO already set; no concurrent reads race.
-        unsafe { std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1") };
-        AudioRecorder::new().expect("mock recorder should succeed")
+        temp_env::with_var("TINGYUXUAN_MOCK_AUDIO", Some("1"), || {
+            AudioRecorder::new().expect("mock recorder should succeed")
+        })
     }
 
     #[test]
+    #[serial]
     fn test_new_mock_mode() {
-        unsafe { std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1") };
-        let recorder = AudioRecorder::new();
-        assert!(recorder.is_ok());
-        assert!(recorder.unwrap().mock_mode);
+        temp_env::with_var("TINGYUXUAN_MOCK_AUDIO", Some("1"), || {
+            let recorder = AudioRecorder::new();
+            assert!(recorder.is_ok());
+            assert!(recorder.unwrap().mock_mode);
+        });
     }
 
     #[test]
+    #[serial]
     fn test_not_recording_initially() {
         let recorder = mock_recorder();
         assert!(!recorder.is_recording());
     }
 
     #[test]
+    #[serial]
     fn test_stop_without_start_returns_error() {
         let mut recorder = mock_recorder();
         let result = recorder.stop();
@@ -507,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cancel_without_start_returns_error() {
         let mut recorder = mock_recorder();
         let result = recorder.cancel();
@@ -514,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_start_and_stop() {
         let mut recorder = mock_recorder();
 
@@ -530,6 +537,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_start_returns_buffer_with_samples() {
         let mut recorder = mock_recorder();
 
@@ -543,6 +551,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_double_start_returns_error() {
         let mut recorder = mock_recorder();
 
@@ -555,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cancel() {
         let mut recorder = mock_recorder();
 
@@ -566,6 +576,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_volume_levels() {
         let mut recorder = mock_recorder();
 
