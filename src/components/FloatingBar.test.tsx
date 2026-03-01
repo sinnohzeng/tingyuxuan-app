@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { useAppStore } from "../stores/appStore";
-import FloatingBar from "./FloatingBar";
+import { useAppStore } from "../shared/stores/appStore";
+import FloatingBar from "../features/recording/FloatingBar";
 
 // Mock Tauri APIs — FloatingBar dynamically imports these
 vi.mock("@tauri-apps/api/event", () => ({

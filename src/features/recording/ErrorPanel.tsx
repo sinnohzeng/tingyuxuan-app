@@ -1,11 +1,8 @@
-import type { UserAction } from "../lib/types";
+import type { UserAction } from "../../shared/lib/types";
 
 interface ErrorPanelProps {
   message: string;
   action: UserAction;
-  rawTranscript: string | null;
-  onRetry: () => void;
-  onInsertRaw: () => void;
   onDismiss: () => void;
   onOpenSettings: () => void;
 }
@@ -13,9 +10,6 @@ interface ErrorPanelProps {
 export default function ErrorPanel({
   message,
   action,
-  rawTranscript,
-  onRetry,
-  onInsertRaw,
   onDismiss,
   onOpenSettings,
 }: ErrorPanelProps) {
@@ -25,17 +19,8 @@ export default function ErrorPanel({
       <div className="flex gap-2">
         {action === "Retry" && (
           <>
-            <ActionButton label="重试" onClick={onRetry} primary />
+            <ActionButton label="重试" onClick={onDismiss} primary />
             <ActionButton label="稍后处理" onClick={onDismiss} />
-          </>
-        )}
-        {action === "InsertRawOrRetry" && (
-          <>
-            {rawTranscript && (
-              <ActionButton label="插入原始转写" onClick={onInsertRaw} primary />
-            )}
-            <ActionButton label="重试润色" onClick={onRetry} />
-            <ActionButton label="关闭" onClick={onDismiss} />
           </>
         )}
         {action === "CheckApiKey" && (
@@ -46,7 +31,7 @@ export default function ErrorPanel({
         )}
         {action === "WaitAndRetry" && (
           <>
-            <ActionButton label="重试" onClick={onRetry} primary />
+            <ActionButton label="重试" onClick={onDismiss} primary />
             <ActionButton label="关闭" onClick={onDismiss} />
           </>
         )}

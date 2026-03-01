@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import ResultPanel from "./ResultPanel";
+import ResultPanel from "../features/recording/ResultPanel";
 
 // Mock Tauri window API
 vi.mock("@tauri-apps/api/window", () => ({

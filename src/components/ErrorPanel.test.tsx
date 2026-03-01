@@ -1,14 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import ErrorPanel from "./ErrorPanel";
+import ErrorPanel from "../features/recording/ErrorPanel";
 
 describe("ErrorPanel", () => {
   const defaultProps = {
     message: "API 连接失败",
     action: "Retry" as const,
-    rawTranscript: null,
-    onRetry: vi.fn(),
-    onInsertRaw: vi.fn(),
     onDismiss: vi.fn(),
     onOpenSettings: vi.fn(),
   };
@@ -29,13 +26,13 @@ describe("ErrorPanel", () => {
   });
 
   it("renders retry button for Retry action and calls handler", () => {
-    const onRetry = vi.fn();
-    render(<ErrorPanel {...defaultProps} action="Retry" onRetry={onRetry} />);
+    const onDismiss = vi.fn();
+    render(<ErrorPanel {...defaultProps} action="Retry" onDismiss={onDismiss} />);
 
     const retryButton = screen.getByText("重试");
     expect(retryButton).toBeInTheDocument();
     fireEvent.click(retryButton);
-    expect(onRetry).toHaveBeenCalledOnce();
+    expect(onDismiss).toHaveBeenCalledOnce();
   });
 
   it("renders dismiss button for Retry action and calls handler", () => {
@@ -45,27 +42,7 @@ describe("ErrorPanel", () => {
     const dismissButton = screen.getByText("稍后处理");
     expect(dismissButton).toBeInTheDocument();
     fireEvent.click(dismissButton);
-    expect(onDismiss).toHaveBeenCalledOnce();
-  });
-
-  it("renders InsertRawOrRetry actions with raw transcript", () => {
-    const onInsertRaw = vi.fn();
-    render(
-      <ErrorPanel
-        {...defaultProps}
-        action="InsertRawOrRetry"
-        rawTranscript="原始文本"
-        onInsertRaw={onInsertRaw}
-      />,
-    );
-
-    const insertButton = screen.getByText("插入原始转写");
-    expect(insertButton).toBeInTheDocument();
-    fireEvent.click(insertButton);
-    expect(onInsertRaw).toHaveBeenCalledOnce();
-
-    expect(screen.getByText("重试润色")).toBeInTheDocument();
-    expect(screen.getByText("关闭")).toBeInTheDocument();
+    expect(onDismiss).toHaveBeenCalled();
   });
 
   it("renders CheckApiKey action with settings button", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown } from "../shared/lib/markdown";
 
 describe("renderMarkdown", () => {
   it("renders bold text", () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
-import Waveform from "./Waveform";
+import Waveform from "../features/recording/Waveform";
 
 // Mock canvas context — jsdom does not implement canvas rendering
 beforeEach(() => {

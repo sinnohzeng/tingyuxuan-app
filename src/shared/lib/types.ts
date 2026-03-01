@@ -15,15 +15,12 @@ export type PipelineEvent =
   | { type: "RecordingStarted"; session_id: string; mode: string }
   | { type: "VolumeUpdate"; levels: number[] }
   | { type: "RecordingStopped"; duration_ms: number }
-  | { type: "TranscriptionStarted" }
-  | { type: "TranscriptionComplete"; raw_text: string }
   | { type: "ProcessingStarted" }
   | { type: "ProcessingComplete"; processed_text: string }
   | {
       type: "Error";
       message: string;
       user_action: UserAction;
-      raw_text: string | null;
     }
   | { type: "NetworkStatusChanged"; online: boolean }
   | { type: "RecordingCancelled" };
@@ -31,16 +28,12 @@ export type PipelineEvent =
 /** User action to show on error */
 export type UserAction =
   | "Retry"
-  | "InsertRawOrRetry"
   | "CheckApiKey"
   | "WaitAndRetry"
   | "CheckMicrophone";
 
 /** Floating bar position */
 export type FloatingBarPosition = "bottom_center" | "follow_cursor" | "fixed";
-
-/** STT Provider type */
-export type STTProviderType = "dashscope_streaming";
 
 /** LLM Provider type */
 export type LLMProviderType = "openai" | "dashscope" | "volcengine" | "custom";
@@ -62,12 +55,6 @@ export interface AppConfig {
     primary: string;
     translation_target: string;
     variant: string | null;
-  };
-  stt: {
-    provider: STTProviderType;
-    api_key_ref: string;
-    base_url: string | null;
-    model: string | null;
   };
   llm: {
     provider: LLMProviderType;
@@ -98,10 +85,21 @@ export interface TranscriptRecord {
 /** Provider preset for quick setup */
 export interface ProviderPreset {
   name: string;
-  llm_provider: LLMProviderType;
-  llm_base_url: string;
-  llm_models: string[];
-  stt_provider: STTProviderType;
-  stt_base_url: string | null;
-  stt_model: string | null;
+  provider: LLMProviderType;
+  base_url: string;
+  models: string[];
+}
+
+/** 设置组件通用的 config 更新函数类型 */
+export type ConfigUpdater = (updater: (prev: AppConfig) => AppConfig) => void;
+
+/** 仪表盘聚合统计（镜像 Rust AggregateStats） */
+export interface DashboardStats {
+  total_sessions: number;
+  successful_sessions: number;
+  total_duration_ms: number;
+  total_char_count: number;
+  dictionary_utilization: number; // 0.0 - 1.0
+  average_speed_cpm: number; // 字/分钟
+  estimated_time_saved_ms: number;
 }

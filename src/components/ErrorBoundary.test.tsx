@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import ErrorBoundary from "./ErrorBoundary";
+import ErrorBoundary from "../shared/components/ErrorBoundary";
 
 // A component that throws on render
 function BrokenComponent({ shouldThrow }: { shouldThrow: boolean }) {

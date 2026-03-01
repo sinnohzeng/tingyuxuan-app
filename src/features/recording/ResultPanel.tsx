@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import DOMPurify from "dompurify";
-import { renderMarkdown } from "../lib/markdown";
+import { renderMarkdown } from "../../shared/lib/markdown";
 
 interface ResultPanelProps {
   result: string;

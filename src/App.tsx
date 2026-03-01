@@ -1,51 +1,48 @@
-import { useState } from "react";
-import ErrorBoundary from "./components/ErrorBoundary";
-import FloatingBar from "./components/FloatingBar";
-import SettingsPanel from "./components/Settings/SettingsPanel";
+import { lazy, Suspense } from "react";
+import { Routes, Route } from "react-router-dom";
+import ErrorBoundary from "./shared/components/ErrorBoundary";
+import FloatingBar from "./features/recording/FloatingBar";
 
-function getInitialRoute(): string {
-  const path = window.location.pathname;
-  if (path.includes("floating-bar")) return "floating-bar";
-  if (path.includes("settings")) return "settings";
-  return "floating-bar";
-}
-
-function AppContent() {
-  const [route, setRoute] = useState(getInitialRoute);
-
-  switch (route) {
-    case "floating-bar":
-      return <FloatingBar />;
-    case "settings":
-      return <SettingsPanel />;
-    default:
-      return (
-        <div className="p-4">
-          <h1 className="text-xl font-bold mb-4">听语轩 TingYuXuan</h1>
-          <p className="text-gray-600 mb-4">开发模式 - 选择视图：</p>
-          <div className="flex gap-4">
-            <button
-              onClick={() => setRoute("floating-bar")}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-            >
-              浮动状态条
-            </button>
-            <button
-              onClick={() => setRoute("settings")}
-              className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
-            >
-              设置面板
-            </button>
-          </div>
-        </div>
-      );
-  }
-}
+/*
+ * 代码分割策略（A5）：
+ * - FloatingBar：静态 import，不加载 Fluent 2，打包独立 chunk。
+ * - MainLayout / OnboardingFlow：lazy import，包含 Fluent 2，按需加载。
+ */
+const MainLayout = lazy(
+  () => import("./shared/components/MainLayout"),
+);
+const HomePage = lazy(
+  () => import("./features/dashboard/HomePage"),
+);
+const HistoryPage = lazy(
+  () => import("./features/history/HistoryPage"),
+);
+const DictionaryPage = lazy(
+  () => import("./features/dictionary/DictionaryPage"),
+);
+const OnboardingFlow = lazy(
+  () => import("./features/onboarding/OnboardingFlow"),
+);
 
 function App() {
   return (
     <ErrorBoundary>
-      <AppContent />
+      <Suspense>
+        <Routes>
+          {/* 悬浮录音条 — 轻量窗口，无 Fluent */}
+          <Route path="/floating-bar" element={<FloatingBar />} />
+
+          {/* 引导流程 */}
+          <Route path="/onboarding" element={<OnboardingFlow />} />
+
+          {/* 主窗口 Shell — Fluent 2 + 侧边栏导航 */}
+          <Route path="/main" element={<MainLayout />}>
+            <Route index element={<HomePage />} />
+            <Route path="history" element={<HistoryPage />} />
+            <Route path="dictionary" element={<DictionaryPage />} />
+          </Route>
+        </Routes>
+      </Suspense>
     </ErrorBoundary>
   );
 }

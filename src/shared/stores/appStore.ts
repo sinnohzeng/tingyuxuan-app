@@ -18,7 +18,6 @@ interface AppStore {
   // Error state
   errorMessage: string | null;
   errorAction: UserAction | null;
-  rawTranscript: string | null;
 
   // Network
   isOnline: boolean;
@@ -35,11 +34,7 @@ interface AppStore {
   setVolumeLevels: (levels: number[]) => void;
   setRecordingDuration: (duration: number) => void;
   setSessionId: (id: string | null) => void;
-  setError: (
-    message: string,
-    action: UserAction,
-    rawText?: string | null
-  ) => void;
+  setError: (message: string, action: UserAction) => void;
   clearError: () => void;
   setIsOnline: (online: boolean) => void;
   setAiResult: (text: string | null) => void;
@@ -56,7 +51,6 @@ export const useAppStore = create<AppStore>((set) => ({
   sessionId: null,
   errorMessage: null,
   errorAction: null,
-  rawTranscript: null,
   aiResult: null,
   isOnline: true,
   config: null,
@@ -67,15 +61,14 @@ export const useAppStore = create<AppStore>((set) => ({
   setVolumeLevels: (volumeLevels) => set({ volumeLevels }),
   setRecordingDuration: (recordingDuration) => set({ recordingDuration }),
   setSessionId: (sessionId) => set({ sessionId }),
-  setError: (message, action, rawText) =>
+  setError: (message, action) =>
     set({
       recordingState: "error",
       errorMessage: message,
       errorAction: action,
-      rawTranscript: rawText ?? null,
     }),
   clearError: () =>
-    set({ recordingState: "idle", errorMessage: null, errorAction: null, rawTranscript: null }),
+    set({ recordingState: "idle", errorMessage: null, errorAction: null }),
   setAiResult: (aiResult) => set({ aiResult }),
   setIsOnline: (isOnline) => set({ isOnline }),
   setConfig: (config) => set({ config }),
@@ -90,7 +83,6 @@ export const useAppStore = create<AppStore>((set) => ({
       sessionId: null,
       errorMessage: null,
       errorAction: null,
-      rawTranscript: null,
       aiResult: null,
     });
   },

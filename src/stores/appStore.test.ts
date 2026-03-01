@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { useAppStore } from "./appStore";
+import { useAppStore } from "../shared/stores/appStore";
 
 describe("appStore", () => {
   beforeEach(() => {
@@ -23,19 +23,17 @@ describe("appStore", () => {
     expect(state.sessionId).toBeNull();
     expect(state.errorMessage).toBeNull();
     expect(state.errorAction).toBeNull();
-    expect(state.rawTranscript).toBeNull();
     expect(state.aiResult).toBeNull();
   });
 
   it("setError() sets error state and recording state to error", () => {
     const store = useAppStore.getState();
-    store.setError("Connection failed", "Retry", "raw text");
+    store.setError("Connection failed", "Retry");
 
     const state = useAppStore.getState();
     expect(state.recordingState).toBe("error");
     expect(state.errorMessage).toBe("Connection failed");
     expect(state.errorAction).toBe("Retry");
-    expect(state.rawTranscript).toBe("raw text");
   });
 
   it("clearError() clears error state", () => {
@@ -46,7 +44,6 @@ describe("appStore", () => {
     const state = useAppStore.getState();
     expect(state.errorMessage).toBeNull();
     expect(state.errorAction).toBeNull();
-    expect(state.rawTranscript).toBeNull();
   });
 
   it("setIsOnline() updates network status", () => {

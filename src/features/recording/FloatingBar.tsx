@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
-import { useAppStore } from "../stores/appStore";
-import type { PipelineEvent, UserAction } from "../lib/types";
-import { createLogger, setLogSession } from "../lib/logger";
+import { useAppStore } from "../../shared/stores/appStore";
+import type { PipelineEvent, UserAction } from "../../shared/lib/types";
+import { createLogger, setLogSession } from "../../shared/lib/logger";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
 import ResultPanel from "./ResultPanel";
@@ -42,7 +42,6 @@ export default function FloatingBar() {
   const recordingDuration = useAppStore((s) => s.recordingDuration);
   const errorMessage = useAppStore((s) => s.errorMessage);
   const errorAction = useAppStore((s) => s.errorAction);
-  const rawTranscript = useAppStore((s) => s.rawTranscript);
   const aiResult = useAppStore((s) => s.aiResult);
   const setRecordingState = useAppStore((s) => s.setRecordingState);
   const reset = useAppStore((s) => s.reset);
@@ -123,12 +122,8 @@ export default function FloatingBar() {
             case "RecordingStopped":
               // Don't change state yet; processing is next
               break;
-            case "TranscriptionStarted":
             case "ProcessingStarted":
               store.setRecordingState("processing");
-              break;
-            case "TranscriptionComplete":
-              // STT done, keep processing state
               break;
             case "ProcessingComplete":
               log.info("processing complete");
@@ -139,11 +134,11 @@ export default function FloatingBar() {
               break;
             case "Error": {
               log.warn(`pipeline error: ${data.message}`, { action: data.user_action });
-              const knownActions: UserAction[] = ["Retry", "InsertRawOrRetry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
+              const knownActions: UserAction[] = ["Retry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
               const action = knownActions.includes(data.user_action as UserAction)
                 ? (data.user_action as UserAction)
                 : "Retry";
-              store.setError(data.message, action, data.raw_text);
+              store.setError(data.message, action);
               break;
             }
             case "NetworkStatusChanged":
@@ -182,7 +177,7 @@ export default function FloatingBar() {
               if (currentState === "idle") {
                 store.setRecordingMode(action as "dictate" | "translate" | "ai_assistant");
                 invoke("start_recording", { mode: action }).catch((err: string) => {
-                  store.setError(err, "CheckApiKey", null);
+                  store.setError(err, "CheckApiKey");
                 });
               }
               break;
@@ -219,35 +214,6 @@ export default function FloatingBar() {
       /* dev mode */
     }
   }, [setRecordingState]);
-
-  const handleRetry = useCallback(async () => {
-    log.info("user action: retry");
-    const currentSession = useAppStore.getState().sessionId;
-    if (!currentSession) {
-      reset();
-      return;
-    }
-    setRecordingState("processing");
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("retry_transcription", { id: currentSession });
-    } catch {
-      // Retry failed (audio expired, etc.) — reset to idle.
-      reset();
-    }
-  }, [setRecordingState, reset]);
-
-  const handleInsertRaw = useCallback(async () => {
-    if (rawTranscript) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("inject_text", { text: rawTranscript });
-      } catch {
-        /* dev mode */
-      }
-    }
-    reset();
-  }, [rawTranscript, reset]);
 
   const handleDismiss = useCallback(() => {
     reset();
@@ -377,9 +343,6 @@ export default function FloatingBar() {
           <ErrorPanel
             message={errorMessage}
             action={errorAction}
-            rawTranscript={rawTranscript}
-            onRetry={handleRetry}
-            onInsertRaw={handleInsertRaw}
             onDismiss={handleDismiss}
             onOpenSettings={handleOpenSettings}
           />
