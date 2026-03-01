@@ -103,6 +103,5 @@ hook 内部实现 mounted 守卫，防止异步 `listen()` 在组件卸载后 re
 ## 测试策略
 
 - 依赖 Fluent UI 主题 token 的组件（HomePage、SettingsDialog 等）使用 `renderWithProviders`（FluentProvider + MemoryRouter）
-- 旧组件（FloatingBar、ErrorPanel）不强制迁移
 - Tauri `invoke` 通过 `vi.hoisted()` + `vi.mock("@tauri-apps/api/core")` 统一 mock
 - 每个 `beforeEach` 调用 `resetStores()` 重置所有 Zustand store

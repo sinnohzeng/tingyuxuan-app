@@ -8,6 +8,7 @@
 | v0.5.0 | #10–#12 | cpal 0.17、Android 交叉编译、Cargo.lock |
 | v0.6.0 | #13–#18 | Windows clippy、R8 Tink、macOS 权限 / 沙箱 / DMG / CI |
 | v0.7.0 | #19–#23 | macOS 原生重构：core-graphics API 陷阱、!Send 安全、cfg 门控 |
+| v0.8.0 | #24–#26 | 浮动条增强 + RAlt 独占 + 配置锁定 + Rust 1.93 clippy |
 
 ---
 
@@ -392,6 +393,48 @@ assert!(!chunks.is_empty());  // 代替 chunks.len() >= 1
 ```
 
 > **规则**：CI 使用 `cargo clippy -- -D warnings`（所有警告视为错误）。Rust 2024 edition 支持 let-chain 语法，clippy 会要求合并嵌套 `if let`。
+
+---
+
+## 24. Windows RAlt 独占快捷键（v0.8.0）
+
+**问题**：Windows 上用 `tauri-plugin-global-shortcut` 注册 RAlt 会与系统 Alt 菜单冲突，且 AltGr 键盘布局用户无法正常输入。
+
+**解决**：改用 `WH_KEYBOARD_LL` 低级键盘钩子独占处理 RAlt：
+- 在 `hook_proc` 中识别 VK_RMENU（RAlt），抑制独立按键事件
+- AltGr 检测：记录 VK_LCONTROL 按下时间戳，如果 RAlt 在 1ms 内跟随则判定为 AltGr，透传给系统
+- Shift+RAlt 组合键：检测 Shift 按住状态，分发不同快捷键动作
+
+> **规则**：涉及 modifier key 的全局快捷键，优先考虑低级钩子而非框架 API，避免与系统行为冲突。
+
+---
+
+## 25. FloatingBar 浮动条增强（v0.8.0）
+
+**需求**：录音反馈不够直观，用户不确定当前状态。
+
+**实现**：
+- 移除 `set_focus()` 夺焦，改由 `alwaysOnTop` + `set_visible_on_all_workspaces(true)` 保持可见
+- 状态色：Recording → 品牌蓝、Processing → 靛蓝、Done → 翠绿
+- CSS 动画：入场 `slideIn`、录音 `pulse`（呼吸）、错误 `shake`（抖动）
+- Web Audio API 合成音效：start（600Hz）、end（800Hz）、error（400Hz）
+
+> **规则**：所有状态变更应配套视觉 + 听觉反馈，提升交互感知度。
+
+---
+
+## 26. Rust 1.93 新增 clippy lint（v0.8.0）
+
+**问题**：CI 升级到 Rust 1.93 后，新增多个 clippy lint 导致构建失败。
+
+**涉及 lint**：
+- `manual_inspect`：`map_err(|e| { side_effect; e })` → `inspect_err(|e| { side_effect; })`
+- `collapsible_if`（增强）：三层及以上嵌套 `if let` 也要求用 let-chain 合并
+- 已有 lint 在新代码中触发：`len_zero`、`field_reassign_with_default`
+
+**解决**：全部按 clippy 建议修正。`inspect_err` 是 Rust 1.76+ 稳定 API。
+
+> **规则**：每次 CI 升级 Rust 工具链后，先在本地跑 `cargo clippy -- -D warnings` 验证，避免推送后才发现新 lint。
 
 ---
 
