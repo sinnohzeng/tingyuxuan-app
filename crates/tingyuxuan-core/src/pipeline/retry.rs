@@ -159,7 +159,11 @@ mod tests {
             let c = c.clone();
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
-                if n < 2 { Err(TestError("fail")) } else { Ok("recovered") }
+                if n < 2 {
+                    Err(TestError("fail"))
+                } else {
+                    Ok("recovered")
+                }
             }
         })
         .await;
@@ -204,15 +208,14 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result: Result<&str, NonRetryableError> =
-            execute_with_retry(&policy, &token(), || {
-                let c = c.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    Err(NonRetryableError("auth failed"))
-                }
-            })
-            .await;
+        let result: Result<&str, NonRetryableError> = execute_with_retry(&policy, &token(), || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(NonRetryableError("auth failed"))
+            }
+        })
+        .await;
 
         assert_eq!(result.unwrap_err(), NonRetryableError("auth failed"));
         // 不可重试 → 只执行 1 次，不重试。

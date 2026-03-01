@@ -9,7 +9,7 @@ use tauri::{Emitter, Manager};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -104,9 +104,8 @@ pub fn run() {
                 let event_bus_clone = states.event_bus.0.clone();
                 // setup 回调运行在主线程，无 tokio runtime 上下文。
                 // 通过 block_on 进入异步运行时，使 NetworkMonitor 内部的 tokio::spawn 生效。
-                let monitor_token = tauri::async_runtime::block_on(async move {
-                    monitor.start(event_bus_clone)
-                });
+                let monitor_token =
+                    tauri::async_runtime::block_on(async move { monitor.start(event_bus_clone) });
                 // Store monitor token in managed state to keep it alive.
                 app.manage(state::MonitorState(monitor_token));
             }
@@ -130,14 +129,14 @@ pub fn run() {
         })
         // 关闭主窗口时：根据配置决定隐藏到托盘还是正常关闭。
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    let config_state = window.state::<state::ConfigState>();
-                    let minimize = config_state.0.blocking_read().general.minimize_to_tray;
-                    if minimize {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+            {
+                let config_state = window.state::<state::ConfigState>();
+                let minimize = config_state.0.blocking_read().general.minimize_to_tray;
+                if minimize {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
             }
         })
@@ -308,8 +307,7 @@ async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
 /// 初始化 tracing subscriber：终端 + 可选日志文件。
 /// 返回 guard 以保证文件写入器在 app 生命周期内存活。
 fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| "tingyuxuan=info".into());
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "tingyuxuan=info".into());
 
     // 终端输出层（开发时看这个）
     let stderr_layer = fmt::layer().with_span_events(FmtSpan::NEW | FmtSpan::CLOSE);

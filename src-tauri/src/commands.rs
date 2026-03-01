@@ -310,10 +310,7 @@ pub async fn stop_recording(
     // 5. 异步处理：编码音频 → 调用多模态 LLM → 注入文本。
     tokio::spawn(
         async move {
-            match pipeline
-                .process_audio(buffer, &request, cancel_token)
-                .await
-            {
+            match pipeline.process_audio(buffer, &request, cancel_token).await {
                 Ok(processed_text) => {
                     if is_ai_assistant {
                         tracing::info!("AI assistant result ready (no auto-inject)");

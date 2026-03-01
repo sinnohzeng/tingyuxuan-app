@@ -293,12 +293,7 @@ mod tests {
     #[test]
     fn test_dictate_prompt_basic() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Dictate,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &[], None);
         assert!(system.contains("智能语音输入助手"));
         assert!(system.contains("语音录音"));
         assert!(system.contains("去除所有填充词"));
@@ -308,12 +303,7 @@ mod tests {
     fn test_dictate_prompt_with_dictionary() {
         let ctx = InputContext::default();
         let dict = vec!["TingYuXuan".to_string(), "Rust".to_string()];
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Dictate,
-            &ctx,
-            &dict,
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &dict, None);
         assert!(system.contains("TingYuXuan"));
         assert!(system.contains("Rust"));
         assert!(system.contains("用户自定义词典"));
@@ -326,12 +316,7 @@ mod tests {
             window_title: Some("main.rs - tingyuxuan".to_string()),
             ..Default::default()
         };
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Dictate,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &[], None);
         assert!(system.contains("Visual Studio Code"));
         assert!(system.contains("main.rs - tingyuxuan"));
     }
@@ -339,12 +324,8 @@ mod tests {
     #[test]
     fn test_translate_prompt() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Translate,
-            &ctx,
-            &[],
-            Some("en"),
-        );
+        let system =
+            build_multimodal_system_prompt(&ProcessingMode::Translate, &ctx, &[], Some("en"));
         assert!(system.contains("翻译"));
         assert!(system.contains("en"));
     }
@@ -352,24 +333,14 @@ mod tests {
     #[test]
     fn test_translate_prompt_default_language() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Translate,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Translate, &ctx, &[], None);
         assert!(system.contains("en"));
     }
 
     #[test]
     fn test_ai_assistant_prompt() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::AiAssistant,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::AiAssistant, &ctx, &[], None);
         assert!(system.contains("智能助手"));
         assert!(system.contains("语音录音"));
     }
@@ -380,12 +351,7 @@ mod tests {
             selected_text: Some("你好世界".to_string()),
             ..Default::default()
         };
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Edit,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Edit, &ctx, &[], None);
         assert!(system.contains("文本编辑助手"));
         assert!(system.contains("你好世界"));
         assert!(system.contains("语音录音"));
@@ -394,12 +360,7 @@ mod tests {
     #[test]
     fn test_edit_prompt_no_selected_text() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Edit,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Edit, &ctx, &[], None);
         assert!(system.contains("选中的文本"));
     }
 
@@ -541,12 +502,7 @@ mod tests {
     #[test]
     fn test_dictate_prompt_with_list_rules() {
         let ctx = InputContext::default();
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Dictate,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &[], None);
         assert!(system.contains("有序列表"));
         assert!(system.contains("无序列表"));
     }
@@ -557,12 +513,7 @@ mod tests {
             app_name: Some("Slack - general".to_string()),
             ..Default::default()
         };
-        let system = build_multimodal_system_prompt(
-            &ProcessingMode::Dictate,
-            &ctx,
-            &[],
-            None,
-        );
+        let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &[], None);
         assert!(system.contains("口语化"));
     }
 }

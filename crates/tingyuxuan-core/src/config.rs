@@ -516,7 +516,10 @@ mod tests {
 
     #[test]
     fn test_migration_preserves_custom_model() {
-        let mut config = AppConfig { config_version: 1, ..Default::default() };
+        let mut config = AppConfig {
+            config_version: 1,
+            ..Default::default()
+        };
         config.llm.model = "gpt-4o".to_string();
         config.llm.provider = LLMProviderType::OpenAI;
 

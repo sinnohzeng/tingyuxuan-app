@@ -27,10 +27,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// 创建新的管线。
-    pub fn new(
-        llm: Box<dyn LLMProvider>,
-        event_tx: broadcast::Sender<PipelineEvent>,
-    ) -> Self {
+    pub fn new(llm: Box<dyn LLMProvider>, event_tx: broadcast::Sender<PipelineEvent>) -> Self {
         Self {
             llm,
             event_tx,
@@ -70,7 +67,9 @@ impl Pipeline {
             // 1. 编码音频。
             let encoded = {
                 let _encode_span = tracing::info_span!("audio_encode").entered();
-                let result = buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?;
+                let result = buffer
+                    .encode(AudioFormat::Wav)
+                    .map_err(PipelineError::Audio)?;
                 tracing::info!(
                     duration_ms = result.duration_ms,
                     encoded_bytes = result.data.len(),
@@ -188,9 +187,7 @@ mod tests {
 
     // -- Helper -------------------------------------------------------------
 
-    fn make_pipeline(
-        llm: Box<dyn LLMProvider>,
-    ) -> (Pipeline, broadcast::Receiver<PipelineEvent>) {
+    fn make_pipeline(llm: Box<dyn LLMProvider>) -> (Pipeline, broadcast::Receiver<PipelineEvent>) {
         let (tx, rx) = broadcast::channel(32);
         let pipeline = Pipeline::new(llm, tx);
         (pipeline, rx)
@@ -301,7 +298,9 @@ mod tests {
             user_dictionary: Vec::new(),
         };
         let token = CancellationToken::new();
-        let result = pipeline.process_audio(sample_buffer(), &request, token).await;
+        let result = pipeline
+            .process_audio(sample_buffer(), &request, token)
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Hello, world.");

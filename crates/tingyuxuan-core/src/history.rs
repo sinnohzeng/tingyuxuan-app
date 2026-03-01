@@ -547,7 +547,8 @@ mod tests {
         mgr.save_transcript(&make_record("s1", "success")).unwrap();
         mgr.save_transcript(&make_record("s2", "success")).unwrap();
         mgr.save_transcript(&make_record("s3", "failed")).unwrap();
-        mgr.save_transcript(&make_record("s4", "cancelled")).unwrap();
+        mgr.save_transcript(&make_record("s4", "cancelled"))
+            .unwrap();
 
         let stats = mgr.get_stats().unwrap();
         assert_eq!(stats.total_sessions, 4);

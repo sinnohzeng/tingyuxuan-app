@@ -451,8 +451,7 @@ impl RAltKeyMonitor {
     /// RAlt 按下时 emit("shortcut-action", "dictate")；
     /// Shift+RAlt 按下时 emit("shortcut-action", "translate")。
     pub fn start(app: tauri::AppHandle) -> Result<Self, super::PlatformError> {
-        let (tx, rx) =
-            std::sync::mpsc::sync_channel::<Result<u32, super::PlatformError>>(1);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<u32, super::PlatformError>>(1);
 
         let thread = std::thread::Builder::new()
             .name("ralt-key-monitor".into())
@@ -550,9 +549,11 @@ unsafe extern "system" fn hook_proc(
     w_param: windows::Win32::Foundation::WPARAM,
     l_param: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LCONTROL, VK_RMENU, VK_SHIFT};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_LCONTROL, VK_RMENU, VK_SHIFT,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP,
+        CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
         WM_SYSKEYUP,
     };
 
@@ -567,16 +568,14 @@ unsafe extern "system" fn hook_proc(
         HOOK_CTX.with(|cell| {
             if let Some(ctx) = cell.borrow_mut().as_mut() {
                 // 1. 记录 VK_LCONTROL 按下时间（用于 AltGr 检测）
-                if vk == VK_LCONTROL.0 as u32
-                    && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
-                {
+                if vk == VK_LCONTROL.0 as u32 && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
                     ctx.last_lctrl_time = kb.time;
                 }
 
                 // 2. 处理 VK_RMENU
                 if vk == VK_RMENU.0 as u32 {
-                    let is_altgr = kb.time.wrapping_sub(ctx.last_lctrl_time)
-                        <= ALTGR_TIMING_THRESHOLD_MS;
+                    let is_altgr =
+                        kb.time.wrapping_sub(ctx.last_lctrl_time) <= ALTGR_TIMING_THRESHOLD_MS;
 
                     if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
                         if is_altgr {
@@ -587,17 +586,13 @@ unsafe extern "system" fn hook_proc(
                             suppress = true;
 
                             // SAFETY: GetKeyState 读取按键状态，无前置条件。
-                            let shift_held = unsafe {
-                                (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0
-                            };
+                            let shift_held =
+                                unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
                             let action = if shift_held { "translate" } else { "dictate" };
 
                             tracing::debug!(action, "RAlt key triggered (suppressed)");
-                            let _ = tauri::Emitter::emit(
-                                &ctx.app_handle,
-                                "shortcut-action",
-                                action,
-                            );
+                            let _ =
+                                tauri::Emitter::emit(&ctx.app_handle, "shortcut-action", action);
                         } else {
                             // 长按重复的 KeyDown，也要抑制（避免 Alt 菜单弹出）
                             suppress = true;
@@ -627,10 +622,10 @@ unsafe extern "system" fn hook_proc(
 /// - RAlt（听写）、Shift+RAlt（翻译）: 通过 WH_KEYBOARD_LL 钩子实现
 /// - Alt+Space（AI 助手）、Escape（取消）: 通过 tauri-plugin-global-shortcut
 #[cfg(target_os = "windows")]
-pub fn register_platform_hotkeys(
-    app: &tauri::App,
-) -> Result<RAltKeyMonitor, super::PlatformError> {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+pub fn register_platform_hotkeys(app: &tauri::App) -> Result<RAltKeyMonitor, super::PlatformError> {
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
 
     // 1. 启动 RAlt 键监听器（处理 RAlt 和 Shift+RAlt）
     let monitor = RAltKeyMonitor::start(app.handle().clone())?;

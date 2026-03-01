@@ -24,11 +24,7 @@ pub struct MultimodalProvider {
 
 impl MultimodalProvider {
     /// 创建新的多模态 provider。
-    pub fn new(
-        api_key: String,
-        base_url: String,
-        model: String,
-    ) -> Result<Self, LLMError> {
+    pub fn new(api_key: String, base_url: String, model: String) -> Result<Self, LLMError> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .pool_max_idle_per_host(4)
@@ -140,8 +136,7 @@ impl MultimodalProvider {
                 Ok(Some(r)) => r,
             };
 
-            let bytes = chunk_result
-                .map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
+            let bytes = chunk_result.map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
             let text = String::from_utf8_lossy(&bytes);
             line_buf.push_str(&text);
 
@@ -204,7 +199,8 @@ impl LLMProvider for MultimodalProvider {
     fn process<'a>(
         &'a self,
         input: &'a ProcessingInput,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LLMResult, LLMError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let system_prompt = build_multimodal_system_prompt(
                 &input.mode,
@@ -226,7 +222,8 @@ impl LLMProvider for MultimodalProvider {
 
     fn test_connection(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, LLMError>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, LLMError>> + Send + '_>>
+    {
         Box::pin(async move {
             // 发送一个简短的文本请求来验证连接和认证。
             let body = serde_json::json!({
@@ -390,12 +387,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = MultimodalProvider::new(
-            "key".into(),
-            server.uri(),
-            "qwen3-omni-flash".into(),
-        )
-        .unwrap();
+        let provider =
+            MultimodalProvider::new("key".into(), server.uri(), "qwen3-omni-flash".into()).unwrap();
 
         let audio = sample_audio();
         let input = sample_input(audio);
@@ -415,8 +408,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            MultimodalProvider::new("bad-key".into(), server.uri(), "m".into()).unwrap();
+        let provider = MultimodalProvider::new("bad-key".into(), server.uri(), "m".into()).unwrap();
         let audio = sample_audio();
         let input = sample_input(audio);
         let result = provider.process(&input).await;
@@ -432,8 +424,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
+        let provider = MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let audio = sample_audio();
         let input = sample_input(audio);
         let result = provider.process(&input).await;
@@ -449,8 +440,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
+        let provider = MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let audio = sample_audio();
         let input = sample_input(audio);
         let result = provider.process(&input).await;
@@ -470,8 +460,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
+        let provider = MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let audio = sample_audio();
         let input = sample_input(audio);
         let result = provider.process(&input).await;
@@ -489,8 +478,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
+        let provider = MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
         let result = provider.test_connection().await;
         assert!(result.is_ok());
         assert!(result.unwrap());
@@ -510,12 +498,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = MultimodalProvider::new(
-            "key".into(),
-            server.uri(),
-            "qwen3-omni-flash".into(),
-        )
-        .unwrap();
+        let provider =
+            MultimodalProvider::new("key".into(), server.uri(), "qwen3-omni-flash".into()).unwrap();
 
         let audio = sample_audio();
         let input = sample_input(audio);

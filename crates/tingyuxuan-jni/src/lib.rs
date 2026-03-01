@@ -178,17 +178,14 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
             .base_url
             .clone()
             .unwrap_or_else(|| config.llm_base_url());
-        let llm_provider = match MultimodalProvider::new(
-            llm_key,
-            llm_base_url,
-            config.llm.model.clone(),
-        ) {
-            Ok(p) => Box::new(p),
-            Err(e) => {
-                tracing::warn!("Failed to create LLM provider: {e}");
-                return Ok(0);
-            }
-        };
+        let llm_provider =
+            match MultimodalProvider::new(llm_key, llm_base_url, config.llm.model.clone()) {
+                Ok(p) => Box::new(p),
+                Err(e) => {
+                    tracing::warn!("Failed to create LLM provider: {e}");
+                    return Ok(0);
+                }
+            };
 
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
         let pipeline = Arc::new(Pipeline::new(llm_provider, event_tx));
@@ -483,9 +480,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                 };
                 match rt.block_on(provider.test_connection()) {
                     Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                    Ok(false) => {
-                        error_json("llm_error", "Connection test failed", "check_api_key")
-                    }
+                    Ok(false) => error_json("llm_error", "Connection test failed", "check_api_key"),
                     Err(e) => error_json("llm_error", &e.to_string(), "check_api_key"),
                 }
             }

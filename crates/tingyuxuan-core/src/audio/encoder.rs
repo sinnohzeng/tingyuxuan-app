@@ -214,8 +214,7 @@ mod tests {
         // 验证 PCM 数据完整性（跳过 44 字节头）
         for (i, &sample) in samples.iter().enumerate() {
             let offset = 44 + i * 2;
-            let stored =
-                i16::from_le_bytes([encoded.data[offset], encoded.data[offset + 1]]);
+            let stored = i16::from_le_bytes([encoded.data[offset], encoded.data[offset + 1]]);
             assert_eq!(stored, sample);
         }
     }
