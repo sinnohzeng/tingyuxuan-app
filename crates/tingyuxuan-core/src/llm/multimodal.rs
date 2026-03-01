@@ -1,7 +1,6 @@
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use crate::api_key::ApiKey;
@@ -10,8 +9,10 @@ use crate::error::LLMError;
 use crate::llm::prompts::build_multimodal_system_prompt;
 use crate::llm::provider::{LLMProvider, LLMResult, ProcessingInput};
 
-/// Request timeout for multimodal LLM API calls (longer than text-only).
+/// 连接/首字节超时（秒）。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// 两个 SSE chunk 之间的最大等待时间（秒）。
+const CHUNK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 多模态 LLM provider — 发送音频+上下文，一步完成识别和润色。
 pub struct MultimodalProvider {
@@ -115,29 +116,50 @@ impl MultimodalProvider {
         self.parse_sse_response(response).await
     }
 
-    /// 解析 SSE 流式响应，拼接所有 delta.content。
+    /// 解析 SSE 流式响应，逐 chunk 读取并拼接 delta.content。
+    ///
+    /// 每次 chunk 读取都有 `CHUNK_READ_TIMEOUT` 保护，避免无限挂起。
     async fn parse_sse_response(
         &self,
         response: reqwest::Response,
     ) -> Result<(String, Option<u32>), LLMError> {
-        let full_body = response
-            .text()
-            .await
-            .map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
-
+        let mut stream = response.bytes_stream();
         let mut result_text = String::new();
         let mut tokens_used: Option<u32> = None;
+        // 跨 chunk 的残行缓冲：网络 chunk 边界不一定对齐行边界。
+        let mut line_buf = String::new();
 
-        for line in full_body.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
+        loop {
+            let maybe_chunk = tokio::time::timeout(CHUNK_READ_TIMEOUT, stream.next()).await;
+            let chunk_result = match maybe_chunk {
+                Err(_elapsed) => {
+                    tracing::warn!("SSE chunk read timed out");
+                    return Err(LLMError::Timeout);
+                }
+                Ok(None) => break, // 流结束
+                Ok(Some(r)) => r,
+            };
 
-            if let Some(data) = line.strip_prefix("data: ") {
+            let bytes = chunk_result
+                .map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
+            let text = String::from_utf8_lossy(&bytes);
+            line_buf.push_str(&text);
+
+            // 逐行解析已缓冲的数据。
+            while let Some(newline_pos) = line_buf.find('\n') {
+                let line: String = line_buf.drain(..=newline_pos).collect();
+                let line = line.trim();
+                if line.is_empty() || line.starts_with(':') {
+                    continue;
+                }
+
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data == "[DONE]" {
-                    break;
+                    // 消费 [DONE]，提前返回。
+                    return Self::finish_sse(result_text, tokens_used);
                 }
 
                 if let Ok(chunk) = serde_json::from_str::<SSEChunk>(data) {
@@ -155,16 +177,22 @@ impl MultimodalProvider {
             }
         }
 
+        Self::finish_sse(result_text, tokens_used)
+    }
+
+    /// SSE 解析完成后的统一校验和日志。
+    fn finish_sse(
+        result_text: String,
+        tokens_used: Option<u32>,
+    ) -> Result<(String, Option<u32>), LLMError> {
         if result_text.is_empty() {
             return Err(LLMError::InvalidResponse(
                 "SSE 流式响应中没有有效文本内容".to_string(),
             ));
         }
-
         if let Some(tokens) = tokens_used {
             tracing::debug!(tokens, "LLM response received (streamed)");
         }
-
         Ok((result_text, tokens_used))
     }
 }

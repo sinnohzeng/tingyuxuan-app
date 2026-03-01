@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::str::FromStr;
 
 use crate::audio::encoder::EncodedAudio;
@@ -71,18 +69,22 @@ pub struct LLMResult {
 }
 
 /// Trait that all LLM providers must implement.
+///
+/// Rust 2024 edition 原生支持 async fn in trait，无需手动 Pin<Box<dyn Future>>。
 pub trait LLMProvider: Send + Sync {
     /// Human-readable name of this provider (e.g. "Multimodal", "DashScope").
     fn name(&self) -> &str;
 
     /// Process the input through the LLM and return the result.
-    fn process<'a>(
-        &'a self,
-        input: &'a ProcessingInput,
-    ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>>;
+    fn process(
+        &self,
+        input: &ProcessingInput,
+    ) -> impl std::future::Future<Output = Result<LLMResult, LLMError>> + Send;
 
     /// Verify that the provider's credentials and endpoint are reachable.
-    fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, LLMError>> + Send + '_>>;
+    fn test_connection(
+        &self,
+    ) -> impl std::future::Future<Output = Result<bool, LLMError>> + Send;
 }
 
 #[cfg(test)]

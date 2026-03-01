@@ -15,7 +15,10 @@ testing = []  # 开放内部构造器供集成测试使用
 cpal = { version = "0.17", optional = true }
 
 # HTTP client (reqwest 0.13 默认使用 rustls，无需 OpenSSL)
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+
+# Async stream utilities (SSE 流式解析)
+futures-util = "0.3"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
