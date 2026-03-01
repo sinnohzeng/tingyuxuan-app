@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::context::InputContext;
 use crate::error::PipelineError;
@@ -164,8 +165,7 @@ impl SessionOrchestrator {
             }
         };
 
-        let collect_result = {
-            let _span = tracing::info_span!("stt_collect").entered();
+        let collect_result = async {
             match Self::collect_stt_results(event_rx, &session.cancel_token).await {
                 Ok(text) => {
                     tracing::info!(len = text.len(), "STT transcript collected");
@@ -176,7 +176,9 @@ impl SessionOrchestrator {
                     Err(e)
                 }
             }
-        };
+        }
+        .instrument(tracing::info_span!("stt_collect"))
+        .await;
 
         let transcript = match collect_result {
             Ok(text) if text.trim().is_empty() => return SessionResult::EmptyTranscript,

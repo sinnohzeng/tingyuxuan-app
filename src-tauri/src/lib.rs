@@ -102,7 +102,12 @@ pub fn run() {
                 drop(config);
 
                 let monitor = tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
-                let monitor_token = monitor.start(states.event_bus.0.clone());
+                let event_bus_clone = states.event_bus.0.clone();
+                // setup 回调运行在主线程，无 tokio runtime 上下文。
+                // 通过 block_on 进入异步运行时，使 NetworkMonitor 内部的 tokio::spawn 生效。
+                let monitor_token = tauri::async_runtime::block_on(async move {
+                    monitor.start(event_bus_clone)
+                });
                 // Store monitor token in managed state to keep it alive.
                 app.manage(state::MonitorState(monitor_token));
             }

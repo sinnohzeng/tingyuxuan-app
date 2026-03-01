@@ -1,5 +1,6 @@
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::context::InputContext;
 use crate::error::PipelineError;
@@ -69,19 +70,22 @@ impl Pipeline {
         &self,
         options: &STTOptions,
     ) -> Result<StreamingSession, PipelineError> {
-        let _span = tracing::info_span!("stt_connect").entered();
-        self.emit(PipelineEvent::TranscriptionStarted);
+        async {
+            self.emit(PipelineEvent::TranscriptionStarted);
 
-        let session = self.stt.start_stream(options).await.map_err(|e| {
-            self.emit(PipelineEvent::Error {
-                message: e.to_string(),
-                user_action: e.user_action(),
-                raw_text: None,
-            });
-            PipelineError::Stt(e)
-        })?;
+            let session = self.stt.start_stream(options).await.map_err(|e| {
+                self.emit(PipelineEvent::Error {
+                    message: e.to_string(),
+                    user_action: e.user_action(),
+                    raw_text: None,
+                });
+                PipelineError::Stt(e)
+            })?;
 
-        Ok(session)
+            Ok(session)
+        }
+        .instrument(tracing::info_span!("stt_connect"))
+        .await
     }
 
     /// 用 LLM 处理转写文本。
@@ -93,64 +97,67 @@ impl Pipeline {
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
-        let _span = tracing::info_span!("llm_process",
+        let span = tracing::info_span!("llm_process",
             mode = %request.mode,
             raw_len = raw_text.len(),
-        )
-        .entered();
+        );
 
-        if cancel_token.is_cancelled() {
-            return Err(PipelineError::Cancelled);
+        async {
+            if cancel_token.is_cancelled() {
+                return Err(PipelineError::Cancelled);
+            }
+
+            self.emit(PipelineEvent::TranscriptionComplete {
+                raw_text: raw_text.clone(),
+            });
+
+            self.emit(PipelineEvent::ProcessingStarted);
+
+            let llm_input = LLMInput {
+                mode: request.mode.clone(),
+                raw_transcript: raw_text.clone(),
+                target_language: request.target_language.clone(),
+                context: request.context.clone(),
+                user_dictionary: request.user_dictionary.clone(),
+            };
+
+            let llm_result = {
+                let llm = &self.llm;
+                let input = &llm_input;
+                tokio::select! {
+                    result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
+                        llm.process(input).await
+                    }) => result,
+                    _ = cancel_token.cancelled() => {
+                        return Err(PipelineError::Cancelled);
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                        Err(crate::error::LLMError::Timeout)
+                    }
+                }
+            };
+
+            let llm_result = match llm_result {
+                Ok(r) => r,
+                Err(llm_err) => {
+                    self.emit(PipelineEvent::Error {
+                        message: llm_err.to_string(),
+                        user_action: llm_err.user_action(),
+                        raw_text: Some(raw_text),
+                    });
+                    return Err(PipelineError::Llm(llm_err));
+                }
+            };
+
+            let processed = llm_result.processed_text;
+            self.emit(PipelineEvent::ProcessingComplete {
+                processed_text: processed.clone(),
+            });
+
+            Ok(processed)
         }
-
-        self.emit(PipelineEvent::TranscriptionComplete {
-            raw_text: raw_text.clone(),
-        });
-
-        self.emit(PipelineEvent::ProcessingStarted);
-
-        let llm_input = LLMInput {
-            mode: request.mode.clone(),
-            raw_transcript: raw_text.clone(),
-            target_language: request.target_language.clone(),
-            context: request.context.clone(),
-            user_dictionary: request.user_dictionary.clone(),
-        };
-
-        let llm_result = {
-            let llm = &self.llm;
-            let input = &llm_input;
-            tokio::select! {
-                result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
-                    llm.process(input).await
-                }) => result,
-                _ = cancel_token.cancelled() => {
-                    return Err(PipelineError::Cancelled);
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
-                    Err(crate::error::LLMError::Timeout)
-                }
-            }
-        };
-
-        let llm_result = match llm_result {
-            Ok(r) => r,
-            Err(llm_err) => {
-                self.emit(PipelineEvent::Error {
-                    message: llm_err.to_string(),
-                    user_action: llm_err.user_action(),
-                    raw_text: Some(raw_text),
-                });
-                return Err(PipelineError::Llm(llm_err));
-            }
-        };
-
-        let processed = llm_result.processed_text;
-        self.emit(PipelineEvent::ProcessingComplete {
-            processed_text: processed.clone(),
-        });
-
-        Ok(processed)
+        .instrument(span)
+        .await
     }
 }
 

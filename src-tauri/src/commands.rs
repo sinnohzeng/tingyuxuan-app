@@ -148,8 +148,8 @@ pub fn build_pipeline(
     );
 
     tracing::info!(
-        stt_provider = config.stt.provider.as_str(),
-        llm_model = config.llm.model.as_str(),
+        stt_provider = ?config.stt.provider,
+        llm_model = %config.llm.model,
         "Pipeline built successfully"
     );
     Some(Arc::new(Pipeline::new(
@@ -188,7 +188,6 @@ pub async fn start_recording(
         session_id = %session_id,
         mode = tracing::field::Empty,
     );
-    let _guard = session_span.enter();
 
     let mut processing_mode = mode
         .parse::<ProcessingMode>()
@@ -250,7 +249,7 @@ pub async fn start_recording(
     let effective_mode = processing_mode.to_string();
 
     // 记录 effective mode
-    tracing::Span::current().record("mode", effective_mode.as_str());
+    session_span.record("mode", effective_mode.as_str());
 
     // Store active session.
     let session = ActiveSession {
