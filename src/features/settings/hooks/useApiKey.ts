@@ -4,6 +4,9 @@
  * 封装 key 的加载、保存、显示/隐藏、状态反馈，消除 STT/LLM 之间的重复代码。
  */
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createLogger } from "../../../shared/lib/logger";
+
+const log = createLogger("useApiKey");
 
 export interface UseApiKeyReturn {
   keyValue: string;
@@ -30,7 +33,7 @@ export function useApiKey(service: "llm"): UseApiKeyReturn {
         const existing = await invoke<string | null>("get_api_key", { service });
         setKeyStatus(existing ? "已配置" : "未配置");
       } catch (e) {
-        console.error(`[useApiKey] 加载 ${service} API Key 状态失败:`, e);
+        log.error(`[useApiKey] 加载 ${service} API Key 状态失败:`, e);
       }
     })();
   }, [service]);
@@ -43,7 +46,7 @@ export function useApiKey(service: "llm"): UseApiKeyReturn {
       setKeyStatus("已配置");
       setKeyValue("");
     } catch (e) {
-      console.error(`[useApiKey] 保存 ${service} API Key 失败:`, e);
+      log.error(`[useApiKey] 保存 ${service} API Key 失败:`, e);
       setKeyStatus("保存失败");
     }
     clearTimeout(timerRef.current);

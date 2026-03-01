@@ -7,6 +7,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { TranscriptRecord } from "../../../shared/lib/types";
 import { useUIStore } from "../../../shared/stores/uiStore";
+import { createLogger } from "../../../shared/lib/logger";
+
+const log = createLogger("useHistory");
 
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -44,7 +47,7 @@ export function useHistory(): UseHistoryReturn {
       setRecords(reset ? page : (prev) => [...prev, ...page]);
       setHasMore(page.length === PAGE_SIZE);
     } catch (e) {
-      console.error("[useHistory] 加载历史记录失败:", e);
+      log.error("[useHistory] 加载历史记录失败:", e);
       useUIStore.getState().showToast({ type: "error", title: "加载历史记录失败" });
     }
     setIsLoading(false);
@@ -72,7 +75,7 @@ export function useHistory(): UseHistoryReturn {
           setRecords(results);
           setHasMore(false);
         } catch (e) {
-          console.error("[useHistory] 搜索失败:", e);
+          log.error("[useHistory] 搜索失败:", e);
           useUIStore.getState().showToast({ type: "error", title: "搜索失败" });
         }
       }, SEARCH_DEBOUNCE_MS);
@@ -88,7 +91,7 @@ export function useHistory(): UseHistoryReturn {
       await invoke("delete_history", { id });
       setRecords((prev) => prev.filter((r) => r.id !== id));
     } catch (e) {
-      console.error("[useHistory] 删除记录失败:", e);
+      log.error("[useHistory] 删除记录失败:", e);
       useUIStore.getState().showToast({ type: "error", title: "删除记录失败" });
     }
   }, []);
@@ -100,7 +103,7 @@ export function useHistory(): UseHistoryReturn {
       setRecords([]);
       setHasMore(false);
     } catch (e) {
-      console.error("[useHistory] 清空记录失败:", e);
+      log.error("[useHistory] 清空记录失败:", e);
       useUIStore.getState().showToast({ type: "error", title: "清空记录失败" });
     }
   }, []);

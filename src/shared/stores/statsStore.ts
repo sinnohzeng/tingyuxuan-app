@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import type { DashboardStats } from "../lib/types";
+import { createLogger } from "../lib/logger";
+
+const log = createLogger("statsStore");
 
 const CACHE_TTL_MS = 60_000; // 60 秒缓存
 
@@ -35,7 +38,7 @@ export const useStatsStore = create<StatsStore>((set, get) => ({
       const stats = await invoke<DashboardStats>("get_dashboard_stats");
       set({ stats, lastFetched: Date.now(), isLoading: false });
     } catch (e) {
-      console.error("[statsStore] 获取统计数据失败:", e);
+      log.error("获取统计数据失败:", e);
       set({ error: String(e), isLoading: false });
     }
   },

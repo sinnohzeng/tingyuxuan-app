@@ -8,6 +8,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { AppConfig } from "../../../shared/lib/types";
 import { useAppStore } from "../../../shared/stores/appStore";
 import { useUIStore } from "../../../shared/stores/uiStore";
+import { createLogger } from "../../../shared/lib/logger";
+
+const log = createLogger("useConfig");
 
 export interface UseConfigReturn {
   config: AppConfig | null;
@@ -35,7 +38,7 @@ export function useConfig(): UseConfigReturn {
         setConfig(cfg);
         setAppConfig(cfg);
       } catch (e) {
-        console.error("[useConfig] 加载配置失败:", e);
+        log.error("[useConfig] 加载配置失败:", e);
         useUIStore.getState().showToast({ type: "error", title: "加载配置失败" });
       }
       setIsLoading(false);
@@ -59,7 +62,7 @@ export function useConfig(): UseConfigReturn {
       setSaveStatus("已保存");
       setTimeout(() => setSaveStatus(""), 2000);
     } catch (e) {
-      console.error("[useConfig] 保存配置失败:", e);
+      log.error("[useConfig] 保存配置失败:", e);
       setSaveStatus("保存失败");
       setTimeout(() => setSaveStatus(""), 2000);
     }

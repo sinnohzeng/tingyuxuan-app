@@ -4,6 +4,9 @@
  * 参数化 Tauri 命令名，复用于 STT 和 LLM 测试。
  */
 import { useState, useCallback, useRef, useEffect } from "react";
+import { createLogger } from "../../../shared/lib/logger";
+
+const log = createLogger("useConnectionTest");
 
 export type TestStatus = "idle" | "testing" | "success" | "failed";
 
@@ -25,7 +28,7 @@ export function useConnectionTest(command: string): UseConnectionTestReturn {
       const ok = await invoke<boolean>(command);
       setStatus(ok ? "success" : "failed");
     } catch (e) {
-      console.error(`[useConnectionTest] ${command} 测试失败:`, e);
+      log.error(`${command} 测试失败:`, e);
       setStatus("failed");
     }
     clearTimeout(timerRef.current);

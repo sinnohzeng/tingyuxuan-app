@@ -6,6 +6,9 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import { useUIStore } from "../../../shared/stores/uiStore";
+import { createLogger } from "../../../shared/lib/logger";
+
+const log = createLogger("useDictionary");
 
 export interface UseDictionaryReturn {
   words: string[];
@@ -25,7 +28,7 @@ export function useDictionary(): UseDictionaryReturn {
         const dict = await invoke<string[]>("get_dictionary");
         setWords(dict);
       } catch (e) {
-        console.error("[useDictionary] 加载词典失败:", e);
+        log.error("[useDictionary] 加载词典失败:", e);
         useUIStore.getState().showToast({ type: "error", title: "加载词典失败" });
       }
       setIsLoading(false);
@@ -42,7 +45,7 @@ export function useDictionary(): UseDictionaryReturn {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("add_dictionary_word", { word: trimmed });
       } catch (e) {
-        console.error("[useDictionary] 添加词汇失败:", e);
+        log.error("[useDictionary] 添加词汇失败:", e);
         setWords((prev) => prev.filter((w) => w !== trimmed));
         useUIStore.getState().showToast({ type: "warning", title: "添加词汇失败，已回滚" });
       }
@@ -57,7 +60,7 @@ export function useDictionary(): UseDictionaryReturn {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("remove_dictionary_word", { word });
     } catch (e) {
-      console.error("[useDictionary] 删除词汇失败:", e);
+      log.error("[useDictionary] 删除词汇失败:", e);
       setWords((prev) => [...prev, word]);
       useUIStore.getState().showToast({ type: "warning", title: "删除词汇失败，已回滚" });
     }

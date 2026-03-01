@@ -3,10 +3,13 @@
  */
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { createLogger } from "../../shared/lib/logger";
 import { Card, CardHeader, Text, Button, Badge } from "@fluentui/react-components";
 import { ArrowRightRegular } from "@fluentui/react-icons";
 import type { TranscriptRecord } from "../../shared/lib/types";
 import { MODE_LABELS, STATUS_CONFIG, formatTime } from "../history/HistoryItem.utils";
+
+const log = createLogger("RecentTranscripts");
 
 export default function RecentTranscripts() {
   const [records, setRecords] = useState<TranscriptRecord[]>([]);
@@ -22,7 +25,7 @@ export default function RecentTranscripts() {
         });
         setRecords(page);
       } catch (e) {
-        console.error("[RecentTranscripts] 加载最近记录失败:", e);
+        log.error("加载最近记录失败:", e);
       }
     })();
   }, []);

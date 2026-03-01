@@ -3,7 +3,9 @@
  */
 import { Text, Title3, Button, Link } from "@fluentui/react-components";
 import { InfoRegular } from "@fluentui/react-icons";
+import { createLogger } from "../../../shared/lib/logger";
 
+const log = createLogger("AboutTab");
 const APP_VERSION = "0.7.3";
 
 export default function AboutTab() {
@@ -12,7 +14,7 @@ export default function AboutTab() {
       const { open } = await import("@tauri-apps/plugin-shell");
       await open(url);
     } catch (e) {
-      console.error("[AboutTab] 打开外部链接失败，使用 window.open 降级:", e);
+      log.warn("打开外部链接失败，使用 window.open 降级:", e);
       window.open(url, "_blank");
     }
   };
