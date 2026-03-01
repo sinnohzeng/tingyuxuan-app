@@ -135,3 +135,56 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 | `check_platform_permissions` | — | `String` | 检查权限状态 |
 | `open_permission_settings` | `target: Option<String>` | `()` | 打开权限设置 |
 | `is_first_launch` | — | `bool` | 首次启动检查 |
+
+## MCP 服务器（AI 工具链）
+
+项目根目录 `.mcp.json` 定义了 Claude Code 可调用的 MCP 服务器。API Key 等敏感信息通过系统环境变量注入（`.mcp.json` 不会读取 `.env` 文件）。
+
+### MiniMax MCP（图像/音频/视频生成）
+
+**提供工具**：`text_to_image`、`text_to_audio`、`generate_video`、`music_generation` 等
+
+**配置步骤**：
+
+**第 1 步：获取 API Key**
+
+前往 [MiniMax 开放平台](https://platform.minimaxi.com/user-center/basic-information/interface-key) 创建 API Key。
+
+**第 2 步：设置系统环境变量**
+
+| 变量 | 用途 | 示例 |
+|------|------|------|
+| `MINIMAX_API_KEY` | **必需** — MiniMax API 密钥 | `sk-...` |
+| `MINIMAX_MCP_BASE_PATH` | 可选 — 生成文件输出目录（默认 `./`） | 项目根目录绝对路径 |
+
+**Windows（PowerShell 管理员，永久生效，需重启终端）**：
+```powershell
+[Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "你的API密钥", "User")
+[Environment]::SetEnvironmentVariable("MINIMAX_MCP_BASE_PATH", "C:\Users\你的用户名\workspace\tingyuxuan-app", "User")
+```
+
+**macOS（添加到 `~/.zshrc`）**：
+```bash
+export MINIMAX_API_KEY="你的API密钥"
+export MINIMAX_MCP_BASE_PATH="$HOME/workspace/tingyuxuan-app"
+```
+
+**Linux（添加到 `~/.bashrc` 或 `~/.zshrc`）**：
+```bash
+export MINIMAX_API_KEY="你的API密钥"
+export MINIMAX_MCP_BASE_PATH="$HOME/workspace/tingyuxuan-app"
+```
+
+**第 3 步：Windows 专用 — 添加本地 MCP 覆盖**
+
+`.mcp.json` 中 `npx` 命令在 macOS/Linux 上直接可用，但 Windows 上 `npx` 是 `.cmd` 文件，需要 `cmd /c` 包装。Windows 用户需额外执行一次本地覆盖（写入 `~/.claude.json`，不影响 Git）：
+
+```bash
+claude mcp add minimax --transport stdio -s user -e MINIMAX_API_KEY=%MINIMAX_API_KEY% -e MINIMAX_MCP_BASE_PATH=%MINIMAX_MCP_BASE_PATH% -e MINIMAX_API_HOST=https://api.minimaxi.com -e MINIMAX_RESOURCE_MODE=local -- cmd /c npx -y minimax-mcp-js
+```
+
+macOS/Linux 用户无需此步骤，项目 `.mcp.json` 直接生效。
+
+**第 4 步：验证**
+
+重启 Claude Code，输入 `/mcp` 确认 minimax 服务器状态为 connected。
