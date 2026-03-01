@@ -44,6 +44,7 @@ export interface AppConfig {
     auto_launch: boolean;
     sound_feedback: boolean;
     floating_bar_position: FloatingBarPosition;
+    minimize_to_tray: boolean;
   };
   shortcuts: {
     dictate: string;

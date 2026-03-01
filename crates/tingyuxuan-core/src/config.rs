@@ -38,6 +38,13 @@ pub struct GeneralConfig {
     pub auto_launch: bool,
     pub sound_feedback: bool,
     pub floating_bar_position: FloatingBarPosition,
+    /// 关闭主窗口时最小化到托盘而非退出。
+    #[serde(default = "default_true")]
+    pub minimize_to_tray: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for GeneralConfig {
@@ -46,6 +53,7 @@ impl Default for GeneralConfig {
             auto_launch: true,
             sound_feedback: true,
             floating_bar_position: FloatingBarPosition::BottomCenter,
+            minimize_to_tray: true,
         }
     }
 }
@@ -148,6 +156,7 @@ impl Default for AppConfig {
                 auto_launch: true,
                 sound_feedback: true,
                 floating_bar_position: FloatingBarPosition::BottomCenter,
+                minimize_to_tray: true,
             },
             shortcuts: ShortcutConfig {
                 dictate: "alt_right".to_string(),
@@ -269,14 +278,26 @@ impl AppConfig {
         }
     }
 
-    /// Save config to file.
+    /// Save config to file (write-to-temp + rename 原子写入)。
+    ///
+    /// 先写入临时文件，成功后 rename 覆盖目标文件，
+    /// 避免写入中断导致配置文件损坏。
     pub fn save(&self) -> Result<(), ConfigError> {
         let path = Self::config_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, contents)?;
+
+        // 写入同目录的临时文件，确保和目标文件在同一文件系统上。
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &contents)?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            // rename 失败时清理临时文件。
+            let _ = std::fs::remove_file(&tmp_path);
+            e
+        })?;
+
         Ok(())
     }
 

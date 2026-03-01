@@ -6,8 +6,8 @@
  * - 右侧：react-router <Outlet />。
  * - 底部齿轮触发 SettingsDialog（Sprint 2 接入）。
  */
-import { lazy, Suspense } from "react";
-import { Outlet, NavLink } from "react-router-dom";
+import { lazy, Suspense, useCallback } from "react";
+import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
   FluentProvider,
   Spinner,
@@ -26,6 +26,7 @@ import {
   bundleIcon,
 } from "@fluentui/react-icons";
 import { useSystemTheme } from "../hooks/useSystemTheme";
+import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useUIStore } from "../stores/uiStore";
 import ErrorBoundary from "./ErrorBoundary";
 
@@ -56,6 +57,14 @@ function LoadingFallback() {
 export default function MainLayout() {
   const theme = useSystemTheme();
   const openSettings = useUIStore((s) => s.openSettings);
+  const navigate = useNavigate();
+
+  // 托盘菜单事件联动
+  useTauriEvent("open-settings", openSettings);
+  useTauriEvent(
+    "open-history",
+    useCallback(() => navigate("/main/history"), [navigate]),
+  );
 
   return (
     <FluentProvider theme={theme} className="flex h-screen">
