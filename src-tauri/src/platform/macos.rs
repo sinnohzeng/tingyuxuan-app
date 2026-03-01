@@ -486,7 +486,6 @@ impl FnKeyMonitor {
             CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
         };
         use std::sync::atomic::{AtomicBool, Ordering};
-        use tauri::Emitter;
 
         let fn_pressed = std::sync::Arc::new(AtomicBool::new(false));
         let fn_pressed_clone = fn_pressed.clone();
@@ -517,7 +516,10 @@ impl FnKeyMonitor {
 
                 if fn_now && !fn_was {
                     fn_pressed_clone.store(true, Ordering::Relaxed);
-                    let _ = app.emit("shortcut-action", "dictate");
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        crate::handle_shortcut_action(&handle, "dictate").await;
+                    });
                 } else if !fn_now && fn_was {
                     fn_pressed_clone.store(false, Ordering::Relaxed);
                 }

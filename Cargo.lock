@@ -4787,6 +4787,7 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
+ "image",
  "jni 0.21.1",
  "libc",
  "log",
@@ -5207,7 +5208,7 @@ dependencies = [
 
 [[package]]
 name = "tingyuxuan-app"
-version = "0.7.3"
+version = "0.8.1"
 dependencies = [
  "arboard",
  "chrono",

@@ -539,23 +539,69 @@ impl Drop for RAltKeyMonitor {
     }
 }
 
+/// 判断消息是否为按键按下事件。
+#[cfg(target_os = "windows")]
+fn is_key_down(msg: u32) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{WM_KEYDOWN, WM_SYSKEYDOWN};
+    msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN
+}
+
+/// 处理 VK_RMENU 事件，返回 true 表示需要抑制该事件。
+#[cfg(target_os = "windows")]
+fn process_ralt_event(
+    ctx: &mut HookContext,
+    kb: &windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT,
+    msg: u32,
+) -> bool {
+    let is_altgr = kb.time.wrapping_sub(ctx.last_lctrl_time) <= ALTGR_TIMING_THRESHOLD_MS;
+    let is_down = is_key_down(msg);
+
+    if is_down {
+        if is_altgr {
+            return false; // AltGr 组合键，不干预
+        }
+        if !ctx.ralt_down {
+            ctx.ralt_down = true;
+            dispatch_shortcut(ctx);
+            return true;
+        }
+        return true; // 长按重复，抑制
+    }
+
+    // KeyUp
+    ctx.ralt_down = false;
+    !is_altgr // 独立 RAlt 释放时抑制
+}
+
+/// 异步分发快捷键到统一处理函数（handle_shortcut_action）。
+#[cfg(target_os = "windows")]
+fn dispatch_shortcut(ctx: &HookContext) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+
+    // SAFETY: GetKeyState 读取按键状态，无前置条件。
+    let shift_held = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+    let action = if shift_held { "translate" } else { "dictate" };
+    tracing::info!(action, "RAlt shortcut dispatched");
+
+    let handle = ctx.app_handle.clone();
+    let mode = action.to_string();
+    tauri::async_runtime::spawn(async move {
+        crate::handle_shortcut_action(&handle, &mode).await;
+    });
+}
+
 /// WH_KEYBOARD_LL 钩子回调。
 ///
 /// 关键约束：必须在 ~300ms 内返回，否则 Windows 会静默移除钩子。
-/// 仅做轻量判断 + emit（异步事件，不阻塞），然后调用 CallNextHookEx。
+/// 路由层：仅做事件分发，具体逻辑交给 process_ralt_event / dispatch_shortcut。
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn hook_proc(
     n_code: i32,
     w_param: windows::Win32::Foundation::WPARAM,
     l_param: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, VK_LCONTROL, VK_RMENU, VK_SHIFT,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
-        WM_SYSKEYUP,
-    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LCONTROL, VK_RMENU};
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT};
 
     let mut suppress = false;
 
@@ -567,50 +613,17 @@ unsafe extern "system" fn hook_proc(
 
         HOOK_CTX.with(|cell| {
             if let Some(ctx) = cell.borrow_mut().as_mut() {
-                // 1. 记录 VK_LCONTROL 按下时间（用于 AltGr 检测）
-                if vk == VK_LCONTROL.0 as u32 && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+                if vk == VK_LCONTROL.0 as u32 && is_key_down(msg) {
                     ctx.last_lctrl_time = kb.time;
                 }
-
-                // 2. 处理 VK_RMENU
                 if vk == VK_RMENU.0 as u32 {
-                    let is_altgr =
-                        kb.time.wrapping_sub(ctx.last_lctrl_time) <= ALTGR_TIMING_THRESHOLD_MS;
-
-                    if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
-                        if is_altgr {
-                            // AltGr 输入，不触发也不抑制
-                        } else if !ctx.ralt_down {
-                            // 独立 RAlt 下降沿
-                            ctx.ralt_down = true;
-                            suppress = true;
-
-                            // SAFETY: GetKeyState 读取按键状态，无前置条件。
-                            let shift_held =
-                                unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
-                            let action = if shift_held { "translate" } else { "dictate" };
-
-                            tracing::debug!(action, "RAlt key triggered (suppressed)");
-                            let _ =
-                                tauri::Emitter::emit(&ctx.app_handle, "shortcut-action", action);
-                        } else {
-                            // 长按重复的 KeyDown，也要抑制（避免 Alt 菜单弹出）
-                            suppress = true;
-                        }
-                    } else if msg == WM_KEYUP || msg == WM_SYSKEYUP {
-                        if !is_altgr {
-                            // 独立 RAlt 释放，抑制以防 Alt 菜单
-                            suppress = true;
-                        }
-                        ctx.ralt_down = false;
-                    }
+                    suppress = process_ralt_event(ctx, kb, msg);
                 }
             }
         });
     }
 
     if suppress {
-        // 吞掉独立 RAlt 事件，阻止其传递给其他应用
         return windows::Win32::Foundation::LRESULT(1);
     }
     // SAFETY: CallNextHookEx 转发钩子事件，参数来自系统回调。

@@ -1,7 +1,8 @@
 use tauri::{
-    AppHandle, Emitter, Manager,
+    AppHandle, Manager,
+    image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
 use crate::platform;
@@ -37,28 +38,38 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let _tray = TrayIconBuilder::new()
+        .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)
         .menu(&menu)
         .tooltip("TingYuXuan - 听语轩")
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "dictate" | "translate" | "ai_assistant" => {
-                let _ = app.emit("shortcut-action", event.id.as_ref());
+                let handle = app.clone();
+                let mode = event.id.as_ref().to_string();
+                tauri::async_runtime::spawn(async move {
+                    crate::handle_shortcut_action(&handle, &mode).await;
+                });
             }
             "settings" => {
                 show_main_window(app);
-                let _ = app.emit("open-settings", ());
+                let _ = tauri::Emitter::emit(app, "open-settings", ());
             }
             "history" => {
                 show_main_window(app);
-                let _ = app.emit("open-history", ());
+                let _ = tauri::Emitter::emit(app, "open-history", ());
             }
             "quit" => {
                 app.exit(0);
             }
             _ => {}
         })
-        // 双击托盘图标显示主窗口（Windows/macOS，Linux 不触发）。
+        // 左键单击托盘图标显示主窗口（释放时触发，匹配 Windows 交互惯例）。
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::DoubleClick { .. } = event {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
                 show_main_window(tray.app_handle());
             }
         })

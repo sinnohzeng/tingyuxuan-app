@@ -121,15 +121,18 @@ export default function FloatingBar() {
     };
   }, [recordingState, recordingMode, reset]);
 
-  // Hide the window when idle (window stays alive but becomes invisible)
+  // 浮动条窗口可见性：前端作为唯一职责方
   useEffect(() => {
-    if (recordingState === "idle") {
-      import("@tauri-apps/api/window")
-        .then(({ getCurrentWindow }) => {
-          getCurrentWindow().hide().catch(() => {});
-        })
-        .catch(() => {});
-    }
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        const win = getCurrentWindow();
+        if (recordingState === "idle") {
+          win.hide().catch(() => {});
+        } else {
+          win.show().catch(() => {});
+        }
+      })
+      .catch(() => {});
   }, [recordingState]);
 
   // Listen for Tauri pipeline events and shortcut actions

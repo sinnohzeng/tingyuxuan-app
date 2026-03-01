@@ -278,7 +278,7 @@ fn register_linux_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::
 }
 
 /// Handle a global shortcut action by invoking the appropriate recording command.
-async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
+pub(crate) async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
     use crate::state::RecorderState;
 
     tracing::debug!(action, "Shortcut triggered");
