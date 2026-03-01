@@ -14,7 +14,11 @@ function emit(level: Level, tag: string, msg: string, data?: unknown): void {
     ? `[TYX:${tag}:${_sessionId.slice(0, 8)}]`
     : `[TYX:${tag}]`;
   const fn = console[level];
-  data !== undefined ? fn(prefix, msg, data) : fn(prefix, msg);
+  if (data !== undefined) {
+    fn(prefix, msg, data);
+  } else {
+    fn(prefix, msg);
+  }
 }
 
 export interface Logger {

@@ -283,12 +283,13 @@ impl AppConfig {
         if self.llm.model.trim().is_empty() {
             return Err(ConfigError::ValidationError("LLM model 不能为空".into()));
         }
-        if let Some(ref url) = self.llm.base_url {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err(ConfigError::ValidationError(
-                    format!("无效的 base_url: {url}（需以 http:// 或 https:// 开头）"),
-                ));
-            }
+        if let Some(ref url) = self.llm.base_url
+            && !url.starts_with("http://")
+            && !url.starts_with("https://")
+        {
+            return Err(ConfigError::ValidationError(format!(
+                "无效的 base_url: {url}（需以 http:// 或 https:// 开头）"
+            )));
         }
         Ok(())
     }
@@ -308,10 +309,9 @@ impl AppConfig {
         // 写入同目录的临时文件，确保和目标文件在同一文件系统上。
         let tmp_path = path.with_extension("json.tmp");
         std::fs::write(&tmp_path, &contents)?;
-        std::fs::rename(&tmp_path, &path).map_err(|e| {
+        std::fs::rename(&tmp_path, &path).inspect_err(|_| {
             // rename 失败时清理临时文件。
             let _ = std::fs::remove_file(&tmp_path);
-            e
         })?;
 
         Ok(())
@@ -516,8 +516,7 @@ mod tests {
 
     #[test]
     fn test_migration_preserves_custom_model() {
-        let mut config = AppConfig::default();
-        config.config_version = 1;
+        let mut config = AppConfig { config_version: 1, ..Default::default() };
         config.llm.model = "gpt-4o".to_string();
         config.llm.provider = LLMProviderType::OpenAI;
 

@@ -163,12 +163,11 @@ impl MultimodalProvider {
                 }
 
                 if let Ok(chunk) = serde_json::from_str::<SSEChunk>(data) {
-                    if let Some(choice) = chunk.choices.first() {
-                        if let Some(ref delta) = choice.delta {
-                            if let Some(ref content) = delta.content {
-                                result_text.push_str(content);
-                            }
-                        }
+                    if let Some(choice) = chunk.choices.first()
+                        && let Some(ref delta) = choice.delta
+                        && let Some(ref content) = delta.content
+                    {
+                        result_text.push_str(content);
                     }
                     if let Some(usage) = chunk.usage {
                         tokens_used = Some(usage.total_tokens);

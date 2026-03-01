@@ -101,7 +101,6 @@ impl LLMError {
             _ => UserAction::Retry,
         }
     }
-
 }
 
 impl Retryable for LLMError {

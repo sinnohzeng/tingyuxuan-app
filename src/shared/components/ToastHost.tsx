@@ -32,9 +32,11 @@ export default function ToastHost() {
   // 通过 ref 稳定化回调引用，避免 useEffect 因 dispatchToast/dismissToast
   // 每次渲染返回新引用而无限触发。
   const dispatchRef = useRef(dispatchToast);
-  dispatchRef.current = dispatchToast;
   const dismissRef = useRef(dismissToast);
-  dismissRef.current = dismissToast;
+  useEffect(() => {
+    dispatchRef.current = dispatchToast;
+    dismissRef.current = dismissToast;
+  });
 
   useEffect(() => {
     for (const msg of toasts) {

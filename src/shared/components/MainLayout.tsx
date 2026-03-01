@@ -28,7 +28,7 @@ import { useSystemTheme } from "../hooks/useSystemTheme";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useUIStore } from "../stores/uiStore";
 import ErrorBoundary from "./ErrorBoundary";
-import logoSrc from "../../assets/logo-draft.png";
+import logoSrc from "../../assets/logo.svg";
 
 const HomeIcon = bundleIcon(HomeFilled, HomeRegular);
 const HistoryIcon = bundleIcon(HistoryFilled, HistoryRegular);

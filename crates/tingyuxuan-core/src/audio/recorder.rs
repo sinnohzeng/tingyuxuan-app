@@ -547,7 +547,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let buffer = recorder.stop().unwrap();
-        assert!(buffer.len() > 0);
+        assert!(!buffer.is_empty());
     }
 
     #[test]
