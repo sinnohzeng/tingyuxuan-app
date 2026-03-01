@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → STT → LLM 润色 → 系统级文本注入。
+听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入。
 
 ## 技术栈
 
@@ -14,7 +14,7 @@
 | Android | Kotlin (AGP 9.0.1 内置) + Compose (BOM 2026.02.00) + InputMethodService |
 | Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.38 |
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
-| Testing | 116 Rust + 44 vitest + 13 JNI + 7 Android 单元测试 |
+| Testing | 99 Rust + 42 vitest + 13 JNI + 7 Android 单元测试 |
 
 ## 项目结构
 
@@ -75,6 +75,17 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 ### 跨平台 #[cfg] 代码验证（重要）
 
 `#[cfg(target_os = "...")]` 门控的代码**只能被对应平台 CI 验证**。本地 Linux clippy 完全跳过 macOS/Windows 代码。常见陷阱包括 core-graphics C 绑定缺少 PartialEq、!Send 原始指针类型、API 风格差异等。详见 `docs/guides/ci-release-notes.md` #13、#19–#23。
+
+## 代码质量红线（硬阈值）
+
+| 指标 | 阈值 |
+|------|------|
+| 单文件行数 | ≤ 800 行 |
+| 单函数行数 | ≤ 30 行（含 JSX return） |
+| 嵌套层级 | ≤ 3 层 |
+| 分支数量 | ≤ 3 个/函数 |
+
+超过阈值必须拆分，无例外。
 
 ## 开发约定
 

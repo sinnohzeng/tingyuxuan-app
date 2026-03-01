@@ -11,10 +11,9 @@
 - [架构决策记录 (ADR)](architecture/adr/) — 所有重大架构决策的背景与理由
 
 ### 功能模块规格
-- [录音与缓存](modules/audio.md) — AudioRecorder + AudioCache
-- [语音识别 (STT)](modules/stt.md) — STTProvider trait + Whisper/DashScope 实现
-- [语言模型 (LLM)](modules/llm.md) — LLMProvider trait + 提示词系统
-- [管线编排](modules/pipeline.md) — Pipeline + 离线队列 + 重试 + 恢复
+- [录音与编码](modules/audio.md) — AudioRecorder + AudioBuffer + WAV 编码器 + AudioCache
+- [多模态语言模型 (LLM)](modules/llm.md) — MultimodalProvider + 音频+上下文一步处理 + 提示词系统
+- [管线编排](modules/pipeline.md) — Pipeline 单步多模态处理 + 重试 + 事件广播
 - [文本注入](modules/text-injection.md) — X11/Wayland 文本注入 + 上下文检测
 - [配置管理](modules/config.md) — AppConfig 序列化/持久化
 - [历史记录](modules/history.md) — SQLite 转写记录 CRUD
@@ -33,6 +32,7 @@
 - [Phase 3: 增强体验](plan/phase-3-enhanced.md)
 - [Phase 4: 生产加固](plan/phase-4-production.md)
 - [全链路可观测性增强](plan/observability-enhancement.md)
+- [Phase 6: 多模态一步管线重构](plan/phase-6-multimodal-pipeline.md)
 
 ## 文档约定
 

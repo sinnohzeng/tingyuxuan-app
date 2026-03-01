@@ -83,7 +83,7 @@ dbus-send --session --print-reply \
 | 500 Server Error | 服务端错误 | 检查 Provider 服务状态 |
 | Connection Error | 网络不可达 | 检查网络连接；录音会自动加入离线队列 |
 
-**使用「测试连接」功能**：在设置中点击 STT / LLM 的测试连接按钮，快速诊断问题。
+**使用「测试连接」功能**：在设置中点击 LLM 的测试连接按钮，快速诊断问题。
 
 ### 6. Windows：文本注入到部分应用无效
 

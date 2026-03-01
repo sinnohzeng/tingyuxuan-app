@@ -15,16 +15,22 @@
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub config_version: u32,
     pub general: GeneralConfig,
     pub shortcuts: ShortcutConfig,
     pub language: LanguageConfig,
-    pub stt: STTConfig,
     pub llm: LLMConfig,
     pub cache: CacheConfig,
     #[serde(default)]
     pub user_dictionary: Vec<String>,
+    // 向后兼容：忽略旧配置中的 stt 字段。
+    #[serde(default, skip_serializing)]
+    stt: Option<serde_json::Value>,
 }
 ```
+
+> **已移除：** `STTConfig` 字段。旧配置文件中的 `stt` 字段在反序列化时会被静默忽略（`skip_serializing`），保证向后兼容。
 
 ### GeneralConfig
 
@@ -61,25 +67,14 @@ pub enum FloatingBarPosition {
 | `translation_target` | `String` | `"en"` | 翻译目标语言 |
 | `variant` | `Option<String>` | `None` | 语言变体 |
 
-### STTConfig
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `provider` | `STTProviderType` | `Whisper` | STT 服务提供商 |
-| `api_key_ref` | `String` | `""` | API Key 引用（`@keyref:` 前缀表示从 keyring 读取） |
-| `base_url` | `Option<String>` | `None` | 自定义 API 地址（留空使用 provider 默认值） |
-| `model` | `Option<String>` | `Some("whisper-1")` | 模型名称 |
-
-**STTProviderType 枚举:** `Whisper` (`"whisper"`), `DashScopeASR` (`"dashscope_asr"`), `Custom` (`"custom"`)
-
 ### LLMConfig
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `provider` | `LLMProviderType` | `OpenAI` | LLM 服务提供商 |
+| `provider` | `LLMProviderType` | `DashScope` | LLM 服务提供商 |
 | `api_key_ref` | `String` | `""` | API Key 引用 |
 | `base_url` | `Option<String>` | `None` | 自定义 API 地址 |
-| `model` | `String` | `"gpt-4o-mini"` | 模型名称 |
+| `model` | `String` | `"qwen3-omni-flash"` | 模型名称（必须支持音频输入） |
 
 **LLMProviderType 枚举:** `OpenAI` (`"openai"`), `DashScope` (`"dashscope"`), `Volcengine` (`"volcengine"`), `Custom` (`"custom"`)
 
@@ -96,13 +91,13 @@ pub enum FloatingBarPosition {
 ```rust
 pub struct ProviderPreset {
     pub name: String,
-    pub llm_base_url: String,
-    pub llm_models: Vec<String>,
-    pub stt_provider: STTProviderType,
-    pub stt_base_url: Option<String>,
-    pub stt_model: Option<String>,
+    pub provider: LLMProviderType,
+    pub base_url: String,
+    pub models: Vec<String>,
 }
 ```
+
+> **简化：** 旧版 ProviderPreset 同时包含 STT 和 LLM 的预设信息，新版仅含 LLM 多模态预设。
 
 ---
 
@@ -119,7 +114,6 @@ pub struct ProviderPreset {
 | `load()` | `fn load() -> Result<Self, ConfigError>` | 从文件加载配置。文件不存在时返回默认配置 |
 | `save(&self)` | `fn save(&self) -> Result<(), ConfigError>` | 将配置保存为 JSON 文件。自动创建父目录 |
 | `llm_base_url(&self)` | `fn llm_base_url(&self) -> String` | 获取 LLM provider 的 base URL（优先使用自定义值，否则返回 provider 默认值） |
-| `stt_base_url(&self)` | `fn stt_base_url(&self) -> String` | 获取 STT provider 的 base URL |
 
 ### ProviderPreset 方法
 
@@ -127,13 +121,14 @@ pub struct ProviderPreset {
 |------|------|------|
 | `all()` | `fn all() -> Vec<ProviderPreset>` | 返回所有内置 provider 预设 |
 
-### 内置 Provider 预设（3 个）
+### 内置 Provider 预设（2 个）
 
-| 名称 | LLM Base URL | LLM 模型 | STT Provider |
-|------|-------------|---------|--------------|
-| 阿里云 DashScope | `https://dashscope.aliyuncs.com/compatible-mode/v1` | qwen-turbo, qwen-plus, qwen-max | DashScopeASR (qwen2-audio-instruct) |
-| 火山引擎 (豆包) | `https://ark.cn-beijing.volces.com/api/v3` | doubao-1-5-pro-256k, doubao-1-5-lite-32k | Whisper |
-| OpenAI | `https://api.openai.com/v1` | gpt-4o, gpt-4o-mini | Whisper (whisper-1) |
+| 名称 | Base URL | 模型 | 说明 |
+|------|----------|------|------|
+| 阿里云 Qwen3-Omni Flash（推荐） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | qwen3-omni-flash, qwen-omni-turbo | 主力多模态 provider |
+| OpenAI GPT-4o Audio | `https://api.openai.com/v1` | gpt-4o-audio-preview | 备选多模态 provider |
+
+> **已移除：** 火山引擎预设（不支持多模态音频输入）。所有预设模型必须支持音频输入。
 
 ### 存储路径
 
@@ -176,7 +171,7 @@ pub enum ConfigError {
 | `test_llm_base_url_defaults` | 验证不同 LLM provider 返回正确的默认 base URL |
 | `test_config_backward_compat_no_dictionary` | 旧格式 JSON（无 `user_dictionary` 字段）能正常反序列化 |
 | `test_config_with_dictionary` | 包含 `user_dictionary` 的配置能正确序列化/反序列化 |
-| `test_provider_presets` | 验证预设数量（3 个）和名称正确性 |
+| `test_provider_presets` | 验证预设数量（2 个）和名称正确性 |
 | `test_default_config_version` | 默认配置版本号为 CURRENT_CONFIG_VERSION |
 | `test_old_config_deserializes_with_version_zero` | 无 config_version 字段的旧 JSON 反序列化为 version=0 |
 | `test_serialization_includes_version` | 序列化输出包含 config_version 字段 |
@@ -192,13 +187,14 @@ pub enum ConfigError {
 - `config_version` 字段（`#[serde(default)]`）：旧配置文件无此字段时默认为 0
 - `load_with_migration()` 方法：检测版本 → 逐版本迁移 → 备份旧配置 → 保存
 - 备份文件命名：`config.v0.json.bak`
-- 当前版本：1
+- 当前版本：2
 
 ### 迁移链
 
 | 迁移 | 说明 |
 |------|------|
 | v0 → v1 | 基线迁移：设置 `config_version = 1`。新字段由 `#[serde(default)]` 处理 |
+| v1 → v2 | 多模态重构迁移：移除 STT 配置，LLM 默认模型改为 `qwen3-omni-flash` |
 
 后续版本升级时只需添加 `migrate_vN_to_vN+1()` 函数并更新 `CURRENT_CONFIG_VERSION` 常量。
 
@@ -210,5 +206,5 @@ pub enum ConfigError {
 2. ~~**无迁移框架**~~ -- **已修复 (Phase 4 Step 5)**：`load_with_migration()` 提供增量迁移和自动备份
 3. **保存时无验证**: `save()` 不验证配置值的合法性（如快捷键格式、URL 格式、数值范围等）
 4. **无文件锁**: 多进程同时读写配置文件时可能产生竞争条件
-5. **Custom provider fallback**: `LLMProviderType::Custom` 在 `base_url` 为 `None` 时 fallback 到 `http://localhost:11434/v1`（Ollama 默认地址），`STTProviderType::Custom` fallback 到 `http://localhost:8080`，这些 fallback 值是硬编码的
+5. **Custom provider fallback**: `LLMProviderType::Custom` 在 `base_url` 为 `None` 时 fallback 到 `http://localhost:11434/v1`（Ollama 默认地址），该 fallback 值是硬编码的
 6. **api_key_ref 双重语义**: 该字段既可以存储 `@keyref:` 前缀的 keyring 引用，也可以直接存储明文 API key（开发环境）。明文 key 会被写入 JSON 配置文件

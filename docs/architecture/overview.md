@@ -2,7 +2,7 @@
 
 ## 产品定位
 
-听语轩（TingYuXuan）是一款 AI 驱动的智能语音输入工具，核心管线：**语音录制 → STT 语音识别 → LLM 智能润色 → 系统级文本注入**。用户可自行配置 STT/LLM API Provider（阿里云 DashScope、火山引擎、OpenAI 及任意兼容服务）。
+听语轩（TingYuXuan）是一款 AI 驱动的智能语音输入工具，核心管线：**语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入**。通过多模态大语言模型（如 Qwen3-Omni Flash、GPT-4o Audio）直接处理音频输入，单次 API 调用完成语音识别和文本处理，无需独立的 STT 服务。用户只需配置一个 LLM API Provider。
 
 ## 分层架构
 
@@ -17,7 +17,7 @@
 │                 (src-tauri/src/)                      │
 ├─────────────────────────────────────────────────────┤
 │               Rust Core Library                      │
-│  Audio · STT · LLM · Pipeline · Config · History     │
+│  Audio · LLM (多模态) · Pipeline · Config · History   │
 │          (crates/tingyuxuan-core/src/)               │
 └─────────────────────────────────────────────────────┘
 ```
@@ -25,10 +25,9 @@
 ### Rust Core (`crates/tingyuxuan-core/`)
 
 平台无关的核心引擎，不依赖 Tauri。包含：
-- **audio** — 流式录音器（cpal），通过 channel 传输 PCM 数据
-- **stt** — STTProvider trait + DashScope 流式实现 + Whisper 兼容
-- **llm** — LLMProvider trait + OpenAI 兼容实现 + 提示词系统
-- **pipeline** — SessionOrchestrator 编排（STT→LLM）、事件总线
+- **audio** — 录音器（cpal）+ AudioBuffer PCM 累积 + WAV 编码器（零依赖）
+- **llm** — LLMProvider trait + MultimodalProvider（音频+上下文 → 一步处理）+ 提示词系统
+- **pipeline** — Pipeline 单步编排（音频编码 → 多模态 LLM）、事件总线
 - **config** — 配置序列化（JSON）+ XDG 目录
 - **history** — SQLite 转写记录管理
 - **context** — InputContext 丰富上下文（应用名/窗口标题/选中文本等）
@@ -89,7 +88,7 @@
 
 | 模式 | Linux/Windows | macOS | 管线行为 |
 |------|---------------|-------|---------|
-| Dictate（听写） | RAlt | Fn | STT → LLM 润色 → 自动注入 |
-| Translate（翻译） | Shift+RAlt | ⌥T | STT → LLM 翻译 → 自动注入 |
-| Edit（编辑） | 选中文本后 RAlt | 选中文本后 Fn | STT → LLM 编辑选中文本 → 自动注入 |
-| AI Assistant | Alt+Space | ⌃Space | STT → LLM 自由回答 → 结果面板（不自动注入） |
+| Dictate（听写） | RAlt | Fn | 多模态 LLM 润色 → 自动注入 |
+| Translate（翻译） | Shift+RAlt | ⌥T | 多模态 LLM 翻译 → 自动注入 |
+| Edit（编辑） | 选中文本后 RAlt | 选中文本后 Fn | 多模态 LLM 编辑选中文本 → 自动注入 |
+| AI Assistant | Alt+Space | ⌃Space | 多模态 LLM 自由回答 → 结果面板（不自动注入） |

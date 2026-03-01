@@ -110,5 +110,5 @@ npx tauri build
 
 1. 启动听语轩后，应用会在系统托盘中运行
 2. 首次启动时会自动打开设置窗口
-3. 配置 STT 和 LLM 的 API Key（参见 [配置指南](configuration.md)）
+3. 配置 LLM API Key（参见 [配置指南](configuration.md)）
 4. 配置完成后，使用快捷键即可开始语音输入

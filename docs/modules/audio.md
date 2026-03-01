@@ -2,17 +2,54 @@
 
 ## 模块职责
 
-Audio 模块负责麦克风音频采集和录音文件缓存管理。通过 cpal 库录制 16 kHz / 16-bit / 单声道 WAV 文件，并提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
+Audio 模块负责麦克风音频采集、PCM 缓冲区累积、WAV 编码和录音文件缓存管理。录音器通过 cpal 库采集 16 kHz / 16-bit / 单声道 PCM 数据，累积到内存 `AudioBuffer` 中（而非流式写入文件），录音结束后由 `AudioBuffer` 编码为 WAV 格式，用于多模态 LLM 一步处理。同时提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
 
 ---
 
 ## 核心类型定义
 
+### AudioBuffer（编码子模块 `audio/encoder.rs`）
+
+```rust
+/// 录音缓冲区：在录音过程中累积 PCM 采样。
+pub struct AudioBuffer {
+    samples: Vec<i16>,
+    sample_rate: u32,
+    channels: u16,
+}
+```
+
+录音器不再通过 channel 流式传输 PCM 到文件，而是将采样数据累积到 `AudioBuffer` 中。录音结束后，由 `AudioBuffer::encode()` 一次性编码为 WAV 格式。
+
+### EncodedAudio（编码子模块 `audio/encoder.rs`）
+
+```rust
+/// 编码后的音频数据。
+pub struct EncodedAudio {
+    pub data: Vec<u8>,
+    pub format: AudioFormat,
+    pub duration_ms: u64,
+}
+```
+
+`EncodedAudio` 是编码后的音频字节序列，支持 `to_base64()` 转为 base64 字符串（用于多模态 LLM API 请求体），以及 `format_str()` 返回格式标识（`"wav"`）。
+
+**WAV 编码实现：** 零外部依赖，手动写入 44 字节 RIFF/WAVE 头 + raw PCM16 数据。
+
+**关键常量：**
+
+```rust
+/// 录音时长上限（秒）。超过后自动停止录音。
+pub const MAX_RECORDING_SECONDS: u64 = 300;
+/// 录音采样上限（16kHz x 300s = 4_800_000 samples）。
+pub const MAX_SAMPLES: usize = 16_000 * MAX_RECORDING_SECONDS as usize;
+```
+
 ### AudioRecorder
 
 ```rust
-/// Audio recorder that captures microphone input and writes 16 kHz / 16-bit /
-/// mono WAV files.
+/// Audio recorder that captures microphone input and accumulates PCM samples
+/// in an AudioBuffer (16 kHz / 16-bit / mono).
 ///
 /// Thread safety is provided through `Arc<Mutex<RecorderInner>>` so the cpal
 /// input callback can safely write into the shared state.
@@ -31,30 +68,11 @@ pub struct AudioRecorder {
 }
 ```
 
-**内部共享状态：**
-
-```rust
-struct RecorderInner {
-    is_recording: bool,
-    wav_writer: Option<WavFileWriter>,
-    audio_path: PathBuf,
-    sample_count: u64,
-    /// Accumulator for the current RMS window.
-    rms_accumulator: Vec<f32>,
-    /// Recent RMS levels for waveform rendering in the UI.
-    rms_levels: Vec<f32>,
-    /// Timestamp of the last flush to disk.
-    last_flush: Instant,
-}
-```
-
 **关键常量：**
 
 ```rust
 /// Number of samples per RMS computation window (~30ms at 16 kHz = 480 samples).
 const RMS_WINDOW_SAMPLES: usize = 480;
-/// Interval between disk flushes in milliseconds.
-const FLUSH_INTERVAL_MS: u64 = 500;
 /// Maximum number of recent RMS levels retained for the waveform UI.
 const MAX_RMS_LEVELS: usize = 200;
 ```
@@ -131,14 +149,34 @@ pub enum AudioError {
 
 ## 公开 API
 
+### AudioBuffer（编码子模块）
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `new()` | `fn new(sample_rate: u32, channels: u16) -> Self` | 创建空缓冲区 |
+| `push_samples()` | `fn push_samples(&mut self, samples: &[i16])` | 追加 PCM 采样 |
+| `len()` | `fn len(&self) -> usize` | 当前采样数 |
+| `is_empty()` | `fn is_empty(&self) -> bool` | 是否为空 |
+| `duration_ms()` | `fn duration_ms(&self) -> u64` | 当前录音时长（毫秒） |
+| `exceeds_max_duration()` | `fn exceeds_max_duration(&self) -> bool` | 是否超过 MAX_RECORDING_SECONDS |
+| `encode()` | `fn encode(&self, format: AudioFormat) -> Result<EncodedAudio, AudioError>` | 编码为指定格式 |
+| `clear()` | `fn clear(&mut self)` | 清空缓冲区，释放内存 |
+
+### EncodedAudio
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `to_base64()` | `fn to_base64(&self) -> String` | base64 编码（用于 API 请求体） |
+| `format_str()` | `fn format_str(&self) -> &'static str` | 返回格式标识（`"wav"`） |
+
 ### AudioRecorder
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `new()` | `fn new() -> Result<Self, AudioError>` | 创建录音器实例。Mock 模式下跳过设备初始化，正常模式下探测默认输入设备 |
-| `start()` | `fn start(&mut self, session_id: &str, mode: &str, cache_dir: &Path) -> Result<PathBuf, AudioError>` | 开始录音，返回 WAV 文件路径。文件名格式：`{ISO_timestamp}_{mode}_{session_id}.wav` |
-| `stop()` | `fn stop(&mut self) -> Result<PathBuf, AudioError>` | 停止录音并 finalize WAV 文件头，返回完成的文件路径 |
-| `cancel()` | `fn cancel(&mut self) -> Result<(), AudioError>` | 取消录音并删除 WAV 文件（best-effort） |
+| `start()` | `fn start(&mut self, ...) -> Result<(), AudioError>` | 开始录音，PCM 数据累积到内部 AudioBuffer |
+| `stop()` | `fn stop(&mut self) -> Result<AudioBuffer, AudioError>` | 停止录音并返回 AudioBuffer（所有权转移） |
+| `cancel()` | `fn cancel(&mut self) -> Result<(), AudioError>` | 取消录音并清空缓冲区 |
 | `get_volume_levels()` | `fn get_volume_levels(&self) -> Vec<f32>` | 获取最近的 RMS 音量级别（`[0.0, 1.0]` 范围），用于波形可视化 |
 | `is_recording()` | `fn is_recording(&self) -> bool` | 当前是否正在录音 |
 
@@ -155,7 +193,7 @@ pub enum AudioError {
 | `list_pending()` | `fn list_pending(&self) -> Result<Vec<PathBuf>, AudioError>` | 扫描缓存目录，返回状态为 `"recording"` 或 `"failed"` 的音频文件路径 |
 | `cleanup_expired()` | `fn cleanup_expired(&self, max_age_hours: u64) -> Result<u64, AudioError>` | 删除超过指定时间的音频文件及其 sidecar，返回删除数量 |
 
-### WavFileWriter
+### WavFileWriter（仅用于缓存文件写入）
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
@@ -165,6 +203,8 @@ pub enum AudioError {
 | `finalize()` | `fn finalize(self) -> Result<(), AudioError>` | 写入正确的数据长度并关闭文件（消耗 self） |
 | `sample_count()` | `fn sample_count(&self) -> u64` | 已写入的样本总数 |
 | `duration_ms()` | `fn duration_ms(&self) -> u64` | 根据样本数和采样率计算时长（毫秒） |
+
+> **注意：** 主处理管线不再使用 `WavFileWriter`。WAV 编码由 `AudioBuffer::encode()` 在内存中零依赖完成。`WavFileWriter` 仅用于缓存文件的持久化场景（如离线队列）。
 
 ---
 
@@ -184,7 +224,21 @@ pub enum AudioError {
 
 ## 测试覆盖
 
-共 **22** 个单元测试：
+共 **31** 个单元测试（含编码器 9 个）：
+
+### AudioBuffer / EncodedAudio 编码器测试（9 个）
+
+| 测试名称 | 覆盖场景 |
+|----------|----------|
+| `test_empty_buffer` | 空缓冲区初始状态 |
+| `test_push_samples` | 追加采样后长度正确 |
+| `test_duration_ms` | 16000 samples = 1000ms |
+| `test_exceeds_max_duration` | MAX_SAMPLES 边界检测 |
+| `test_clear` | 清空缓冲区 |
+| `test_wav_encoding_header` | WAV 头（RIFF/WAVE/fmt/data）正确性 |
+| `test_wav_encoding_roundtrip` | PCM 数据编码后完整可还原 |
+| `test_base64_encoding` | base64 编码/解码往返一致 |
+| `test_duration_ms_preserved` | 编码后 duration_ms 一致 |
 
 ### AudioRecorder 测试（9 个）
 
@@ -221,9 +275,9 @@ pub enum AudioError {
 
 ## 已知限制
 
-1. **仅支持 WAV 格式** -- 不支持 Opus 等压缩格式，WAV 文件体积较大（16 kHz 单声道约 32 KB/s）
-2. **无 VAD / 静音检测** -- 不会自动跳过静音段，用户需手动控制录音起止
-3. **最近邻重采样** -- 当设备采样率非 16 kHz 时使用最近邻插值（nearest-neighbour），精度对语音识别足够但不适用于高保真场景
-4. **RMS 级别上限** -- 最多保留 200 个 RMS 级别，超出后从头部移除（`remove(0)` 的 O(n) 复杂度，对 200 的规模可接受）
-5. **Sidecar 路径约定** -- 使用 `.wav.json` 后缀（如 `recording.wav.json`），而 recovery 模块使用 `.json` 后缀，两者约定不同
+1. **仅支持 WAV 格式** -- 不支持 Opus 等压缩格式，WAV 文件体积较大（16 kHz 单声道约 32 KB/s）。base64 编码后体积约增长 33%
+2. **录音时长上限 300 秒** -- `MAX_RECORDING_SECONDS = 300`，超过后自动停止。该限制保护内存使用（约 9.6 MB PCM + 12.8 MB base64）
+3. **无 VAD / 静音检测** -- 不会自动跳过静音段，用户需手动控制录音起止
+4. **最近邻重采样** -- 当设备采样率非 16 kHz 时使用最近邻插值（nearest-neighbour），精度对语音识别足够但不适用于高保真场景
+5. **RMS 级别上限** -- 最多保留 200 个 RMS 级别，超出后从头部移除
 6. **无并发录音** -- 同一 `AudioRecorder` 实例同时只能有一个活跃录音会话
