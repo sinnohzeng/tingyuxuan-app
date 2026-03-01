@@ -45,9 +45,13 @@
 
 ### React Frontend (`src/`)
 
-- **components/** — FloatingBar（浮动条）、ResultPanel（AI 结果面板）、Settings/（设置面板）
-- **stores/appStore.ts** — Zustand 全局状态
-- **lib/** — 类型定义、Markdown 渲染器
+采用 **feature-based 目录结构** + **Fluent UI 2** 组件库（详见 [前端架构](frontend.md)）。
+
+- **features/** — 按功能模块划分：dashboard（首页）、history（历史）、dictionary（词典）、settings（设置）、onboarding（引导）、recording（录音）
+- **shared/stores/** — Zustand store 分工：appStore（录音状态）、uiStore（Toast/设置面板）、statsStore（统计缓存）
+- **shared/components/** — MainLayout（路由容器）、ToastHost（通知桥接）
+- **shared/hooks/** — useTauriEvent（Tauri 事件监听 + mounted 守卫）
+- **shared/lib/** — 类型定义、logger 工厂、主题切换
 
 ## 独立 Managed State
 

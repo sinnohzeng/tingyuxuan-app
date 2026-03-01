@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入。
+听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入。前端采用 feature-based 目录结构 + Fluent UI 2 组件库。
 
 ## 技术栈
 
@@ -14,7 +14,8 @@
 | Android | Kotlin (AGP 9.0.1 内置) + Compose (BOM 2026.02.00) + InputMethodService |
 | Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.38 |
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
-| Testing | 99 Rust + 42 vitest + 13 JNI + 7 Android 单元测试 |
+| UI 组件库 | Fluent UI 2 (@fluentui/react-components) |
+| Testing | 122 Rust + 71 vitest + 13 JNI + 7 Android 单元测试 |
 
 ## 项目结构
 
@@ -22,7 +23,19 @@
 crates/tingyuxuan-core/   Rust 核心库（平台无关）
 crates/tingyuxuan-jni/    Android JNI 桥接
 src-tauri/                Tauri 桌面应用
-src/                      React 前端
+src/                      React 前端（feature-based 目录）
+  features/               按功能模块划分
+    dashboard/            首页 + 统计卡片
+    dictionary/           词典管理
+    history/              历史记录
+    onboarding/           引导流程
+    recording/            录音浮动条 + 结果面板
+    settings/             设置对话框
+  shared/                 跨功能共享
+    components/           MainLayout、ToastHost
+    hooks/                useTauriEvent
+    lib/                  types、logger、theme
+    stores/               appStore、uiStore、statsStore
 android/                  Android 原生输入法
 docs/                     DDD 文档体系
 .github/workflows/        CI (ci.yml) + Release (release.yml)
@@ -32,8 +45,8 @@ docs/                     DDD 文档体系
 
 ```bash
 # 测试
-cargo test -p tingyuxuan-core          # 116 Rust tests
-npm test                                # 44 frontend tests
+cargo test -p tingyuxuan-core          # 122 Rust tests
+npm test                                # 71 frontend tests
 npx tsc --noEmit                        # TypeScript 类型检查
 
 # 本机无法完整编译 Tauri（缺 webkit2gtk 头文件），但可以：
@@ -92,6 +105,33 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 - **语言**：UI 和文档用中文，commit message 用中文，代码注释中文
 - **文档驱动 (DDD)**：文档是功能规格，代码实现文档描述
 - **唯一真值 (SSOT)**：每类信息只有一个权威来源，跨文档引用不重复
+- **胶水编程原则（Glue Code First）**：优先使用成熟开源库，不重复造轮子；缺什么依赖就装什么；数据收集（埋点、崩溃分析）用专业 SaaS 工具；自己的代码只负责编排和连接
+- **错误处理**：所有 hook/store catch 块用 `createLogger` 记录技术细节 + `uiStore.showToast()` 通知用户，禁止静默吞错或裸 `console.error`
 - **快捷键默认值**：Linux/Windows: RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）；macOS: Fn（听写）、⌥T（翻译）、⌃Space（AI 助手）、Esc（取消）
 - **Mock 音频**：`TINGYUXUAN_MOCK_AUDIO=1` 环境变量启用录音 mock 模式
+- **localStorage 例外**：项目唯一使用 localStorage 的地方是 `onboarding_complete` 标记（引导状态是纯前端关注点，需同步判断避免首帧闪烁）
 - **许可证**：Source-Available（代码公开仅供参考和学习），详见 LICENSE
+
+## Tauri 命令清单
+
+| 命令 | 参数 | 返回值 | 用途 |
+|------|------|--------|------|
+| `start_recording` | `mode: String` | `()` | 开始录音 |
+| `stop_recording` | — | `String` | 停止录音，返回转写结果 |
+| `cancel_recording` | — | `()` | 取消录音 |
+| `get_config` | — | `AppConfig` | 获取配置 |
+| `save_config` | `config: AppConfig` | `()` | 保存配置 |
+| `get_api_key` | `service: String` | `Option<String>` | 获取 API Key |
+| `save_api_key` | `service, key` | `()` | 保存 API Key |
+| `test_llm_connection` | — | `bool` | 测试 LLM 连接 |
+| `get_history_page` | `limit, offset` | `Vec<TranscriptRecord>` | 分页历史 |
+| `search_history` | `query, limit` | `Vec<TranscriptRecord>` | 搜索历史 |
+| `delete_history` | `id: String` | `()` | 删除记录 |
+| `clear_history` | — | `()` | 清空历史 |
+| `get_dashboard_stats` | — | `AggregateStats` | 统计数据 |
+| `get_dictionary` | — | `Vec<String>` | 获取词典 |
+| `add_dictionary_word` | `word: String` | `()` | 添加词汇 |
+| `remove_dictionary_word` | `word: String` | `()` | 删除词汇 |
+| `check_platform_permissions` | — | `String` | 检查权限状态 |
+| `open_permission_settings` | `target: Option<String>` | `()` | 打开权限设置 |
+| `is_first_launch` | — | `bool` | 首次启动检查 |
