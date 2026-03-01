@@ -21,6 +21,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http;
+use tracing::Instrument;
 
 use crate::api_key::ApiKey;
 use crate::error::STTError;
@@ -107,13 +108,13 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
         &'a self,
         _options: &'a STTOptions,
     ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
+        let span = tracing::info_span!("stt_ws",
+            task_id = tracing::field::Empty,
+            model = %self.model,
+        );
         Box::pin(async move {
             let task_id = uuid::Uuid::new_v4().to_string();
-            let _span = tracing::info_span!("stt_ws",
-                task_id = %task_id,
-                model = %self.model,
-            )
-            .entered();
+            tracing::Span::current().record("task_id", task_id.as_str());
 
             // 建立 WebSocket 连接（携带 Bearer token）
             let request = build_ws_request(&self.ws_url, self.api_key.expose_secret())?;
@@ -212,7 +213,7 @@ impl StreamingSTTProvider for DashScopeStreamingProvider {
             });
 
             Ok(StreamingSession { audio_tx, event_rx })
-        })
+        }.instrument(span))
     }
 
     fn test_connection(&self) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {

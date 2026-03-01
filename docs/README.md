@@ -32,6 +32,7 @@
 - [Phase 2: 端到端集成](plan/phase-2-integration.md)
 - [Phase 3: 增强体验](plan/phase-3-enhanced.md)
 - [Phase 4: 生产加固](plan/phase-4-production.md)
+- [全链路可观测性增强](plan/observability-enhancement.md)
 
 ## 文档约定
 

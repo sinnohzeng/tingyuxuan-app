@@ -52,12 +52,11 @@ impl OpenAICompatProvider {
 
     /// Send a chat completion request and map transport / HTTP errors into
     /// [`LLMError`] variants.
+    #[tracing::instrument(name = "llm_http", skip_all, fields(model = %self.model))]
     async fn send_request(
         &self,
         messages: Vec<ChatMessage>,
     ) -> Result<ChatCompletionResponse, LLMError> {
-        let _span = tracing::debug_span!("llm_http", model = %self.model).entered();
-
         let body = ChatCompletionRequest {
             model: self.model.clone(),
             messages,

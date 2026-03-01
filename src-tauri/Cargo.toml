@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-app"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
 license = "LicenseRef-Proprietary"
