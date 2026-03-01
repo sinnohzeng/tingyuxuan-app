@@ -6,7 +6,7 @@
  * - 右侧：react-router <Outlet />。
  * - 底部齿轮触发 SettingsDialog（Sprint 2 接入）。
  */
-import { lazy, Suspense, useCallback } from "react";
+import { lazy, Suspense, useCallback, useEffect } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
   FluentProvider,
@@ -58,6 +58,13 @@ export default function MainLayout() {
   const theme = useSystemTheme();
   const openSettings = useUIStore((s) => s.openSettings);
   const navigate = useNavigate();
+
+  // 首次启动检测 — 未完成引导则重定向
+  useEffect(() => {
+    if (!localStorage.getItem("onboarding_complete")) {
+      navigate("/onboarding", { replace: true });
+    }
+  }, [navigate]);
 
   // 托盘菜单事件联动
   useTauriEvent("open-settings", openSettings);
