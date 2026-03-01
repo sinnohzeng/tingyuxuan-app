@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Current config version.  Bump this when the config schema changes.
-const CURRENT_CONFIG_VERSION: u32 = 1;
+/// v2: 移除 STT 配置，切换到多模态管线。
+const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Main application configuration.
 ///
-/// Android 端只传 `stt`/`llm`/`language` 字段，其余用 `#[serde(default)]`
+/// Android 端只传 `llm`/`language` 字段，其余用 `#[serde(default)]`
 /// 填充默认值，避免反序列化失败。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -21,12 +22,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
     pub language: LanguageConfig,
-    pub stt: STTConfig,
     pub llm: LLMConfig,
     #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
     pub user_dictionary: Vec<String>,
+    // 向后兼容：忽略旧配置中的 stt 字段。
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    stt: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,26 +87,10 @@ pub struct LanguageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct STTConfig {
-    pub provider: STTProviderType,
-    /// API Key is stored in secure storage; this field holds a reference ID.
-    /// Format: "@keyref:stt_api_key" or the actual key for development.
-    pub api_key_ref: String,
-    pub base_url: Option<String>,
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum STTProviderType {
-    /// DashScope Paraformer 流式识别（WebSocket）— MVP 唯一 STT 选项。
-    #[serde(rename = "dashscope_streaming")]
-    DashScopeStreaming,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
     pub provider: LLMProviderType,
-    /// API Key reference (see STTConfig.api_key_ref).
+    /// API Key reference (stored in secure storage).
+    /// Format: "@keyref:llm_api_key" or the actual key for development.
     pub api_key_ref: String,
     pub base_url: Option<String>,
     pub model: String,
@@ -122,7 +110,7 @@ pub enum LLMProviderType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
-    /// 历史记录保留天数（流式架构不再写音频文件）。
+    /// 历史记录保留天数。
     #[serde(default = "default_history_retention_days")]
     pub history_retention_days: u64,
     // 向后兼容：忽略旧配置中的已移除字段。
@@ -172,17 +160,11 @@ impl Default for AppConfig {
                 translation_target: "en".to_string(),
                 variant: None,
             },
-            stt: STTConfig {
-                provider: STTProviderType::DashScopeStreaming,
-                api_key_ref: String::new(),
-                base_url: None,
-                model: Some("paraformer-realtime-v2".to_string()),
-            },
             llm: LLMConfig {
-                provider: LLMProviderType::OpenAI,
+                provider: LLMProviderType::DashScope,
                 api_key_ref: String::new(),
                 base_url: None,
-                model: "gpt-4o-mini".to_string(),
+                model: "qwen3-omni-flash".to_string(),
             },
             cache: CacheConfig {
                 history_retention_days: 30,
@@ -191,6 +173,7 @@ impl Default for AppConfig {
                 max_cache_size_mb: None,
             },
             user_dictionary: Vec::new(),
+            stt: None,
         }
     }
 }
@@ -259,7 +242,9 @@ impl AppConfig {
             if config.config_version < 1 {
                 Self::migrate_v0_to_v1(&mut config);
             }
-            // Future migrations: if config.config_version < 2 { migrate_v1_to_v2(&mut config); }
+            if config.config_version < 2 {
+                Self::migrate_v1_to_v2(&mut config);
+            }
 
             config.save()?;
         }
@@ -268,12 +253,20 @@ impl AppConfig {
     }
 
     /// Migrate from v0 (no version field) to v1.
-    ///
-    /// v0 → v1 is a baseline migration — the only change is setting the
-    /// version number.  All new fields added since v0 are handled by
-    /// `#[serde(default)]`.
     fn migrate_v0_to_v1(config: &mut Self) {
         config.config_version = 1;
+    }
+
+    /// Migrate from v1 to v2: 移除 STT 配置，切换默认模型到 qwen3-omni-flash。
+    fn migrate_v1_to_v2(config: &mut Self) {
+        config.config_version = 2;
+        config.stt = None;
+        // 更新默认模型（如果还是旧值）。
+        if config.llm.model == "gpt-4o-mini" {
+            config.llm.model = "qwen3-omni-flash".to_string();
+            config.llm.provider = LLMProviderType::DashScope;
+            config.llm.base_url = None;
+        }
     }
 
     /// Save config to file.
@@ -305,47 +298,36 @@ impl AppConfig {
                 .unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
         }
     }
-
-    /// Get the default base URL for the configured STT provider.
-    pub fn stt_base_url(&self) -> String {
-        if let Some(ref url) = self.stt.base_url {
-            return url.clone();
-        }
-        match self.stt.provider {
-            STTProviderType::DashScopeStreaming => {
-                "wss://dashscope.aliyuncs.com/api-ws/v1/inference/".to_string()
-            }
-        }
-    }
 }
 
 /// Provider presets for quick configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderPreset {
     pub name: String,
-    pub llm_provider: LLMProviderType,
-    pub llm_base_url: String,
-    pub llm_models: Vec<String>,
-    pub stt_provider: STTProviderType,
-    pub stt_base_url: Option<String>,
-    pub stt_model: Option<String>,
+    pub provider: LLMProviderType,
+    pub base_url: String,
+    pub models: Vec<String>,
 }
 
 impl ProviderPreset {
     pub fn all() -> Vec<ProviderPreset> {
-        vec![ProviderPreset {
-            name: "阿里云 DashScope".to_string(),
-            llm_provider: LLMProviderType::DashScope,
-            llm_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-            llm_models: vec![
-                "qwen-turbo".to_string(),
-                "qwen-plus".to_string(),
-                "qwen-max".to_string(),
-            ],
-            stt_provider: STTProviderType::DashScopeStreaming,
-            stt_base_url: None,
-            stt_model: Some("paraformer-realtime-v2".to_string()),
-        }]
+        vec![
+            ProviderPreset {
+                name: "阿里云 Qwen3-Omni Flash（推荐）".to_string(),
+                provider: LLMProviderType::DashScope,
+                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+                models: vec![
+                    "qwen3-omni-flash".to_string(),
+                    "qwen-omni-turbo".to_string(),
+                ],
+            },
+            ProviderPreset {
+                name: "OpenAI GPT-4o Audio".to_string(),
+                provider: LLMProviderType::OpenAI,
+                base_url: "https://api.openai.com/v1".to_string(),
+                models: vec!["gpt-4o-audio-preview".to_string()],
+            },
+        ]
     }
 }
 
@@ -356,7 +338,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.llm.model, "gpt-4o-mini");
+        assert_eq!(config.llm.model, "qwen3-omni-flash");
         assert_eq!(config.shortcuts.dictate, "alt_right");
         assert_eq!(config.cache.history_retention_days, 30);
     }
@@ -367,6 +349,8 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.llm.model, config.llm.model);
+        // STT 字段不应出现在序列化结果中。
+        assert!(!json.contains("\"stt\""));
     }
 
     #[test]
@@ -380,25 +364,25 @@ mod tests {
 
         let loaded: AppConfig =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(loaded.llm.model, "gpt-4o-mini");
+        assert_eq!(loaded.llm.model, "qwen3-omni-flash");
     }
 
     #[test]
     fn test_llm_base_url_defaults() {
         let config = AppConfig::default();
-        assert_eq!(config.llm_base_url(), "https://api.openai.com/v1");
-
-        let mut config2 = AppConfig::default();
-        config2.llm.provider = LLMProviderType::DashScope;
         assert_eq!(
-            config2.llm_base_url(),
+            config.llm_base_url(),
             "https://dashscope.aliyuncs.com/compatible-mode/v1"
         );
+
+        let mut config2 = AppConfig::default();
+        config2.llm.provider = LLMProviderType::OpenAI;
+        assert_eq!(config2.llm_base_url(), "https://api.openai.com/v1");
     }
 
     #[test]
-    fn test_config_backward_compat_no_dictionary() {
-        // Old config files won't have user_dictionary — should deserialize with empty Vec.
+    fn test_config_backward_compat_with_stt() {
+        // 旧配置文件包含 stt 字段 — 应能正常反序列化。
         let json = r#"{
             "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
@@ -409,6 +393,7 @@ mod tests {
         }"#;
         let config: AppConfig = serde_json::from_str(json).unwrap();
         assert!(config.user_dictionary.is_empty());
+        assert_eq!(config.llm.model, "gpt-4o-mini");
     }
 
     #[test]
@@ -426,19 +411,20 @@ mod tests {
     #[test]
     fn test_provider_presets() {
         let presets = ProviderPreset::all();
-        assert_eq!(presets.len(), 1);
-        assert_eq!(presets[0].name, "阿里云 DashScope");
+        assert_eq!(presets.len(), 2);
+        assert_eq!(presets[0].name, "阿里云 Qwen3-Omni Flash（推荐）");
+        assert_eq!(presets[1].name, "OpenAI GPT-4o Audio");
     }
 
     #[test]
     fn test_default_config_version() {
         let config = AppConfig::default();
         assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+        assert_eq!(config.config_version, 2);
     }
 
     #[test]
     fn test_old_config_deserializes_with_version_zero() {
-        // Simulate a config file from before version tracking.
         let json = r#"{
             "general": { "auto_launch": true, "sound_feedback": true, "floating_bar_position": "bottom_center" },
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
@@ -455,11 +441,11 @@ mod tests {
     fn test_serialization_includes_version() {
         let config = AppConfig::default();
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("\"config_version\":1"));
+        assert!(json.contains("\"config_version\":2"));
     }
 
     #[test]
-    fn test_migration_v0_to_v1() {
+    fn test_migration_v0_to_v2() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
 
@@ -469,24 +455,38 @@ mod tests {
             "shortcuts": { "dictate": "ctrl+shift+d", "translate": "ctrl+shift+t", "ai_assistant": "ctrl+shift+a", "cancel": "escape" },
             "language": { "primary": "zh", "translation_target": "en", "variant": null },
             "stt": { "provider": "dashscope_streaming", "api_key_ref": "test-key", "base_url": null, "model": "paraformer-realtime-v2" },
-            "llm": { "provider": "openai", "api_key_ref": "test-key", "base_url": null, "model": "gpt-4o" },
+            "llm": { "provider": "openai", "api_key_ref": "test-key", "base_url": null, "model": "gpt-4o-mini" },
             "cache": { "audio_retention_hours": 48, "failed_retention_days": 7, "max_cache_size_mb": 500 }
-        })).unwrap();
+        }))
+        .unwrap();
         std::fs::write(&path, &v0_json).unwrap();
 
-        // Manually load and migrate (can't use load_with_migration because it
-        // uses config_path() which depends on ProjectDirs).
         let contents = std::fs::read_to_string(&path).unwrap();
         let mut config: AppConfig = serde_json::from_str(&contents).unwrap();
         assert_eq!(config.config_version, 0);
 
         AppConfig::migrate_v0_to_v1(&mut config);
         assert_eq!(config.config_version, 1);
-        // Original values preserved.
+
+        AppConfig::migrate_v1_to_v2(&mut config);
+        assert_eq!(config.config_version, 2);
+        // 默认模型已更新。
+        assert_eq!(config.llm.model, "qwen3-omni-flash");
+        // 原始值保留。
         assert_eq!(config.language.primary, "zh");
-        assert_eq!(config.llm.model, "gpt-4o");
-        // Old config has audio_retention_hours (ignored) but no history_retention_days → serde default 30.
         assert_eq!(config.cache.history_retention_days, 30);
+    }
+
+    #[test]
+    fn test_migration_preserves_custom_model() {
+        let mut config = AppConfig::default();
+        config.config_version = 1;
+        config.llm.model = "gpt-4o".to_string();
+        config.llm.provider = LLMProviderType::OpenAI;
+
+        AppConfig::migrate_v1_to_v2(&mut config);
+        // 自定义模型不应被覆盖。
+        assert_eq!(config.llm.model, "gpt-4o");
     }
 
     #[test]
@@ -499,16 +499,14 @@ mod tests {
 
     #[test]
     fn test_android_minimal_config_deserializes() {
-        // Android ConfigStore.buildConfigJson() 只提供 stt/llm/language/user_dictionary，
+        // Android 只提供 llm/language/user_dictionary，
         // general/shortcuts/cache 应使用 serde(default) 默认值。
         let json = r#"{
-            "stt": { "provider": "dashscope_streaming", "api_key_ref": "test-key" },
-            "llm": { "provider": "openai", "api_key_ref": "test-key", "model": "gpt-4o-mini" },
+            "llm": { "provider": "dashscope", "api_key_ref": "test-key", "model": "qwen3-omni-flash" },
             "language": { "primary": "zh", "translation_target": "en" },
             "user_dictionary": []
         }"#;
         let config: AppConfig = serde_json::from_str(json).unwrap();
-        // 默认值应已填充。
         assert!(config.general.auto_launch);
         assert_eq!(config.shortcuts.dictate, "alt_right");
         assert_eq!(config.cache.history_retention_days, 30);

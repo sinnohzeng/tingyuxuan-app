@@ -17,10 +17,6 @@ cpal = { version = "0.17", optional = true }
 # HTTP client (reqwest 0.13 默认使用 rustls，无需 OpenSSL)
 reqwest = { version = "0.13", features = ["json"] }
 
-# WebSocket (流式 STT，使用 rustls 避免 Android 交叉编译需要 OpenSSL)
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-futures-util = "0.3"
-
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }

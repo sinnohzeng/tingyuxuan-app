@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use tingyuxuan_core::audio::encoder::AudioBuffer;
 use tingyuxuan_core::audio::recorder::AudioRecorder;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
-use tingyuxuan_core::stt::streaming::AudioChunk;
 
 // ---------------------------------------------------------------------------
 // Commands sent to the recorder actor
@@ -23,10 +23,10 @@ use tingyuxuan_core::stt::streaming::AudioChunk;
 
 enum RecorderCommand {
     Start {
-        reply: oneshot::Sender<Result<mpsc::Receiver<AudioChunk>, String>>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Stop {
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<AudioBuffer, String>>,
     },
     Cancel {
         reply: oneshot::Sender<Result<(), String>>,
@@ -73,8 +73,8 @@ impl RecorderHandle {
         RecorderHandle { cmd_tx }
     }
 
-    /// Start recording. Returns a channel receiver for PCM audio chunks.
-    pub async fn start(&self) -> Result<mpsc::Receiver<AudioChunk>, String> {
+    /// Start recording.
+    pub async fn start(&self) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Start { reply: tx })
@@ -84,8 +84,8 @@ impl RecorderHandle {
             .map_err(|_| "Recorder reply channel dropped".to_string())?
     }
 
-    /// Stop recording.
-    pub async fn stop(&self) -> Result<(), String> {
+    /// Stop recording and return the accumulated audio buffer.
+    pub async fn stop(&self) -> Result<AudioBuffer, String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Stop { reply: tx })

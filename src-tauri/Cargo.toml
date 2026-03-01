@@ -10,6 +10,7 @@ tingyuxuan-core = { path = "../crates/tingyuxuan-core" }
 tauri = { version = "2.10", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2.3"
 tauri-plugin-shell = "2.3"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

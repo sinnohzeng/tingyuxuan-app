@@ -3,10 +3,8 @@ use thiserror::Error;
 /// User-facing action to show when an error occurs.
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum UserAction {
-    /// STT network failure → [Retry]
+    /// Processing failure → [Retry]
     Retry,
-    /// LLM failure (STT succeeded) → [Insert Raw Transcript] [Retry Processing]
-    InsertRawOrRetry,
     /// 401 auth failure → [Go to Settings]
     CheckApiKey,
     /// 429 rate limit → auto-delay retry
@@ -33,30 +31,6 @@ pub enum AudioError {
     NotRecording,
     #[error("Already recording")]
     AlreadyRecording,
-}
-
-#[derive(Error, Debug, Clone)]
-pub enum STTError {
-    #[error("Network timeout (>{0}s)")]
-    Timeout(u64),
-    #[error("Network error: {0}")]
-    NetworkError(String),
-    #[error("Authentication failed (HTTP 401): check your API key")]
-    AuthFailed,
-    #[error("Rate limited (HTTP 429): try again later")]
-    RateLimited,
-    #[error("Server error ({0}): {1}")]
-    ServerError(u32, String),
-    #[error("Invalid response: {0}")]
-    InvalidResponse(String),
-    #[error("Provider not configured")]
-    NotConfigured,
-    #[error("Unsupported audio format")]
-    UnsupportedFormat,
-    #[error("HTTP client initialization failed: {0}")]
-    HttpClientError(String),
-    #[error("Input too large: {0}")]
-    InputTooLarge(String),
 }
 
 #[derive(Error, Debug)]
@@ -95,8 +69,6 @@ pub enum ConfigError {
 pub enum PipelineError {
     #[error("Audio error: {0}")]
     Audio(#[from] AudioError),
-    #[error("STT error: {0}")]
-    Stt(#[from] STTError),
     #[error("LLM error: {0}")]
     Llm(#[from] LLMError),
     #[error("Pipeline cancelled by user")]
@@ -113,24 +85,13 @@ pub enum HistoryError {
     IoError(#[from] std::io::Error),
 }
 
-impl STTError {
-    /// Maps this error to a user-facing action.
-    pub fn user_action(&self) -> UserAction {
-        match self {
-            STTError::AuthFailed => UserAction::CheckApiKey,
-            STTError::RateLimited => UserAction::WaitAndRetry,
-            _ => UserAction::Retry,
-        }
-    }
-}
-
 impl LLMError {
     /// Maps this error to a user-facing action.
     pub fn user_action(&self) -> UserAction {
         match self {
             LLMError::AuthFailed => UserAction::CheckApiKey,
             LLMError::RateLimited => UserAction::WaitAndRetry,
-            _ => UserAction::InsertRawOrRetry,
+            _ => UserAction::Retry,
         }
     }
 }
@@ -141,7 +102,6 @@ impl PipelineError {
             PipelineError::Audio(AudioError::NoInputDevice | AudioError::PermissionDenied) => {
                 UserAction::CheckMicrophone
             }
-            PipelineError::Stt(e) => e.user_action(),
             PipelineError::Llm(e) => e.user_action(),
             PipelineError::Busy => UserAction::WaitAndRetry,
             _ => UserAction::Retry,
@@ -154,9 +114,6 @@ impl PipelineError {
 // ---------------------------------------------------------------------------
 
 /// 平台无关的结构化错误，供 JNI 和 Tauri 层统一消费。
-///
-/// 将 `PipelineError` 的内部分类映射为前端/Kotlin 可直接使用的
-/// error_code + message + user_action 三元组。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StructuredError {
     pub error_code: String,
@@ -167,21 +124,6 @@ pub struct StructuredError {
 impl From<&PipelineError> for StructuredError {
     fn from(e: &PipelineError) -> Self {
         match e {
-            PipelineError::Stt(stt_err) => {
-                let error_code = match stt_err {
-                    STTError::AuthFailed => "stt_auth_failed",
-                    STTError::Timeout(_) => "timeout",
-                    STTError::NetworkError(_) => "network_error",
-                    STTError::NotConfigured => "not_configured",
-                    STTError::RateLimited => "rate_limited",
-                    _ => "stt_error",
-                };
-                StructuredError {
-                    error_code: error_code.to_string(),
-                    message: e.to_string(),
-                    user_action: stt_err.user_action(),
-                }
-            }
             PipelineError::Llm(llm_err) => {
                 let error_code = match llm_err {
                     LLMError::AuthFailed => "llm_auth_failed",
@@ -221,19 +163,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_structured_error_from_stt_auth() {
-        let e = PipelineError::Stt(STTError::AuthFailed);
+    fn test_structured_error_from_llm_auth() {
+        let e = PipelineError::Llm(LLMError::AuthFailed);
         let se = StructuredError::from(&e);
-        assert_eq!(se.error_code, "stt_auth_failed");
+        assert_eq!(se.error_code, "llm_auth_failed");
         assert!(matches!(se.user_action, UserAction::CheckApiKey));
-    }
-
-    #[test]
-    fn test_structured_error_from_stt_timeout() {
-        let e = PipelineError::Stt(STTError::Timeout(30));
-        let se = StructuredError::from(&e);
-        assert_eq!(se.error_code, "timeout");
-        assert!(matches!(se.user_action, UserAction::Retry));
     }
 
     #[test]
@@ -241,7 +175,7 @@ mod tests {
         let e = PipelineError::Llm(LLMError::Timeout);
         let se = StructuredError::from(&e);
         assert_eq!(se.error_code, "timeout");
-        assert!(matches!(se.user_action, UserAction::InsertRawOrRetry));
+        assert!(matches!(se.user_action, UserAction::Retry));
     }
 
     #[test]
@@ -269,11 +203,11 @@ mod tests {
 
     #[test]
     fn test_structured_error_json_serializable() {
-        let e = PipelineError::Stt(STTError::AuthFailed);
+        let e = PipelineError::Llm(LLMError::AuthFailed);
         let se = StructuredError::from(&e);
         let json = serde_json::to_string(&se).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["error_code"], "stt_auth_failed");
+        assert_eq!(parsed["error_code"], "llm_auth_failed");
         assert_eq!(parsed["user_action"], "CheckApiKey");
     }
 
@@ -286,8 +220,8 @@ mod tests {
     }
 
     #[test]
-    fn test_structured_error_from_stt_network() {
-        let e = PipelineError::Stt(STTError::NetworkError("connection reset".to_string()));
+    fn test_structured_error_from_llm_network() {
+        let e = PipelineError::Llm(LLMError::NetworkError("connection reset".to_string()));
         let se = StructuredError::from(&e);
         assert_eq!(se.error_code, "network_error");
         assert!(matches!(se.user_action, UserAction::Retry));
@@ -296,10 +230,6 @@ mod tests {
 
     #[test]
     fn test_structured_error_from_not_configured() {
-        let e = PipelineError::Stt(STTError::NotConfigured);
-        let se = StructuredError::from(&e);
-        assert_eq!(se.error_code, "not_configured");
-
         let e = PipelineError::Llm(LLMError::NotConfigured);
         let se = StructuredError::from(&e);
         assert_eq!(se.error_code, "not_configured");

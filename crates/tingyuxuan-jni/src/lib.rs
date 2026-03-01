@@ -10,12 +10,12 @@
 //! table**: each Pipeline instance is stored in a global `HashMap<u64, Arc<Pipeline>>`
 //! and the Kotlin side only sees an opaque `Long` handle ID.
 //!
-//! # Streaming Architecture
+//! # Recording Architecture
 //!
-//! 流式录音流程：
-//! 1. `startStreaming(handle, contextJson)` → 建立 WebSocket + 创建 session
-//! 2. `sendAudioChunk(handle, pcmData)` → 发送 PCM 帧到 STT
-//! 3. `stopStreaming(handle)` → 收集 STT 结果 → LLM 处理 → 返回结果 JSON
+//! 录音流程（单步多模态管线）：
+//! 1. `startStreaming(handle, mode, contextJson)` → 初始化 AudioBuffer + ProcessingRequest
+//! 2. `sendAudioChunk(handle, pcmData)` → 累积 PCM 采样到 AudioBuffer
+//! 3. `stopStreaming(handle)` → 编码音频 → 多模态 LLM 一步处理 → 返回结果 JSON
 //!
 //! # Runtime Management
 //!
@@ -31,14 +31,14 @@ use jni::objects::{JClass, JShortArray, JString};
 use jni::sys::jlong;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use tingyuxuan_core::audio::encoder::AudioBuffer;
 use tingyuxuan_core::context::InputContext;
 use tingyuxuan_core::error::StructuredError;
 use tingyuxuan_core::llm::LLMProvider;
+use tingyuxuan_core::llm::multimodal::MultimodalProvider;
 use tingyuxuan_core::llm::provider::ProcessingMode;
-use tingyuxuan_core::pipeline::{
-    ManagedSession, Pipeline, SessionConfig, SessionOrchestrator, SessionResult,
-};
-use tingyuxuan_core::stt::streaming::AudioChunk;
+use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
+use tokio_util::sync::CancellationToken;
 
 /// 全局共享的 tokio Runtime，通过 OnceLock 懒初始化。
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -58,36 +58,43 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming session state
+// Recording session state
 // ---------------------------------------------------------------------------
 
-/// 全局流式会话表。key = pipeline handle ID。
-static STREAMING_SESSIONS: OnceLock<Mutex<HashMap<u64, ManagedSession>>> = OnceLock::new();
-
-fn streaming_sessions() -> &'static Mutex<HashMap<u64, ManagedSession>> {
-    STREAMING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+/// 录音会话 — 累积 PCM 采样 + 处理参数。
+struct RecordingSession {
+    buffer: AudioBuffer,
+    request: ProcessingRequest,
+    cancel_token: CancellationToken,
 }
 
-fn store_managed_session(handle_id: u64, session: ManagedSession) -> Result<(), String> {
-    let mut map = streaming_sessions()
+/// 全局录音会话表。key = pipeline handle ID。
+static RECORDING_SESSIONS: OnceLock<Mutex<HashMap<u64, RecordingSession>>> = OnceLock::new();
+
+fn recording_sessions() -> &'static Mutex<HashMap<u64, RecordingSession>> {
+    RECORDING_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_recording_session(handle_id: u64, session: RecordingSession) -> Result<(), String> {
+    let mut map = recording_sessions()
         .lock()
-        .map_err(|_| "Streaming sessions mutex poisoned".to_string())?;
+        .map_err(|_| "Recording sessions mutex poisoned".to_string())?;
     if map.contains_key(&handle_id) {
         tracing::warn!(
             handle_id,
-            "Replacing existing streaming session (resource leak)"
+            "Replacing existing recording session (resource leak)"
         );
     }
     map.insert(handle_id, session);
     Ok(())
 }
 
-fn take_managed_session(handle_id: u64) -> Result<ManagedSession, String> {
-    let mut map = streaming_sessions()
+fn take_recording_session(handle_id: u64) -> Result<RecordingSession, String> {
+    let mut map = recording_sessions()
         .lock()
-        .map_err(|_| "Streaming sessions mutex poisoned".to_string())?;
+        .map_err(|_| "Recording sessions mutex poisoned".to_string())?;
     map.remove(&handle_id)
-        .ok_or_else(|| format!("No active streaming session for handle: {handle_id}"))
+        .ok_or_else(|| format!("No active recording session for handle: {handle_id}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -165,24 +172,13 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
             }
         };
 
-        let stt_key = config.stt.api_key_ref.clone();
         let llm_key = config.llm.api_key_ref.clone();
-
-        let stt_provider =
-            match tingyuxuan_core::stt::create_streaming_stt_provider(&config.stt, stt_key) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("Failed to create STT provider: {e}");
-                    return Ok(0);
-                }
-            };
-
         let llm_base_url = config
             .llm
             .base_url
             .clone()
             .unwrap_or_else(|| config.llm_base_url());
-        let llm_provider = match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
+        let llm_provider = match MultimodalProvider::new(
             llm_key,
             llm_base_url,
             config.llm.model.clone(),
@@ -195,7 +191,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_initPipeline(
         };
 
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
-        let pipeline = Arc::new(Pipeline::new(stt_provider, llm_provider, event_tx));
+        let pipeline = Arc::new(Pipeline::new(llm_provider, event_tx));
 
         let handle = match register_handle(pipeline) {
             Ok(h) => h,
@@ -222,9 +218,9 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_destroyPipeline(
 ) {
     let _span = tracing::info_span!("jni_destroy_pipeline", handle).entered();
 
-    // 同时清理可能残留的流式会话。
-    if let Ok(session) = take_managed_session(handle as u64) {
-        session.cancel();
+    // 同时清理可能残留的录音会话。
+    if let Ok(session) = take_recording_session(handle as u64) {
+        session.cancel_token.cancel();
     }
 
     match remove_handle(handle as u64) {
@@ -235,12 +231,12 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_destroyPipeline(
 }
 
 // ---------------------------------------------------------------------------
-// Streaming API: startStreaming / sendAudioChunk / stopStreaming
+// Recording API: startStreaming / sendAudioChunk / stopStreaming
 // ---------------------------------------------------------------------------
 
-/// 开始流式 STT 会话。
+/// 开始录音会话。
 ///
-/// 建立 WebSocket 连接，准备接收音频帧。
+/// 初始化 AudioBuffer 和 ProcessingRequest，准备接收 PCM 采样。
 ///
 /// # JNI Signature
 /// `(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;`
@@ -254,7 +250,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_startStreaming<'local
     mode: JString<'local>,
     context_json: JString<'local>,
 ) -> JString<'local> {
-    let _span = tracing::info_span!("jni_start_streaming", handle).entered();
+    let _span = tracing::info_span!("jni_start_recording", handle).entered();
 
     env.with_env(|env| -> jni::errors::Result<JString<'local>> {
         let mode_str: String = mode.try_to_string(env)?;
@@ -271,59 +267,45 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_startStreaming<'local
             })
             .unwrap_or_default();
 
-        let pipeline = match get_handle(handle as u64) {
-            Ok(p) => p,
-            Err(e) => {
-                let json = error_json("invalid_handle", &e, "dismiss");
-                return env.new_string(json);
-            }
-        };
+        // 验证 pipeline handle 有效。
+        if let Err(e) = get_handle(handle as u64) {
+            let json = error_json("invalid_handle", &e, "dismiss");
+            return env.new_string(json);
+        }
 
         let processing_mode = mode_str.parse::<ProcessingMode>().unwrap_or_else(|_| {
             tracing::warn!("Unknown processing mode '{mode_str}', falling back to Dictate");
             ProcessingMode::Dictate
         });
 
-        let session_config = SessionConfig {
-            mode: processing_mode,
-            context,
-            target_language: None,
-            user_dictionary: Vec::new(),
-            stt_options: tingyuxuan_core::stt::STTOptions {
-                language: None,
-                prompt: None,
+        let session = RecordingSession {
+            buffer: AudioBuffer::new(16_000, 1),
+            request: ProcessingRequest {
+                mode: processing_mode,
+                context,
+                target_language: None,
+                user_dictionary: Vec::new(),
             },
+            cancel_token: CancellationToken::new(),
         };
 
-        let rt = runtime();
-        let result = rt.block_on(SessionOrchestrator::start(&pipeline, session_config));
-
-        match result {
-            Ok(managed_session) => {
-                if let Err(e) = store_managed_session(handle as u64, managed_session) {
-                    let json = error_json("internal_error", &e, "retry");
-                    return env.new_string(json);
-                }
-                let json = serde_json::json!({ "success": true }).to_string();
-                env.new_string(json)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to start streaming: {e}");
-                let se = StructuredError::from(&e);
-                let json = structured_error_to_json(&se);
-                env.new_string(json)
-            }
+        if let Err(e) = store_recording_session(handle as u64, session) {
+            let json = error_json("internal_error", &e, "retry");
+            return env.new_string(json);
         }
+
+        let json = serde_json::json!({ "success": true }).to_string();
+        env.new_string(json)
     })
     .resolve::<LogErrorAndDefault>()
 }
 
-/// 发送一帧 PCM 音频到流式 STT。
+/// 发送一帧 PCM 音频，累积到 AudioBuffer。
 ///
 /// # JNI Signature
 /// `(J[S)Z`
 /// 参数：handle, pcmData (ShortArray)
-/// 返回：true 表示成功发送，false 表示会话不存在或已关闭
+/// 返回：true 表示成功，false 表示会话不存在或已超时长上限
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_sendAudioChunk(
     mut env: EnvUnowned,
@@ -332,26 +314,33 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_sendAudioChunk(
     pcm_data: JShortArray,
 ) -> bool {
     env.with_env(|env| -> jni::errors::Result<bool> {
-        let map = match streaming_sessions().lock() {
+        let mut map = match recording_sessions().lock() {
             Ok(m) => m,
             Err(_) => return Ok(false),
         };
-        let Some(session) = map.get(&(handle as u64)) else {
+        let Some(session) = map.get_mut(&(handle as u64)) else {
             return Ok(false);
         };
+
+        // 检查是否超过最大录音时长。
+        if session.buffer.exceeds_max_duration() {
+            tracing::warn!("Recording exceeded max duration, rejecting audio");
+            return Ok(false);
+        }
 
         let len = pcm_data.len(env)?;
         let mut buf = vec![0i16; len];
         pcm_data.get_region(env, 0, &mut buf)?;
 
-        Ok(session.send_audio(AudioChunk { samples: buf }))
+        session.buffer.push_samples(&buf);
+        Ok(true)
     })
     .resolve::<LogErrorAndDefault>()
 }
 
-/// 停止流式录音，收集 STT 结果，执行 LLM 处理。
+/// 停止录音，编码音频并通过多模态 LLM 处理。
 ///
-/// 阻塞调用 — 等待 STT 最终结果和 LLM 处理完成。
+/// 阻塞调用 — 等待 LLM 处理完成。
 ///
 /// # JNI Signature
 /// `(J)Ljava/lang/String;`
@@ -363,7 +352,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_stopStreaming<'local>
     _class: JClass<'local>,
     handle: jlong,
 ) -> JString<'local> {
-    let _span = tracing::info_span!("jni_stop_streaming", handle).entered();
+    let _span = tracing::info_span!("jni_stop_recording", handle).entered();
 
     env.with_env(|env| -> jni::errors::Result<JString<'local>> {
         let pipeline = match get_handle(handle as u64) {
@@ -374,7 +363,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_stopStreaming<'local>
             }
         };
 
-        let session = match take_managed_session(handle as u64) {
+        let session = match take_recording_session(handle as u64) {
             Ok(s) => s,
             Err(e) => {
                 let json = error_json("no_session", &e, "dismiss");
@@ -382,22 +371,28 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_stopStreaming<'local>
             }
         };
 
+        // 检查音频是否过短。
+        if session.buffer.duration_ms() < 300 {
+            let json = error_json("audio_too_short", "录音时间过短，请重试", "retry");
+            return env.new_string(json);
+        }
+
         let rt = runtime();
         let json_str = rt.block_on(async {
-            match SessionOrchestrator::finish(&pipeline, session).await {
-                SessionResult::Success { processed_text, .. } => {
+            match pipeline
+                .process_audio(session.buffer, &session.request, session.cancel_token)
+                .await
+            {
+                Ok(processed_text) => {
                     serde_json::json!({ "success": true, "text": processed_text }).to_string()
                 }
-                SessionResult::EmptyTranscript => {
-                    error_json("stt_empty", "STT returned empty text", "retry")
+                Err(tingyuxuan_core::error::PipelineError::Cancelled) => {
+                    error_json("cancelled", "Processing cancelled", "dismiss")
                 }
-                SessionResult::Failed { error, .. } => {
+                Err(error) => {
                     tracing::error!("Pipeline processing failed: {error}");
                     let se = StructuredError::from(&error);
                     structured_error_to_json(&se)
-                }
-                SessionResult::Cancelled => {
-                    error_json("cancelled", "Processing cancelled", "dismiss")
                 }
             }
         });
@@ -434,7 +429,7 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_validateConfig<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// Test connectivity to STT or LLM service.
+/// Test connectivity to LLM service.
 ///
 /// # JNI Signature
 /// `(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;`
@@ -464,19 +459,6 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
         let rt = runtime();
 
         let json = match service_str.as_str() {
-            "stt" => {
-                let stt_key = config.stt.api_key_ref.clone();
-                match tingyuxuan_core::stt::create_streaming_stt_provider(&config.stt, stt_key) {
-                    Ok(provider) => match rt.block_on(provider.test_connection()) {
-                        Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                        Ok(false) => {
-                            error_json("stt_error", "Connection test failed", "check_api_key")
-                        }
-                        Err(e) => error_json("stt_error", &e.to_string(), "check_api_key"),
-                    },
-                    Err(e) => error_json("stt_error", &e.to_string(), "open_settings"),
-                }
-            }
             "llm" => {
                 let llm_key = config.llm.api_key_ref.clone();
                 let llm_base_url = config
@@ -484,25 +466,26 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
                     .base_url
                     .clone()
                     .unwrap_or_else(|| config.llm_base_url());
-                let provider: Box<dyn LLMProvider> =
-                    match tingyuxuan_core::llm::openai_compat::OpenAICompatProvider::new(
-                        llm_key,
-                        llm_base_url,
-                        config.llm.model.clone(),
-                    ) {
-                        Ok(p) => Box::new(p),
-                        Err(e) => {
-                            let json = error_json(
-                                "llm_error",
-                                &format!("LLM init failed: {e}"),
-                                "open_settings",
-                            );
-                            return env.new_string(&json);
-                        }
-                    };
+                let provider: Box<dyn LLMProvider> = match MultimodalProvider::new(
+                    llm_key,
+                    llm_base_url,
+                    config.llm.model.clone(),
+                ) {
+                    Ok(p) => Box::new(p),
+                    Err(e) => {
+                        let json = error_json(
+                            "llm_error",
+                            &format!("LLM init failed: {e}"),
+                            "open_settings",
+                        );
+                        return env.new_string(&json);
+                    }
+                };
                 match rt.block_on(provider.test_connection()) {
                     Ok(true) => serde_json::json!({ "success": true }).to_string(),
-                    Ok(false) => error_json("llm_error", "Connection test failed", "check_api_key"),
+                    Ok(false) => {
+                        error_json("llm_error", "Connection test failed", "check_api_key")
+                    }
                     Err(e) => error_json("llm_error", &e.to_string(), "check_api_key"),
                 }
             }
@@ -518,10 +501,9 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_testConnection<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// Cancel an in-progress streaming session.
+/// Cancel an in-progress recording/processing session.
 ///
-/// 不 take session — 只取消令牌。stopStreaming 仍能 take 并 finish。
-/// 这解决了 C2 竞争问题：cancelProcessing 与 stopStreaming 不再冲突。
+/// 不 take session — 只取消令牌。stopStreaming 仍能 take 并处理（会收到 Cancelled 错误）。
 ///
 /// # JNI Signature
 /// `(J)V`
@@ -532,18 +514,18 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_cancelProcessing(
     handle: jlong,
 ) {
     let _span = tracing::info_span!("jni_cancel_processing", handle).entered();
-    let map = streaming_sessions().lock();
+    let map = recording_sessions().lock();
     match map {
         Ok(map) => {
             if let Some(session) = map.get(&(handle as u64)) {
-                session.cancel();
-                tracing::info!(handle, "Streaming session cancelled");
+                session.cancel_token.cancel();
+                tracing::info!(handle, "Recording session cancelled");
             } else {
                 tracing::info!(handle, "Cancel requested but no active session");
             }
         }
         Err(_) => {
-            tracing::error!(handle, "Streaming sessions mutex poisoned");
+            tracing::error!(handle, "Recording sessions mutex poisoned");
         }
     }
 }
@@ -571,9 +553,6 @@ pub extern "system" fn Java_com_tingyuxuan_core_NativeCore_getVersion<'local>(
 mod tests {
     use super::handle::{get_handle, remove_handle};
     use super::*;
-    use tingyuxuan_core::stt::streaming::AudioChunk;
-    use tokio::sync::mpsc;
-    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn test_handle_register_get_remove() {
@@ -606,42 +585,32 @@ mod tests {
     }
 
     #[test]
-    fn test_managed_session_store_and_take() {
-        let (tx, _rx) = mpsc::channel::<AudioChunk>(10);
-        let (_, event_rx) = mpsc::channel(10);
-
-        // 构造一个 ManagedSession 用于测试存取。
-        // 直接构造而非通过 SessionOrchestrator::start() 以避免需要 Pipeline。
-        let session = ManagedSession::new_for_testing(
-            tx,
-            event_rx,
-            SessionConfig {
+    fn test_recording_session_store_and_take() {
+        let session = RecordingSession {
+            buffer: AudioBuffer::new(16_000, 1),
+            request: ProcessingRequest {
                 mode: ProcessingMode::Dictate,
                 context: InputContext::default(),
                 target_language: None,
                 user_dictionary: Vec::new(),
-                stt_options: tingyuxuan_core::stt::STTOptions {
-                    language: None,
-                    prompt: None,
-                },
             },
-            CancellationToken::new(),
-        );
+            cancel_token: CancellationToken::new(),
+        };
 
         let test_handle_id = 777_777_777u64;
-        store_managed_session(test_handle_id, session).unwrap();
+        store_recording_session(test_handle_id, session).unwrap();
 
         // Take it.
-        let taken = take_managed_session(test_handle_id);
+        let taken = take_recording_session(test_handle_id);
         assert!(taken.is_ok());
 
         // Should be gone now.
-        assert!(take_managed_session(test_handle_id).is_err());
+        assert!(take_recording_session(test_handle_id).is_err());
     }
 
     #[test]
-    fn test_take_nonexistent_streaming_session() {
-        assert!(take_managed_session(666_666_666).is_err());
+    fn test_take_nonexistent_recording_session() {
+        assert!(take_recording_session(666_666_666).is_err());
     }
 
     #[test]

@@ -1,11 +1,10 @@
+use crate::audio::encoder::{AudioBuffer, MAX_SAMPLES};
 use crate::error::AudioError;
-use crate::stt::streaming::{AudioChunk, STREAMING_CHANNEL_CAPACITY};
 use cpal::Stream;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 
 /// Number of samples per RMS computation window (~30ms at 16 kHz = 480 samples).
 const RMS_WINDOW_SAMPLES: usize = 480;
@@ -21,13 +20,14 @@ struct RecorderInner {
     rms_accumulator: Vec<f32>,
     /// Recent RMS levels for waveform rendering in the UI.
     rms_levels: VecDeque<f32>,
-    /// Channel to send audio chunks to the STT pipeline.
-    /// `try_send` 用于背压控制，满时丢帧（语音 STT 容忍少量丢帧）。
-    audio_tx: Option<mpsc::Sender<AudioChunk>>,
+    /// PCM 缓冲区：累积所有录音采样，录音结束后编码为目标格式。
+    buffer: Vec<i16>,
+    /// 是否因超过最大采样数而自动停止。
+    auto_stopped: bool,
 }
 
-/// Audio recorder that captures microphone input and outputs 16 kHz / 16-bit /
-/// mono PCM frames via a channel for real-time streaming STT.
+/// Audio recorder that captures microphone input and accumulates 16 kHz / 16-bit
+/// mono PCM samples into an internal buffer.
 ///
 /// Thread safety is provided through `Arc<Mutex<RecorderInner>>` so the cpal
 /// input callback can safely write into the shared state.
@@ -71,7 +71,8 @@ impl AudioRecorder {
             sample_count: 0,
             rms_accumulator: Vec::with_capacity(RMS_WINDOW_SAMPLES),
             rms_levels: VecDeque::with_capacity(MAX_RMS_LEVELS),
-            audio_tx: None,
+            buffer: Vec::new(),
+            auto_stopped: false,
         };
 
         if mock_mode {
@@ -88,36 +89,24 @@ impl AudioRecorder {
         })
     }
 
-    /// Starts recording and returns a channel receiver for PCM audio chunks.
+    /// Starts recording. PCM samples are accumulated in an internal buffer.
     ///
-    /// Audio frames are 16 kHz mono PCM16. The channel is bounded
-    /// (`STREAMING_CHANNEL_CAPACITY` frames ≈ 1s at 20ms/frame); when full,
-    /// frames are silently dropped (STT tolerates minor frame loss).
-    ///
-    /// Dropping the returned `Receiver` or calling [`stop`] ends the stream.
-    pub fn start(&mut self) -> Result<mpsc::Receiver<AudioChunk>, AudioError> {
-        {
-            let inner = self
-                .inner
-                .lock()
-                .expect("RecorderInner: lock poisoned in start() check");
-            if inner.is_recording {
-                return Err(AudioError::AlreadyRecording);
-            }
-        }
-
-        let (tx, rx) = mpsc::channel(STREAMING_CHANNEL_CAPACITY);
-
+    /// Call [`stop`] to end recording and retrieve the accumulated `AudioBuffer`.
+    pub fn start(&mut self) -> Result<(), AudioError> {
         {
             let mut inner = self
                 .inner
                 .lock()
-                .expect("RecorderInner: lock poisoned in start() setup");
+                .expect("RecorderInner: lock poisoned in start()");
+            if inner.is_recording {
+                return Err(AudioError::AlreadyRecording);
+            }
             inner.is_recording = true;
-            inner.audio_tx = Some(tx);
             inner.sample_count = 0;
             inner.rms_accumulator.clear();
             inner.rms_levels.clear();
+            inner.buffer.clear();
+            inner.auto_stopped = false;
         }
 
         tracing::debug!(mock = self.mock_mode, "Starting audio capture");
@@ -127,18 +116,17 @@ impl AudioRecorder {
             self.start_real_stream()?;
         }
 
-        Ok(rx)
+        Ok(())
     }
 
-    /// Stops recording.
+    /// Stops recording and returns the accumulated audio buffer.
     ///
-    /// Drops the audio channel sender, signaling the receiver that no more
-    /// frames will arrive. Joins the mock thread if running in mock mode.
-    pub fn stop(&mut self) -> Result<(), AudioError> {
+    /// The buffer contains all PCM samples captured during recording.
+    pub fn stop(&mut self) -> Result<AudioBuffer, AudioError> {
         // Drop the stream first so the callback stops producing frames.
         self.stream.take();
 
-        {
+        let (samples, sample_count) = {
             let mut inner = self
                 .inner
                 .lock()
@@ -147,36 +135,48 @@ impl AudioRecorder {
                 return Err(AudioError::NotRecording);
             }
             inner.is_recording = false;
-            // Drop the sender → receiver sees channel closed.
-            inner.audio_tx.take();
-        }
+            (std::mem::take(&mut inner.buffer), inner.sample_count)
+        };
 
         // Join mock thread to prevent leak.
         if let Some(handle) = self.mock_thread.take() {
             let _ = handle.join();
         }
 
-        let samples = {
-            let guard = self
+        tracing::info!(samples = sample_count, "Audio recording stopped");
+
+        let mut audio_buffer = AudioBuffer::new(16_000, 1);
+        audio_buffer.push_samples(&samples);
+        Ok(audio_buffer)
+    }
+
+    /// Cancels the current recording, discarding all captured audio.
+    pub fn cancel(&mut self) -> Result<(), AudioError> {
+        // Drop the stream.
+        self.stream.take();
+
+        {
+            let mut inner = self
                 .inner
                 .lock()
-                .expect("RecorderInner: lock poisoned in stop() log");
-            guard.sample_count
-        };
-        tracing::info!(samples, "Audio recording stopped");
+                .expect("RecorderInner: lock poisoned in cancel()");
+            if !inner.is_recording {
+                return Err(AudioError::NotRecording);
+            }
+            inner.is_recording = false;
+            inner.buffer.clear();
+            inner.buffer.shrink_to_fit();
+        }
 
+        if let Some(handle) = self.mock_thread.take() {
+            let _ = handle.join();
+        }
+
+        tracing::info!("Audio recording cancelled");
         Ok(())
     }
 
-    /// Cancels the current recording (same as stop).
-    pub fn cancel(&mut self) -> Result<(), AudioError> {
-        self.stop()
-    }
-
     /// Returns a copy of the recent RMS volume levels for waveform rendering.
-    ///
-    /// Each value is in the range `[0.0, 1.0]` where 0 is silence and 1.0 is
-    /// full scale.
     pub fn get_volume_levels(&self) -> Vec<f32> {
         let inner = self
             .inner
@@ -192,6 +192,15 @@ impl AudioRecorder {
             .lock()
             .expect("RecorderInner: lock poisoned in is_recording()");
         inner.is_recording
+    }
+
+    /// Returns `true` if recording was auto-stopped due to max duration.
+    pub fn was_auto_stopped(&self) -> bool {
+        let inner = self
+            .inner
+            .lock()
+            .expect("RecorderInner: lock poisoned in was_auto_stopped()");
+        inner.auto_stopped
     }
 
     // ------------------------------------------------------------------
@@ -293,24 +302,22 @@ impl AudioRecorder {
             }
         }
 
-        // Fall back to the config closest to 16 kHz (prefer integer multiples like 48k/32k).
+        // Fall back to the config closest to 16 kHz.
         configs.sort_by_key(|c| {
             let rate = c.max_sample_rate() as i64;
             (rate - target_rate as i64).unsigned_abs()
         });
         let best = configs.first().unwrap();
-        // Use the max sample rate but cap at 48 kHz (beyond that wastes CPU resampling).
         let rate = best.max_sample_rate().min(48_000);
         let clamped = rate.clamp(best.min_sample_rate(), best.max_sample_rate());
         Ok((*best).with_sample_rate(clamped))
     }
 
-    /// Starts a mock stream that sends silence frames on a background thread.
+    /// Starts a mock stream that generates silence on a background thread.
     fn start_mock_stream(&mut self) -> Result<(), AudioError> {
         let inner = Arc::clone(&self.inner);
 
         let handle = std::thread::spawn(move || {
-            // Generate ~30ms chunks of silence at 16 kHz until stopped.
             loop {
                 {
                     let mut guard = match inner.lock() {
@@ -324,14 +331,18 @@ impl AudioRecorder {
                         break;
                     }
 
-                    // 通过 channel 发送音频帧（silence 无状态，直接构造）。
-                    if let Some(ref tx) = guard.audio_tx {
-                        let chunk = AudioChunk {
-                            samples: vec![0i16; RMS_WINDOW_SAMPLES],
-                        };
-                        let _ = tx.try_send(chunk);
-                    }
+                    // 写入 silence 到缓冲区。
+                    let silence = vec![0i16; RMS_WINDOW_SAMPLES];
+                    guard.buffer.extend_from_slice(&silence);
                     guard.sample_count += RMS_WINDOW_SAMPLES as u64;
+
+                    // 录音时长上限检查。
+                    if guard.buffer.len() >= MAX_SAMPLES {
+                        guard.is_recording = false;
+                        guard.auto_stopped = true;
+                        tracing::warn!("Recording auto-stopped: max duration reached");
+                        break;
+                    }
 
                     // Push a zero-level RMS entry.
                     if guard.rms_levels.len() >= MAX_RMS_LEVELS {
@@ -357,7 +368,6 @@ impl AudioRecorder {
         device_sample_rate: u32,
         inner: &Arc<Mutex<RecorderInner>>,
     ) {
-        // Convert to f32 samples, take only channel 0 for mono.
         let mono_f32: Vec<f32> = data
             .chunks(channels)
             .map(|frame| frame[0] as f32 / i16::MAX as f32)
@@ -393,14 +403,12 @@ impl AudioRecorder {
     }
 
     /// Core processing: accepts mono f32 samples in [-1.0, 1.0], resamples to
-    /// 16 kHz when necessary, sends PCM frames via channel, and computes RMS.
+    /// 16 kHz when necessary, writes PCM to buffer, and computes RMS.
     fn process_mono_f32(
         samples: &[f32],
         device_sample_rate: u32,
         inner: &Arc<Mutex<RecorderInner>>,
     ) {
-        // Simple nearest-neighbour resample when the device rate differs from
-        // 16 kHz.  This is good enough for voice dictation.
         let resampled: Cow<'_, [f32]> = if device_sample_rate == 16_000 {
             Cow::Borrowed(samples)
         } else {
@@ -416,7 +424,7 @@ impl AudioRecorder {
             )
         };
 
-        // Convert to i16 for STT.
+        // Convert to i16.
         let pcm: Vec<i16> = resampled
             .iter()
             .map(|&s| {
@@ -437,13 +445,17 @@ impl AudioRecorder {
             return;
         }
 
-        // 通过 channel 发送音频帧（背压控制：满时丢帧）。
+        // 写入 PCM 到缓冲区。
         let pcm_len = pcm.len();
-        if let Some(ref tx) = guard.audio_tx {
-            let chunk = AudioChunk { samples: pcm };
-            let _ = tx.try_send(chunk);
-        }
+        guard.buffer.extend_from_slice(&pcm);
         guard.sample_count += pcm_len as u64;
+
+        // 录音时长上限检查。
+        if guard.buffer.len() >= MAX_SAMPLES {
+            guard.is_recording = false;
+            guard.auto_stopped = true;
+            tracing::warn!("Recording auto-stopped: max duration reached");
+        }
 
         // RMS computation over ~30ms windows.
         for &sample in resampled.as_ref() {
@@ -475,7 +487,6 @@ mod tests {
 
     #[test]
     fn test_new_mock_mode() {
-        // SAFETY: Tests run with TINGYUXUAN_MOCK_AUDIO already set; no concurrent reads race.
         unsafe { std::env::set_var("TINGYUXUAN_MOCK_AUDIO", "1") };
         let recorder = AudioRecorder::new();
         assert!(recorder.is_ok());
@@ -506,41 +517,36 @@ mod tests {
     fn test_start_and_stop() {
         let mut recorder = mock_recorder();
 
-        let rx = recorder.start().expect("start should succeed");
+        recorder.start().expect("start should succeed");
         assert!(recorder.is_recording());
 
-        // Give the mock thread a moment to send some frames.
+        // Give the mock thread a moment to generate some frames.
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        recorder.stop().expect("stop should succeed");
+        let buffer = recorder.stop().expect("stop should succeed");
         assert!(!recorder.is_recording());
-
-        // Channel should be closed — no more frames.
-        drop(rx);
+        assert!(!buffer.is_empty());
+        assert!(buffer.duration_ms() > 0);
     }
 
     #[test]
-    fn test_start_returns_audio_chunks() {
+    fn test_start_returns_buffer_with_samples() {
         let mut recorder = mock_recorder();
 
-        let mut rx = recorder.start().expect("start should succeed");
+        recorder.start().expect("start should succeed");
 
-        // Give the mock thread a moment to send some frames.
+        // Give the mock thread a moment to generate some frames.
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Should have received at least one chunk.
-        let chunk = rx.try_recv();
-        assert!(chunk.is_ok(), "should receive at least one audio chunk");
-        assert!(!chunk.unwrap().samples.is_empty());
-
-        recorder.stop().unwrap();
+        let buffer = recorder.stop().unwrap();
+        assert!(buffer.len() > 0);
     }
 
     #[test]
     fn test_double_start_returns_error() {
         let mut recorder = mock_recorder();
 
-        let _rx = recorder.start().unwrap();
+        recorder.start().unwrap();
         let result = recorder.start();
         assert!(result.is_err());
 
@@ -552,7 +558,7 @@ mod tests {
     fn test_cancel() {
         let mut recorder = mock_recorder();
 
-        let _rx = recorder.start().unwrap();
+        recorder.start().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         recorder.cancel().expect("cancel should succeed");
@@ -563,7 +569,7 @@ mod tests {
     fn test_get_volume_levels() {
         let mut recorder = mock_recorder();
 
-        let _rx = recorder.start().unwrap();
+        recorder.start().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(150));
 
         let levels = recorder.get_volume_levels();
@@ -576,14 +582,13 @@ mod tests {
 
     #[test]
     fn test_rms_computation() {
-        // Directly test the RMS computation logic via process_mono_f32.
-        let (tx, _rx) = mpsc::channel(STREAMING_CHANNEL_CAPACITY);
         let inner = Arc::new(Mutex::new(RecorderInner {
             is_recording: true,
             sample_count: 0,
             rms_accumulator: Vec::new(),
             rms_levels: VecDeque::new(),
-            audio_tx: Some(tx),
+            buffer: Vec::new(),
+            auto_stopped: false,
         }));
 
         // Create a full RMS window of constant amplitude 0.5.
@@ -594,28 +599,29 @@ mod tests {
         assert_eq!(guard.rms_levels.len(), 1);
         // RMS of constant 0.5 is 0.5.
         assert!((guard.rms_levels[0] - 0.5).abs() < 0.01);
+        // Buffer should have PCM samples.
+        assert_eq!(guard.buffer.len(), RMS_WINDOW_SAMPLES);
     }
 
     #[test]
-    fn test_channel_backpressure() {
-        // 验证 channel 满时不会 panic，只是丢帧。
-        let (tx, _rx) = mpsc::channel(2); // 极小容量
+    fn test_buffer_accumulation() {
         let inner = Arc::new(Mutex::new(RecorderInner {
             is_recording: true,
             sample_count: 0,
             rms_accumulator: Vec::new(),
             rms_levels: VecDeque::new(),
-            audio_tx: Some(tx),
+            buffer: Vec::new(),
+            auto_stopped: false,
         }));
 
-        // 发送大量帧，不应 panic。
-        for _ in 0..100 {
+        // 发送多个批次的采样。
+        for _ in 0..10 {
             let samples = vec![0.1f32; 320];
             AudioRecorder::process_mono_f32(&samples, 16_000, &inner);
         }
 
-        // 只要不 panic 就是成功。
         let guard = inner.lock().unwrap();
-        assert!(guard.sample_count > 0);
+        assert_eq!(guard.buffer.len(), 3200);
+        assert_eq!(guard.sample_count, 3200);
     }
 }

@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
+use crate::audio::encoder::EncodedAudio;
 use crate::context::InputContext;
 use crate::error::LLMError;
 
@@ -45,17 +46,17 @@ impl FromStr for ProcessingMode {
     }
 }
 
-/// Input to the LLM processing step.
-#[derive(Debug, Clone)]
-pub struct LLMInput {
+/// 多模态处理输入 — 包含编码后的音频和上下文。
+#[derive(Debug)]
+pub struct ProcessingInput {
     /// Which processing pipeline to use.
     pub mode: ProcessingMode,
-    /// The raw transcript from STT.
-    pub raw_transcript: String,
+    /// 编码后的音频数据（WAV base64）。
+    pub audio: EncodedAudio,
+    /// 统一上下文模型。
+    pub context: InputContext,
     /// Target language code for Translate mode (e.g. "en", "ja").
     pub target_language: Option<String>,
-    /// 统一上下文模型
-    pub context: InputContext,
     /// User-defined dictionary terms to improve recognition.
     pub user_dictionary: Vec<String>,
 }
@@ -71,13 +72,13 @@ pub struct LLMResult {
 
 /// Trait that all LLM providers must implement.
 pub trait LLMProvider: Send + Sync {
-    /// Human-readable name of this provider (e.g. "OpenAI", "DashScope").
+    /// Human-readable name of this provider (e.g. "Multimodal", "DashScope").
     fn name(&self) -> &str;
 
     /// Process the input through the LLM and return the result.
     fn process<'a>(
         &'a self,
-        input: &'a LLMInput,
+        input: &'a ProcessingInput,
     ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>>;
 
     /// Verify that the provider's credentials and endpoint are reachable.

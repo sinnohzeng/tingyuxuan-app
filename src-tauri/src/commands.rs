@@ -5,12 +5,11 @@ use tracing::Instrument;
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::error::StructuredError;
-use tingyuxuan_core::history::TranscriptRecord;
-use tingyuxuan_core::llm::openai_compat::OpenAICompatProvider;
+use tingyuxuan_core::history::{AggregateStats, TranscriptRecord};
+use tingyuxuan_core::llm::multimodal::MultimodalProvider;
 use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
-use tingyuxuan_core::pipeline::{Pipeline, SessionConfig, SessionOrchestrator, SessionResult};
-use tingyuxuan_core::stt;
+use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest, SessionResult};
 
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
@@ -26,7 +25,10 @@ const MAX_INJECT_TEXT_LEN: usize = 50_000;
 const MAX_API_KEY_LEN: usize = 512;
 const MAX_SEARCH_QUERY_LEN: usize = 500;
 const MAX_DICT_WORD_LEN: usize = 100;
-const VALID_KEY_SERVICES: &[&str] = &["stt", "llm"];
+const VALID_KEY_SERVICES: &[&str] = &["llm"];
+
+/// 音频最短时长阈值（毫秒）：低于此值视为无有效语音。
+const MIN_AUDIO_DURATION_MS: u64 = 300;
 
 /// Reject strings that contain null bytes — these can cause undefined behaviour
 /// when passed to C libraries or shell commands.
@@ -56,13 +58,12 @@ fn check_max_len(s: &str, max: usize, field_name: &str) -> Result<(), String> {
 
 /// Save an API key to the OS keychain.
 ///
-/// `service` is "stt" or "llm".
+/// `service` is "llm".
 #[tauri::command]
 #[tracing::instrument(skip_all)]
 pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
-    // Validate service name against whitelist.
     if !VALID_KEY_SERVICES.contains(&service.as_str()) {
-        return Err(format!("无效的服务名称: {service}（允许: stt, llm）"));
+        return Err(format!("无效的服务名称: {service}（允许: llm）"));
     }
     check_max_len(&key, MAX_API_KEY_LEN, "API Key")?;
     check_no_null_bytes(&key, "API Key")?;
@@ -81,7 +82,7 @@ pub async fn save_api_key(service: String, key: String) -> Result<(), String> {
 #[tracing::instrument(skip_all)]
 pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
     if !VALID_KEY_SERVICES.contains(&service.as_str()) {
-        return Err(format!("无效的服务名称: {service}（允许: stt, llm）"));
+        return Err(format!("无效的服务名称: {service}（允许: llm）"));
     }
     let entry =
         keyring::Entry::new("tingyuxuan", &service).map_err(|e| format!("Keyring error: {e}"))?;
@@ -89,7 +90,6 @@ pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
         Ok(key) => Ok(Some(key)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(keyring::Error::PlatformFailure(_)) => {
-            // No keyring backend available (headless server).
             tracing::warn!("Keyring platform not available — falling back to config.api_key_ref");
             Ok(None)
         }
@@ -99,14 +99,12 @@ pub async fn get_api_key(service: String) -> Result<Option<String>, String> {
 
 /// Try to get an API key: first from keyring, then fall back to config's api_key_ref.
 fn resolve_api_key(service: &str, config_key_ref: &str) -> Option<String> {
-    // Try keyring first.
     if let Ok(entry) = keyring::Entry::new("tingyuxuan", service)
         && let Ok(key) = entry.get_password()
         && !key.is_empty()
     {
         return Some(key);
     }
-    // Fall back to config's api_key_ref (for dev/headless environments).
     if !config_key_ref.is_empty() && !config_key_ref.starts_with("@keyref:") {
         return Some(config_key_ref.to_string());
     }
@@ -123,40 +121,27 @@ pub fn build_pipeline(
     config: &AppConfig,
     event_tx: &tokio::sync::broadcast::Sender<PipelineEvent>,
 ) -> Option<Arc<Pipeline>> {
-    let stt_key = resolve_api_key("stt", &config.stt.api_key_ref).or_else(|| {
-        tracing::warn!("Pipeline build skipped: no STT API key");
-        None
-    })?;
     let llm_key = resolve_api_key("llm", &config.llm.api_key_ref).or_else(|| {
         tracing::warn!("Pipeline build skipped: no LLM API key");
         None
     })?;
 
-    let stt_provider = stt::create_streaming_stt_provider(&config.stt, stt_key)
-        .map_err(|e| tracing::error!(error = %e, "Failed to create STT provider"))
-        .ok()?;
-
-    let llm_base_url = config
+    let base_url = config
         .llm
         .base_url
         .clone()
         .unwrap_or_else(|| config.llm_base_url());
-    let llm_provider = Box::new(
-        OpenAICompatProvider::new(llm_key, llm_base_url, config.llm.model.clone())
+    let provider = Box::new(
+        MultimodalProvider::new(llm_key, base_url, config.llm.model.clone())
             .map_err(|e| tracing::error!(error = %e, "Failed to create LLM provider"))
             .ok()?,
     );
 
     tracing::info!(
-        stt_provider = ?config.stt.provider,
         llm_model = %config.llm.model,
         "Pipeline built successfully"
     );
-    Some(Arc::new(Pipeline::new(
-        stt_provider,
-        llm_provider,
-        event_tx.clone(),
-    )))
+    Some(Arc::new(Pipeline::new(provider, event_tx.clone())))
 }
 
 // ---------------------------------------------------------------------------
@@ -176,12 +161,12 @@ pub async fn start_recording(
     detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
     // Validate pipeline is available before starting recording.
-    let pipeline = pipeline_state
+    let _pipeline = pipeline_state
         .0
         .read()
         .await
         .clone()
-        .ok_or_else(|| "请先在设置中配置 STT 和 LLM 的 API Key".to_string())?;
+        .ok_or_else(|| "请先在设置中配置 LLM 的 API Key".to_string())?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let session_span = tracing::info_span!("session",
@@ -212,35 +197,8 @@ pub async fn start_recording(
     let user_dictionary = config.user_dictionary.clone();
     drop(config);
 
-    // 1. 启动录音 — 返回 PCM 音频帧 channel。
-    let audio_rx = recorder_state.0.start().await?;
-
-    // 2. 通过 SessionOrchestrator 建立流式 STT 连接。
-    let session_config = SessionConfig {
-        mode: processing_mode.clone(),
-        context: context.clone(),
-        target_language,
-        user_dictionary,
-        stt_options: tingyuxuan_core::stt::STTOptions {
-            language: None,
-            prompt: None,
-        },
-    };
-
-    let managed_session = match SessionOrchestrator::start(&pipeline, session_config).await {
-        Ok(session) => session,
-        Err(e) => {
-            // STT 连接失败，停止录音。
-            let _ = recorder_state.0.stop().await;
-            return Err(format!("流式 STT 连接失败: {e}"));
-        }
-    };
-
-    // 3. 启动桥接 task：音频帧从 recorder → STT session。
-    let stt_audio_tx = managed_session.audio_sender();
-    tokio::spawn(async move {
-        bridge_audio(audio_rx, stt_audio_tx).await;
-    });
+    // 1. 启动录音（PCM 采样累积在 recorder 内部的 buffer 中）。
+    recorder_state.0.start().await?;
 
     // Serialize context for history storage.
     let context_json = serde_json::to_string(&context).ok();
@@ -254,7 +212,13 @@ pub async fn start_recording(
     // Store active session.
     let session = ActiveSession {
         session_id: session_id.clone(),
-        managed_session: Some(managed_session),
+        config: ProcessingRequest {
+            mode: processing_mode,
+            context: context.clone(),
+            target_language,
+            user_dictionary,
+        },
+        cancel_token: tokio_util::sync::CancellationToken::new(),
         started_at: std::time::Instant::now(),
         session_span: session_span.clone(),
     };
@@ -287,24 +251,6 @@ pub async fn start_recording(
     Ok(session_id)
 }
 
-/// 桥接 task：从 recorder 的 audio_rx 转发到 STT session 的 audio_tx。
-/// recorder stop 时 audio_rx 关闭，此 task 自动结束，同时 drop audio_tx 通知 STT。
-async fn bridge_audio(
-    mut audio_rx: tokio::sync::mpsc::Receiver<tingyuxuan_core::stt::streaming::AudioChunk>,
-    audio_tx: tokio::sync::mpsc::Sender<tingyuxuan_core::stt::streaming::AudioChunk>,
-) {
-    while let Some(chunk) = audio_rx.recv().await {
-        // 背压：try_send 失败时丢帧，STT 容忍。
-        if audio_tx.try_send(chunk).is_err() {
-            // Channel full or closed — STT 端可能已关闭。
-            if audio_tx.is_closed() {
-                break;
-            }
-        }
-    }
-    // audio_rx 关闭 → drop audio_tx → STT 收到结束信号。
-}
-
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn stop_recording(
@@ -316,8 +262,8 @@ pub async fn stop_recording(
     _config_state: State<'_, ConfigState>,
     injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
-    // 1. 停止录音 — drop audio_tx，桥接 task 结束，STT 开始产生最终结果。
-    recorder_state.0.stop().await?;
+    // 1. 停止录音 → 获取累积的 AudioBuffer。
+    let buffer = recorder_state.0.stop().await?;
 
     // 2. Take the active session.
     let session = session_state
@@ -336,7 +282,19 @@ pub async fn stop_recording(
         .0
         .send(PipelineEvent::RecordingStopped { duration_ms });
 
-    // Get pipeline reference.
+    // 3. 检查音频是否过短。
+    if buffer.duration_ms() < MIN_AUDIO_DURATION_MS {
+        tracing::warn!(duration_ms = buffer.duration_ms(), "Audio too short");
+        let _ = event_bus.0.send(PipelineEvent::Error {
+            message: "录音时间过短，请重试".to_string(),
+            user_action: tingyuxuan_core::error::UserAction::Retry,
+        });
+        let h = history_state.0.lock().await;
+        let _ = h.update_status(&session_id, "failed");
+        return Ok("empty".to_string());
+    }
+
+    // 4. Get pipeline reference.
     let pipeline = pipeline_state
         .0
         .read()
@@ -344,26 +302,23 @@ pub async fn stop_recording(
         .clone()
         .ok_or_else(|| "Pipeline not configured — check API keys in Settings".to_string())?;
 
-    // 取出 ManagedSession。
-    let managed_session = session
-        .managed_session
-        .ok_or_else(|| "No streaming session available".to_string())?;
-
     // Remember the mode for deciding whether to auto-inject.
-    let is_ai_assistant = matches!(managed_session.config().mode, ProcessingMode::AiAssistant);
+    let is_ai_assistant = matches!(session.config.mode, ProcessingMode::AiAssistant);
+    let request = session.config;
+    let cancel_token = session.cancel_token;
 
     let injector = injector_state.0.clone();
     let event_tx = event_bus.0.clone();
     let history = history_state.0.clone();
 
-    // 3. 异步处理：SessionOrchestrator::finish 处理完整流程。
+    // 5. 异步处理：编码音频 → 调用多模态 LLM → 注入文本。
     tokio::spawn(
         async move {
-            match SessionOrchestrator::finish(&pipeline, managed_session).await {
-                SessionResult::Success {
-                    raw_text,
-                    processed_text,
-                } => {
+            match pipeline
+                .process_audio(buffer, &request, cancel_token)
+                .await
+            {
+                Ok(processed_text) => {
                     if is_ai_assistant {
                         tracing::info!("AI assistant result ready (no auto-inject)");
                     } else {
@@ -374,33 +329,22 @@ pub async fn stop_recording(
                     }
 
                     let h = history.lock().await;
-                    let _ = h.update_processed(&session_id, &raw_text, &processed_text);
+                    let _ = h.update_processed(&session_id, "", &processed_text);
                 }
-                SessionResult::EmptyTranscript => {
-                    tracing::warn!("STT returned empty transcript");
-                    let _ = event_tx.send(PipelineEvent::Error {
-                        message: "未检测到语音内容，请重试".to_string(),
-                        user_action: tingyuxuan_core::error::UserAction::Retry,
-                        raw_text: None,
-                    });
+                Err(tingyuxuan_core::error::PipelineError::Cancelled) => {
+                    tracing::info!("Session was cancelled");
                     let h = history.lock().await;
-                    let _ = h.update_status(&session_id, "failed");
+                    let _ = h.update_status(&session_id, "cancelled");
                 }
-                SessionResult::Failed { error, raw_text } => {
+                Err(error) => {
                     tracing::error!("Pipeline processing failed: {error}");
                     let se = StructuredError::from(&error);
                     let _ = event_tx.send(PipelineEvent::Error {
                         message: se.message,
                         user_action: se.user_action,
-                        raw_text,
                     });
                     let h = history.lock().await;
                     let _ = h.update_status(&session_id, "failed");
-                }
-                SessionResult::Cancelled => {
-                    tracing::info!("Session was cancelled");
-                    let h = history.lock().await;
-                    let _ = h.update_status(&session_id, "cancelled");
                 }
             }
         }
@@ -416,18 +360,13 @@ pub async fn cancel_recording(
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
 ) -> Result<(), String> {
-    // Cancel the recording via the actor.
-    // Ignore errors — recording may have already been stopped.
+    // Cancel the recording via the actor (discards buffer).
     let _ = recorder_state.0.cancel().await;
 
     let session = session_state.0.lock().await.take();
     if let Some(session) = session {
-        // Cancel any in-progress STT/LLM operations.
-        if let Some(managed) = &session.managed_session {
-            managed.cancel();
-        }
-        // Drop managed session → closes WebSocket.
-        drop(session.managed_session);
+        // Cancel any in-progress LLM operations.
+        session.cancel_token.cancel();
 
         // Update history.
         let history = history_state.0.lock().await;
@@ -435,97 +374,6 @@ pub async fn cancel_recording(
 
         tracing::info!("Recording cancelled: session={}", session.session_id);
     }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Retry (重试 LLM 处理，使用历史记录中保存的 transcript)
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-#[tracing::instrument(skip_all, fields(id = %id))]
-pub async fn retry_transcription(
-    id: String,
-    pipeline_state: State<'_, PipelineState>,
-    history_state: State<'_, HistoryState>,
-    event_bus: State<'_, EventBus>,
-) -> Result<(), String> {
-    // 1. Look up the history record.
-    let record = {
-        let h = history_state.0.lock().await;
-        h.get_by_id(&id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("Record {} not found", id))?
-    };
-
-    // 2. 需要有原始转写文本才能重试 LLM。
-    let raw_text = record
-        .raw_text
-        .ok_or_else(|| "此记录没有原始转写文本，无法重试".to_string())?;
-
-    if raw_text.trim().is_empty() {
-        return Err("原始转写文本为空，无法重试".to_string());
-    }
-
-    // 3. Get pipeline.
-    let pipeline = pipeline_state
-        .0
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| "Pipeline 未配置，请先设置 API Key".to_string())?;
-
-    // 4. Build processing request.
-    let context = record
-        .context_json
-        .as_deref()
-        .and_then(|json| serde_json::from_str(json).ok())
-        .unwrap_or_default();
-    let mode = record
-        .mode
-        .parse::<ProcessingMode>()
-        .unwrap_or(ProcessingMode::Dictate);
-    let request = tingyuxuan_core::pipeline::ProcessingRequest {
-        mode,
-        context,
-        target_language: None,
-        user_dictionary: Vec::new(),
-    };
-
-    // 5. Emit processing started event.
-    let _ = event_bus.0.send(PipelineEvent::ProcessingStarted);
-
-    // 6. Update status to "processing".
-    {
-        let h = history_state.0.lock().await;
-        let _ = h.update_status(&id, "processing");
-    }
-
-    // 7. Spawn async processing.
-    let history = history_state.0.clone();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let tx = event_bus.0.clone();
-    tokio::spawn(async move {
-        match pipeline
-            .process_transcript(raw_text, &request, cancel)
-            .await
-        {
-            Ok(processed_text) => {
-                let _ = tx.send(PipelineEvent::ProcessingComplete {
-                    processed_text: processed_text.clone(),
-                });
-                let h = history.lock().await;
-                let _ = h.update_result(&id, &processed_text);
-                tracing::info!("Retry succeeded for session {}", id);
-            }
-            Err(e) => {
-                tracing::error!("Retry failed for {}: {}", id, e);
-                let h = history.lock().await;
-                let _ = h.update_status(&id, "failed");
-            }
-        }
-    });
-
     Ok(())
 }
 
@@ -553,19 +401,6 @@ pub async fn inject_text(
 
 #[tauri::command]
 #[tracing::instrument(skip_all)]
-pub async fn test_stt_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
-    let config = config_state.0.read().await;
-    let api_key = resolve_api_key("stt", &config.stt.api_key_ref)
-        .ok_or_else(|| "No STT API key configured".to_string())?;
-
-    let provider =
-        stt::create_streaming_stt_provider(&config.stt, api_key).map_err(|e| e.to_string())?;
-
-    provider.test_connection().await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[tracing::instrument(skip_all)]
 pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
     let config = config_state.0.read().await;
     let api_key = resolve_api_key("llm", &config.llm.api_key_ref)
@@ -576,7 +411,7 @@ pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result
         .base_url
         .clone()
         .unwrap_or_else(|| config.llm_base_url());
-    let provider = OpenAICompatProvider::new(api_key, base_url, config.llm.model.clone())
+    let provider = MultimodalProvider::new(api_key, base_url, config.llm.model.clone())
         .map_err(|e| e.to_string())?;
 
     provider.test_connection().await.map_err(|e| e.to_string())
@@ -712,7 +547,7 @@ pub async fn add_dictionary_word(
 
     let mut config = config_state.0.write().await;
     if config.user_dictionary.contains(&trimmed) {
-        return Ok(()); // Already exists, no-op.
+        return Ok(());
     }
     config.user_dictionary.push(trimmed);
     config.save().map_err(|e| e.to_string())?;
@@ -732,20 +567,35 @@ pub async fn remove_dictionary_word(
 }
 
 // ---------------------------------------------------------------------------
+// Dashboard Stats
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+#[tracing::instrument(skip_all)]
+pub async fn get_dashboard_stats(
+    history_state: State<'_, HistoryState>,
+    config_state: State<'_, ConfigState>,
+) -> Result<AggregateStats, String> {
+    let dictionary = config_state.0.read().await.user_dictionary.clone();
+    let history = history_state.0.lock().await;
+    let mut stats = history.get_stats().map_err(|e| e.to_string())?;
+    stats.dictionary_utilization = history
+        .get_dictionary_utilization(&dictionary)
+        .map_err(|e| e.to_string())?;
+    Ok(stats)
+}
+
+// ---------------------------------------------------------------------------
 // Platform Permissions (macOS)
 // ---------------------------------------------------------------------------
 
 /// 检查 macOS 平台权限状态。
-///
-/// macOS 需要 Accessibility + Input Monitoring 权限，返回四值状态。
-/// 其他平台始终返回 "granted"。
 #[tauri::command]
 #[tracing::instrument(skip_all)]
 pub async fn check_platform_permissions() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let status = crate::platform::macos::check_permissions();
-        // 序列化为 snake_case 字符串（与 serde rename_all 一致）
         serde_json::to_string(&status)
             .map(|s| s.trim_matches('"').to_string())
             .map_err(|e| format!("Serialization error: {e}"))
@@ -758,10 +608,6 @@ pub async fn check_platform_permissions() -> Result<String, String> {
 }
 
 /// 打开系统权限设置页面。
-///
-/// `target` 参数可选：
-/// - `"input_monitoring"` → 输入监控面板
-/// - 其他值或 None → 辅助功能面板（默认）
 #[tauri::command]
 #[tracing::instrument(skip_all)]
 pub async fn open_permission_settings(target: Option<String>) -> Result<(), String> {
@@ -769,6 +615,6 @@ pub async fn open_permission_settings(target: Option<String>) -> Result<(), Stri
     {
         crate::platform::macos::open_permission_settings_for(target.as_deref());
     }
-    let _ = target; // 非 macOS 平台忽略参数
+    let _ = target;
     Ok(())
 }

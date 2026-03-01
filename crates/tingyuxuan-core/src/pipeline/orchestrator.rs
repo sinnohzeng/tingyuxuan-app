@@ -2,15 +2,14 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::audio::encoder::{AudioBuffer, AudioFormat};
 use crate::context::InputContext;
 use crate::error::PipelineError;
-use crate::llm::provider::{LLMInput, LLMProvider, ProcessingMode};
+use crate::llm::provider::{LLMProvider, ProcessingInput, ProcessingMode};
 use crate::pipeline::events::PipelineEvent;
 use crate::pipeline::retry::{RetryPolicy, execute_with_retry};
-use crate::stt::provider::STTOptions;
-use crate::stt::streaming::{StreamingSTTProvider, StreamingSession};
 
-/// 处理请求 — 不再包含 audio_path（流式架构，音频通过 channel 传递）。
+/// 处理请求 — 描述一次多模态处理的参数。
 #[derive(Debug, Clone)]
 pub struct ProcessingRequest {
     pub mode: ProcessingMode,
@@ -19,17 +18,8 @@ pub struct ProcessingRequest {
     pub user_dictionary: Vec<String>,
 }
 
-// ProcessingRequest 使用 struct literal 构造，不提供便捷方法。
-// 所有字段均为 pub，调用者直接构造。
-
-/// 管线编排器 — 协调流式 STT 和 LLM 处理。
-///
-/// 新架构：
-/// - 录音开始时调用 `start_streaming()` 建立 STT WebSocket 连接
-/// - 录音期间音频帧通过 channel 实时发送到 STT
-/// - 录音结束后调用 `process_transcript()` 用 LLM 处理转写文本
+/// 管线编排器 — 单步多模态处理（音频编码 → LLM → 文本）。
 pub struct Pipeline {
-    stt: Box<dyn StreamingSTTProvider>,
     llm: Box<dyn LLMProvider>,
     event_tx: broadcast::Sender<PipelineEvent>,
     retry_policy: RetryPolicy,
@@ -38,12 +28,10 @@ pub struct Pipeline {
 impl Pipeline {
     /// 创建新的管线。
     pub fn new(
-        stt: Box<dyn StreamingSTTProvider>,
         llm: Box<dyn LLMProvider>,
         event_tx: broadcast::Sender<PipelineEvent>,
     ) -> Self {
         Self {
-            stt,
             llm,
             event_tx,
             retry_policy: RetryPolicy::default(),
@@ -62,44 +50,16 @@ impl Pipeline {
         }
     }
 
-    /// 开始流式 STT 会话。
-    ///
-    /// 返回 [StreamingSession]，调用者通过 `audio_tx` 发送 PCM 帧，
-    /// 通过 `event_rx` 接收转写事件。
-    pub async fn start_streaming(
+    /// 单步处理：编码音频 → 调用多模态 LLM → 返回最终文字。
+    pub async fn process_audio(
         &self,
-        options: &STTOptions,
-    ) -> Result<StreamingSession, PipelineError> {
-        async {
-            self.emit(PipelineEvent::TranscriptionStarted);
-
-            let session = self.stt.start_stream(options).await.map_err(|e| {
-                self.emit(PipelineEvent::Error {
-                    message: e.to_string(),
-                    user_action: e.user_action(),
-                    raw_text: None,
-                });
-                PipelineError::Stt(e)
-            })?;
-
-            Ok(session)
-        }
-        .instrument(tracing::info_span!("stt_connect"))
-        .await
-    }
-
-    /// 用 LLM 处理转写文本。
-    ///
-    /// 在流式 STT 完成后调用，将原始转写文本通过 LLM 润色/翻译/AI 处理。
-    pub async fn process_transcript(
-        &self,
-        raw_text: String,
+        buffer: AudioBuffer,
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
-        let span = tracing::info_span!("llm_process",
+        let span = tracing::info_span!("pipeline",
             mode = %request.mode,
-            raw_len = raw_text.len(),
+            audio_samples = buffer.len(),
         );
 
         async {
@@ -107,32 +67,41 @@ impl Pipeline {
                 return Err(PipelineError::Cancelled);
             }
 
-            self.emit(PipelineEvent::TranscriptionComplete {
-                raw_text: raw_text.clone(),
-            });
+            // 1. 编码音频。
+            let encoded = {
+                let _encode_span = tracing::info_span!("audio_encode").entered();
+                let result = buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?;
+                tracing::info!(
+                    duration_ms = result.duration_ms,
+                    encoded_bytes = result.data.len(),
+                    format = result.format_str(),
+                    "Audio encoded"
+                );
+                result
+            };
 
-            self.emit(PipelineEvent::ProcessingStarted);
-
-            let llm_input = LLMInput {
+            // 2. 构建处理输入。
+            let input = ProcessingInput {
                 mode: request.mode.clone(),
-                raw_transcript: raw_text.clone(),
-                target_language: request.target_language.clone(),
+                audio: encoded,
                 context: request.context.clone(),
+                target_language: request.target_language.clone(),
                 user_dictionary: request.user_dictionary.clone(),
             };
 
+            // 3. 发送处理开始事件。
+            self.emit(PipelineEvent::ProcessingStarted);
+
+            // 4. 调用 LLM（带重试和取消支持）。
             let llm_result = {
                 let llm = &self.llm;
-                let input = &llm_input;
+                let llm_input = &input;
                 tokio::select! {
                     result = execute_with_retry(&self.retry_policy, &cancel_token, || async {
-                        llm.process(input).await
+                        llm.process(llm_input).await
                     }) => result,
                     _ = cancel_token.cancelled() => {
                         return Err(PipelineError::Cancelled);
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
-                        Err(crate::error::LLMError::Timeout)
                     }
                 }
             };
@@ -143,12 +112,12 @@ impl Pipeline {
                     self.emit(PipelineEvent::Error {
                         message: llm_err.to_string(),
                         user_action: llm_err.user_action(),
-                        raw_text: Some(raw_text),
                     });
                     return Err(PipelineError::Llm(llm_err));
                 }
             };
 
+            // 5. 发送处理完成事件。
             let processed = llm_result.processed_text;
             self.emit(PipelineEvent::ProcessingComplete {
                 processed_text: processed.clone(),
@@ -165,80 +134,10 @@ impl Pipeline {
 mod tests {
     use super::*;
     use crate::context::InputContext;
-    use crate::error::{LLMError, STTError};
+    use crate::error::LLMError;
     use crate::llm::provider::LLMResult;
-    use crate::stt::streaming::{AudioChunk, STREAMING_CHANNEL_CAPACITY, StreamingSTTEvent};
     use std::future::Future;
     use std::pin::Pin;
-    use tokio::sync::mpsc;
-
-    // -- Mock Streaming STT ---------------------------------------------------
-
-    struct MockStreamingSTT;
-
-    impl StreamingSTTProvider for MockStreamingSTT {
-        fn name(&self) -> &str {
-            "mock-streaming-stt"
-        }
-        fn start_stream<'a>(
-            &'a self,
-            _options: &'a STTOptions,
-        ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
-            Box::pin(async {
-                let (audio_tx, mut audio_rx) = mpsc::channel(STREAMING_CHANNEL_CAPACITY);
-                let (event_tx, event_rx) = mpsc::channel(64);
-
-                // 模拟：接收音频帧后返回最终结果
-                tokio::spawn(async move {
-                    let mut received = false;
-                    while let Some(_chunk) = audio_rx.recv().await {
-                        if !received {
-                            let _ = event_tx
-                                .send(StreamingSTTEvent::Partial {
-                                    text: "你好".to_string(),
-                                    sentence_index: 0,
-                                })
-                                .await;
-                            received = true;
-                        }
-                    }
-                    // audio_tx 关闭后发送最终结果
-                    let _ = event_tx
-                        .send(StreamingSTTEvent::Final {
-                            text: "你好世界".to_string(),
-                            sentence_index: 0,
-                        })
-                        .await;
-                });
-
-                Ok(StreamingSession { audio_tx, event_rx })
-            })
-        }
-        fn test_connection(
-            &self,
-        ) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
-            Box::pin(async { Ok(true) })
-        }
-    }
-
-    struct FailingStreamingSTT;
-
-    impl StreamingSTTProvider for FailingStreamingSTT {
-        fn name(&self) -> &str {
-            "failing-streaming-stt"
-        }
-        fn start_stream<'a>(
-            &'a self,
-            _options: &'a STTOptions,
-        ) -> Pin<Box<dyn Future<Output = Result<StreamingSession, STTError>> + Send + 'a>> {
-            Box::pin(async { Err(STTError::AuthFailed) })
-        }
-        fn test_connection(
-            &self,
-        ) -> Pin<Box<dyn Future<Output = Result<bool, STTError>> + Send + '_>> {
-            Box::pin(async { Ok(false) })
-        }
-    }
 
     // -- Mock LLM provider --------------------------------------------------
 
@@ -252,7 +151,7 @@ mod tests {
         }
         fn process<'a>(
             &'a self,
-            _input: &'a LLMInput,
+            _input: &'a ProcessingInput,
         ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
             Box::pin(async move {
                 Ok(LLMResult {
@@ -276,7 +175,7 @@ mod tests {
         }
         fn process<'a>(
             &'a self,
-            _input: &'a LLMInput,
+            _input: &'a ProcessingInput,
         ) -> Pin<Box<dyn Future<Output = Result<LLMResult, LLMError>> + Send + 'a>> {
             Box::pin(async { Err(LLMError::Timeout) })
         }
@@ -290,63 +189,39 @@ mod tests {
     // -- Helper -------------------------------------------------------------
 
     fn make_pipeline(
-        stt: Box<dyn StreamingSTTProvider>,
         llm: Box<dyn LLMProvider>,
     ) -> (Pipeline, broadcast::Receiver<PipelineEvent>) {
         let (tx, rx) = broadcast::channel(32);
-        let pipeline = Pipeline::new(stt, llm, tx);
+        let pipeline = Pipeline::new(llm, tx);
         (pipeline, rx)
+    }
+
+    fn sample_buffer() -> AudioBuffer {
+        let mut buf = AudioBuffer::new(16_000, 1);
+        buf.push_samples(&vec![0i16; 320]);
+        buf
+    }
+
+    fn sample_request() -> ProcessingRequest {
+        ProcessingRequest {
+            mode: ProcessingMode::Dictate,
+            context: InputContext::default(),
+            target_language: None,
+            user_dictionary: Vec::new(),
+        }
     }
 
     // -- Tests --------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_streaming_happy_path() {
-        let (pipeline, _rx) = make_pipeline(
-            Box::new(MockStreamingSTT),
-            Box::new(MockLLM {
-                response: "你好，世界。".to_string(),
-            }),
-        );
+    async fn test_process_audio_success() {
+        let (pipeline, _rx) = make_pipeline(Box::new(MockLLM {
+            response: "你好，世界。".to_string(),
+        }));
 
-        // 1. 开始流式会话
-        let options = STTOptions {
-            language: None,
-            prompt: None,
-        };
-        let session = pipeline.start_streaming(&options).await.unwrap();
-
-        // 2. 发送一帧音频
-        session
-            .audio_tx
-            .send(AudioChunk {
-                samples: vec![0i16; 320],
-            })
-            .await
-            .unwrap();
-
-        // 3. 关闭音频流（模拟录音停止）
-        drop(session.audio_tx);
-
-        // 4. 收集最终结果
-        let mut event_rx = session.event_rx;
-        let mut final_text = String::new();
-        while let Some(event) = event_rx.recv().await {
-            if let StreamingSTTEvent::Final { text, .. } = event {
-                final_text = text;
-            }
-        }
-
-        // 5. LLM 处理
-        let request = ProcessingRequest {
-            mode: ProcessingMode::Dictate,
-            context: InputContext::default(),
-            target_language: None,
-            user_dictionary: Vec::new(),
-        };
         let token = CancellationToken::new();
         let result = pipeline
-            .process_transcript(final_text, &request, token)
+            .process_audio(sample_buffer(), &sample_request(), token)
             .await;
 
         assert!(result.is_ok());
@@ -354,22 +229,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_streaming_stt_failure() {
-        let (pipeline, mut rx) = make_pipeline(
-            Box::new(FailingStreamingSTT),
-            Box::new(MockLLM {
-                response: "unused".to_string(),
-            }),
-        );
+    async fn test_process_audio_llm_failure() {
+        let (pipeline, mut rx) = make_pipeline(Box::new(FailingLLM));
 
-        let options = STTOptions {
-            language: None,
-            prompt: None,
-        };
-        let result = pipeline.start_streaming(&options).await;
+        let token = CancellationToken::new();
+        let result = pipeline
+            .process_audio(sample_buffer(), &sample_request(), token)
+            .await;
+
         assert!(result.is_err());
 
-        // 应该有 Error 事件
+        // 应该有 Error 事件。
         let mut found_error = false;
         while let Ok(event) = rx.try_recv() {
             if matches!(event, PipelineEvent::Error { .. }) {
@@ -380,65 +250,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_failure_includes_raw_text() {
-        let (pipeline, mut rx) = make_pipeline(Box::new(MockStreamingSTT), Box::new(FailingLLM));
+    async fn test_cancellation_before_processing() {
+        let (pipeline, _rx) = make_pipeline(Box::new(MockLLM {
+            response: "unused".to_string(),
+        }));
 
-        let request = ProcessingRequest {
-            mode: ProcessingMode::Dictate,
-            context: InputContext::default(),
-            target_language: None,
-            user_dictionary: Vec::new(),
-        };
-        let token = CancellationToken::new();
-        let result = pipeline
-            .process_transcript("raw transcript".to_string(), &request, token)
-            .await;
-
-        assert!(result.is_err());
-
-        // Error 事件应包含 raw_text
-        let mut found_error = false;
-        while let Ok(event) = rx.try_recv() {
-            if let PipelineEvent::Error { raw_text, .. } = event {
-                assert_eq!(raw_text, Some("raw transcript".to_string()));
-                found_error = true;
-            }
-        }
-        assert!(found_error);
-    }
-
-    #[tokio::test]
-    async fn test_cancellation_before_llm() {
-        let (pipeline, _rx) = make_pipeline(
-            Box::new(MockStreamingSTT),
-            Box::new(MockLLM {
-                response: "unused".to_string(),
-            }),
-        );
-
-        let request = ProcessingRequest {
-            mode: ProcessingMode::Dictate,
-            context: InputContext::default(),
-            target_language: None,
-            user_dictionary: Vec::new(),
-        };
         let token = CancellationToken::new();
         token.cancel();
 
         let result = pipeline
-            .process_transcript("hello".to_string(), &request, token)
+            .process_audio(sample_buffer(), &sample_request(), token)
             .await;
         assert!(matches!(result, Err(PipelineError::Cancelled)));
     }
 
     #[tokio::test]
-    async fn test_processing_request_with_translate() {
-        let (pipeline, _rx) = make_pipeline(
-            Box::new(MockStreamingSTT),
-            Box::new(MockLLM {
-                response: "Hello, world.".to_string(),
-            }),
-        );
+    async fn test_processing_events_emitted() {
+        let (pipeline, mut rx) = make_pipeline(Box::new(MockLLM {
+            response: "result".to_string(),
+        }));
+
+        let token = CancellationToken::new();
+        let _ = pipeline
+            .process_audio(sample_buffer(), &sample_request(), token)
+            .await;
+
+        let mut found_started = false;
+        let mut found_complete = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                PipelineEvent::ProcessingStarted => found_started = true,
+                PipelineEvent::ProcessingComplete { .. } => found_complete = true,
+                _ => {}
+            }
+        }
+        assert!(found_started);
+        assert!(found_complete);
+    }
+
+    #[tokio::test]
+    async fn test_translate_mode() {
+        let (pipeline, _rx) = make_pipeline(Box::new(MockLLM {
+            response: "Hello, world.".to_string(),
+        }));
 
         let request = ProcessingRequest {
             mode: ProcessingMode::Translate,
@@ -447,9 +301,7 @@ mod tests {
             user_dictionary: Vec::new(),
         };
         let token = CancellationToken::new();
-        let result = pipeline
-            .process_transcript("你好世界".to_string(), &request, token)
-            .await;
+        let result = pipeline.process_audio(sample_buffer(), &request, token).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Hello, world.");
@@ -459,7 +311,6 @@ mod tests {
     fn test_subscribe() {
         let (tx, _) = broadcast::channel(16);
         let pipeline = Pipeline::new(
-            Box::new(MockStreamingSTT),
             Box::new(MockLLM {
                 response: String::new(),
             }),

@@ -1,5 +1,5 @@
-pub mod openai_compat;
+pub mod multimodal;
 pub mod prompts;
 pub mod provider;
 
-pub use provider::{LLMInput, LLMProvider, LLMResult, ProcessingMode};
+pub use provider::{LLMProvider, LLMResult, ProcessingInput, ProcessingMode};

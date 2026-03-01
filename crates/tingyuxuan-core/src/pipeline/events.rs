@@ -15,11 +15,7 @@ pub enum PipelineEvent {
     VolumeUpdate { levels: Vec<f32> },
     /// Recording stopped; includes the total duration.
     RecordingStopped { duration_ms: u64 },
-    /// STT transcription has been submitted.
-    TranscriptionStarted,
-    /// STT transcription completed successfully.
-    TranscriptionComplete { raw_text: String },
-    /// LLM processing has started.
+    /// LLM processing has started (audio encoding + API call).
     ProcessingStarted,
     /// LLM processing completed successfully.
     ProcessingComplete { processed_text: String },
@@ -27,9 +23,6 @@ pub enum PipelineEvent {
     Error {
         message: String,
         user_action: UserAction,
-        /// When LLM fails but STT succeeded, this carries the raw transcript
-        /// so the user can choose to insert it directly.
-        raw_text: Option<String>,
     },
     /// Network reachability changed.
     NetworkStatusChanged { online: bool },

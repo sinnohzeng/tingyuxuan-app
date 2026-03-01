@@ -19,6 +19,20 @@ pub struct TranscriptRecord {
     pub error_message: Option<String>,
 }
 
+/// 聚合统计数据（仪表盘用）。
+///
+/// 通过单次 SQL 聚合查询计算，前端 statsStore 提供 60 秒 TTL 缓存。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AggregateStats {
+    pub total_sessions: u64,
+    pub successful_sessions: u64,
+    pub total_duration_ms: u64,
+    pub total_char_count: u64,
+    pub dictionary_utilization: f64,
+    pub average_speed_cpm: f64,
+    pub estimated_time_saved_ms: u64,
+}
+
 pub struct HistoryManager {
     conn: Connection,
 }
@@ -293,6 +307,74 @@ impl HistoryManager {
         let deleted = self.conn.execute("DELETE FROM transcripts", [])?;
         Ok(deleted as u64)
     }
+
+    /// 聚合统计：总会话数、成功数、时长、字数 + 派生指标。
+    ///
+    /// 单次 SQL 查询，全列 COALESCE 防止空表 NULL。
+    pub fn get_stats(&self) -> Result<AggregateStats, HistoryError> {
+        let mut stats = self.conn.query_row(
+            "SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'success' THEN duration_ms ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status = 'success' THEN LENGTH(processed_text) ELSE 0 END), 0)
+             FROM transcripts",
+            [],
+            |row| {
+                // SQLite 内部使用 i64，转换为 u64
+                Ok(AggregateStats {
+                    total_sessions: row.get::<_, i64>(0)? as u64,
+                    successful_sessions: row.get::<_, i64>(1)? as u64,
+                    total_duration_ms: row.get::<_, i64>(2)? as u64,
+                    total_char_count: row.get::<_, i64>(3)? as u64,
+                    ..Default::default()
+                })
+            },
+        )?;
+
+        // 派生指标：平均速度（字/分钟）
+        if stats.total_duration_ms > 0 {
+            stats.average_speed_cpm =
+                (stats.total_char_count as f64) / (stats.total_duration_ms as f64 / 60_000.0);
+        }
+        // 估算节省时间：手打 40 字/分钟 vs 语音输入实际耗时
+        let manual_time_ms = (stats.total_char_count as f64 / 40.0) * 60_000.0;
+        stats.estimated_time_saved_ms =
+            (manual_time_ms - stats.total_duration_ms as f64).max(0.0) as u64;
+
+        Ok(stats)
+    }
+
+    /// 计算词典利用率：成功记录中包含词典词汇的比例。
+    pub fn get_dictionary_utilization(&self, dictionary: &[String]) -> Result<f64, HistoryError> {
+        if dictionary.is_empty() {
+            return Ok(0.0);
+        }
+        let total: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM transcripts WHERE status = 'success'",
+            [],
+            |r| r.get(0),
+        )?;
+        if total == 0 {
+            return Ok(0.0);
+        }
+
+        let conditions: Vec<String> = (1..=dictionary.len())
+            .map(|i| format!("processed_text LIKE ?{i}"))
+            .collect();
+        let sql = format!(
+            "SELECT COUNT(*) FROM transcripts WHERE status = 'success' AND ({conditions})",
+            conditions = conditions.join(" OR ")
+        );
+        let patterns: Vec<String> = dictionary.iter().map(|w| format!("%{w}%")).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = patterns
+            .iter()
+            .map(|p| p as &dyn rusqlite::types::ToSql)
+            .collect();
+        let matched: i64 = self.conn.query_row(&sql, params.as_slice(), |r| r.get(0))?;
+
+        Ok(matched as f64 / total as f64)
+    }
 }
 
 #[cfg(test)]
@@ -443,5 +525,111 @@ mod tests {
         let deleted = mgr.clear_all().unwrap();
         assert_eq!(deleted, 3);
         assert_eq!(mgr.count().unwrap(), 0);
+    }
+
+    // --- AggregateStats tests ---
+
+    #[test]
+    fn test_stats_empty_database() {
+        let mgr = HistoryManager::new_in_memory().unwrap();
+        let stats = mgr.get_stats().unwrap();
+        assert_eq!(stats.total_sessions, 0);
+        assert_eq!(stats.successful_sessions, 0);
+        assert_eq!(stats.total_duration_ms, 0);
+        assert_eq!(stats.total_char_count, 0);
+        assert_eq!(stats.average_speed_cpm, 0.0);
+        assert_eq!(stats.estimated_time_saved_ms, 0);
+    }
+
+    #[test]
+    fn test_stats_counts_correctly() {
+        let mgr = HistoryManager::new_in_memory().unwrap();
+        mgr.save_transcript(&make_record("s1", "success")).unwrap();
+        mgr.save_transcript(&make_record("s2", "success")).unwrap();
+        mgr.save_transcript(&make_record("s3", "failed")).unwrap();
+        mgr.save_transcript(&make_record("s4", "cancelled")).unwrap();
+
+        let stats = mgr.get_stats().unwrap();
+        assert_eq!(stats.total_sessions, 4);
+        assert_eq!(stats.successful_sessions, 2);
+    }
+
+    #[test]
+    fn test_stats_duration_and_chars() {
+        let mgr = HistoryManager::new_in_memory().unwrap();
+
+        let mut r1 = make_record("d1", "success");
+        r1.duration_ms = Some(5000);
+        r1.processed_text = Some("Hello".to_string()); // 5 chars
+        mgr.save_transcript(&r1).unwrap();
+
+        let mut r2 = make_record("d2", "success");
+        r2.duration_ms = Some(10000);
+        r2.processed_text = Some("World!".to_string()); // 6 chars
+        mgr.save_transcript(&r2).unwrap();
+
+        // Failed record should not contribute to duration/chars
+        let mut r3 = make_record("d3", "failed");
+        r3.duration_ms = Some(99999);
+        r3.processed_text = Some("Should not count".to_string());
+        mgr.save_transcript(&r3).unwrap();
+
+        let stats = mgr.get_stats().unwrap();
+        assert_eq!(stats.total_duration_ms, 15000); // 5000 + 10000
+        assert_eq!(stats.total_char_count, 11); // 5 + 6
+    }
+
+    #[test]
+    fn test_stats_speed_and_time_saved() {
+        let mgr = HistoryManager::new_in_memory().unwrap();
+
+        let mut r = make_record("sp1", "success");
+        r.duration_ms = Some(60_000); // 1 minute
+        r.processed_text = Some("A".repeat(120)); // 120 chars
+        mgr.save_transcript(&r).unwrap();
+
+        let stats = mgr.get_stats().unwrap();
+        // 120 chars / 1 min = 120 CPM
+        assert!((stats.average_speed_cpm - 120.0).abs() < 0.01);
+        // Manual: 120 / 40 * 60000 = 180_000 ms
+        // Saved: 180_000 - 60_000 = 120_000 ms
+        assert_eq!(stats.estimated_time_saved_ms, 120_000);
+    }
+
+    #[test]
+    fn test_dictionary_utilization() {
+        let mgr = HistoryManager::new_in_memory().unwrap();
+
+        let mut r1 = make_record("du1", "success");
+        r1.processed_text = Some("今天的Rust编程很顺利".to_string());
+        mgr.save_transcript(&r1).unwrap();
+
+        let mut r2 = make_record("du2", "success");
+        r2.processed_text = Some("Python也不错".to_string());
+        mgr.save_transcript(&r2).unwrap();
+
+        let mut r3 = make_record("du3", "success");
+        r3.processed_text = Some("普通的一天".to_string());
+        mgr.save_transcript(&r3).unwrap();
+
+        // Failed records should not count
+        let mut r4 = make_record("du4", "failed");
+        r4.processed_text = Some("Rust失败了".to_string());
+        mgr.save_transcript(&r4).unwrap();
+
+        let dict = vec!["Rust".to_string()];
+        let util = mgr.get_dictionary_utilization(&dict).unwrap();
+        // 1 out of 3 success records contains "Rust"
+        assert!((util - 1.0 / 3.0).abs() < 0.01);
+
+        // Empty dictionary
+        let util = mgr.get_dictionary_utilization(&[]).unwrap();
+        assert_eq!(util, 0.0);
+
+        // Multiple words
+        let dict = vec!["Rust".to_string(), "Python".to_string()];
+        let util = mgr.get_dictionary_utilization(&dict).unwrap();
+        // 2 out of 3 success records contain Rust or Python
+        assert!((util - 2.0 / 3.0).abs() < 0.01);
     }
 }

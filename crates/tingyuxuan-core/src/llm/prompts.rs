@@ -1,6 +1,5 @@
 use crate::context::{InputContext, InputFieldType};
-use crate::error::LLMError;
-use crate::llm::provider::{LLMInput, ProcessingMode};
+use crate::llm::provider::ProcessingMode;
 
 /// UTF-8 安全截断：在 `max_bytes` 以内找到最近的 char boundary。
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
@@ -14,9 +13,6 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-const MAX_TRANSCRIPT_LEN: usize = 50_000;
-const MAX_SELECTED_TEXT_LEN: usize = 100_000;
-
 /// 语气枚举，替代旧的字符串匹配
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -27,34 +23,18 @@ pub enum Tone {
     Neutral,    // 默认：未知应用，纯文本输出
 }
 
-/// Validate that LLM input sizes are within acceptable bounds.
-pub fn validate_input(input: &LLMInput) -> Result<(), LLMError> {
-    if input.raw_transcript.len() > MAX_TRANSCRIPT_LEN {
-        return Err(LLMError::InputTooLarge(format!(
-            "Transcript too large: {} bytes (max {})",
-            input.raw_transcript.len(),
-            MAX_TRANSCRIPT_LEN
-        )));
-    }
-    if let Some(ref text) = input.context.selected_text
-        && text.len() > MAX_SELECTED_TEXT_LEN
-    {
-        return Err(LLMError::InputTooLarge(format!(
-            "Selected text too large: {} bytes (max {})",
-            text.len(),
-            MAX_SELECTED_TEXT_LEN
-        )));
-    }
-    Ok(())
-}
-
-/// Build the (system_message, user_message) pair for the given processing mode.
-pub fn build_prompt(mode: &ProcessingMode, input: &LLMInput) -> (String, String) {
+/// Build the system prompt for multimodal audio input processing.
+pub fn build_multimodal_system_prompt(
+    mode: &ProcessingMode,
+    context: &InputContext,
+    dictionary: &[String],
+    target_language: Option<&str>,
+) -> String {
     match mode {
-        ProcessingMode::Dictate => build_dictate_prompt(input),
-        ProcessingMode::Translate => build_translate_prompt(input),
-        ProcessingMode::AiAssistant => build_ai_assistant_prompt(input),
-        ProcessingMode::Edit => build_edit_prompt(input),
+        ProcessingMode::Dictate => build_dictate_system(context, dictionary),
+        ProcessingMode::Translate => build_translate_system(target_language),
+        ProcessingMode::AiAssistant => build_ai_assistant_system(context),
+        ProcessingMode::Edit => build_edit_system(context),
     }
 }
 
@@ -62,13 +42,13 @@ pub fn build_prompt(mode: &ProcessingMode, input: &LLMInput) -> (String, String)
 // Dictate mode
 // ---------------------------------------------------------------------------
 
-fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
-    let dictionary_hint = format_dictionary_hint(&input.user_dictionary);
-    let context_block = format_rich_context(&input.context);
-    let tone_hint = format_tone_hint(&input.context);
+fn build_dictate_system(context: &InputContext, dictionary: &[String]) -> String {
+    let dictionary_hint = format_dictionary_hint(dictionary);
+    let context_block = format_rich_context(context);
+    let tone_hint = format_tone_hint(context);
 
-    let system = format!(
-        "你是一个智能语音输入助手。请将以下语音转写的原始文本整理为清晰、规范的书面文字。\n\n\
+    format!(
+        "你是一个智能语音输入助手。请听取用户的语音录音，将其转换为清晰、规范的书面文字。\n\n\
          规则：\n\
          1. 去除所有填充词（嗯、啊、那个、um、uh、like、you know 等）\n\
          2. 如果用户在说话中途改口或修正，只保留最终意图的表达\n\
@@ -77,74 +57,61 @@ fn build_dictate_prompt(input: &LLMInput) -> (String, String) {
          5. 保持用户原本的表达意图和核心内容，不要添加额外信息\n\
          6. 如果用户说了「第一」「第二」或「首先」「其次」等顺序词，自动生成有序列表\n\
          7. 如果用户使用并列结构（如「有以下几点」），自动生成无序列表\n\
+         8. 只输出整理后的文本，不要附加解释或说明\n\
          {dictionary_hint}\n\
          {context_block}\n\
          {tone_hint}"
-    );
-
-    let user = input.raw_transcript.clone();
-    (system, user)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Translate mode
 // ---------------------------------------------------------------------------
 
-fn build_translate_prompt(input: &LLMInput) -> (String, String) {
-    let target = input.target_language.as_deref().unwrap_or("en");
+fn build_translate_system(target_language: Option<&str>) -> String {
+    let target = target_language.unwrap_or("en");
 
-    let system = format!(
-        "你是一个专业翻译助手。请将用户的语音转写文本翻译为{target}。\n\n\
+    format!(
+        "你是一个专业翻译助手。请听取用户的语音录音，将其翻译为{target}。\n\n\
          规则：\n\
-         1. 先整理原始语音转写（去除填充词、重复），再翻译\n\
+         1. 先理解语音内容（忽略填充词、重复），再翻译\n\
          2. 保持原文的语气和风格\n\
          3. 只输出翻译后的文本，不要附加解释"
-    );
-
-    let user = input.raw_transcript.clone();
-    (system, user)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // AI Assistant mode
 // ---------------------------------------------------------------------------
 
-fn build_ai_assistant_prompt(input: &LLMInput) -> (String, String) {
-    let context_block = format_rich_context(&input.context);
+fn build_ai_assistant_system(context: &InputContext) -> String {
+    let context_block = format_rich_context(context);
 
-    let system = format!(
-        "你是一个智能助手。用户通过语音输入了一个请求，请理解其意图并给出简洁、实用的回复。\n\n\
+    format!(
+        "你是一个智能助手。用户通过语音录音发送了一个请求，请理解其意图并给出简洁、实用的回复。\n\n\
          规则：\n\
-         1. 先理解用户的核心意图（语音转写可能包含填充词和重复）\n\
+         1. 直接理解用户语音的核心意图（录音可能包含填充词和重复）\n\
          2. 给出直接、可操作的回答\n\
          3. 回复应简洁，适合直接插入到用户正在编辑的文档中\n\
          {context_block}"
-    );
-
-    let user = input.raw_transcript.clone();
-    (system, user)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Edit mode
 // ---------------------------------------------------------------------------
 
-fn build_edit_prompt(input: &LLMInput) -> (String, String) {
-    let selected = input.context.selected_text.as_deref().unwrap_or("");
+fn build_edit_system(context: &InputContext) -> String {
+    let selected = context.selected_text.as_deref().unwrap_or("");
 
-    let system = "你是一个文本编辑助手。用户选中了一段文本，并通过语音给出了修改指令。\n\n\
+    format!(
+        "你是一个文本编辑助手。用户选中了一段文本，并通过语音录音给出了修改指令。\n\n\
          规则：\n\
-         1. 理解用户的语音修改指令（可能包含填充词）\n\
+         1. 理解用户语音中的修改指令（可能包含填充词）\n\
          2. 对选中的文本执行相应修改\n\
-         3. 只输出修改后的文本，不要附加解释"
-        .to_string();
-
-    let user = format!(
-        "选中的文本：\n{selected}\n\n语音指令：\n{}",
-        input.raw_transcript
-    );
-
-    (system, user)
+         3. 只输出修改后的文本，不要附加解释\n\n\
+         选中的文本：\n{selected}"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +148,6 @@ pub fn format_rich_context(ctx: &InputContext) -> String {
     if let Some(ref surrounding) = ctx.surrounding_text
         && !surrounding.is_empty()
     {
-        // 截取上下文，避免 prompt 过长
         let truncated = if surrounding.len() > 500 {
             format!("{}...", truncate_utf8(surrounding, 500))
         } else {
@@ -302,7 +268,6 @@ fn format_tone_hint(ctx: &InputContext) -> String {
 // ---------------------------------------------------------------------------
 
 /// Format the user dictionary hint for inclusion in the system prompt.
-/// Returns an empty string when the dictionary is empty.
 pub fn format_dictionary_hint(words: &[String]) -> String {
     if words.is_empty() {
         return String::new();
@@ -324,37 +289,31 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn make_input(mode: ProcessingMode, transcript: &str) -> LLMInput {
-        LLMInput {
-            mode,
-            raw_transcript: transcript.to_string(),
-            target_language: None,
-            context: InputContext::default(),
-            user_dictionary: Vec::new(),
-        }
-    }
 
     #[test]
     fn test_dictate_prompt_basic() {
-        let input = make_input(ProcessingMode::Dictate, "嗯 那个 今天天气不错");
-        let (system, user) = build_prompt(&input.mode, &input);
-
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Dictate,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("智能语音输入助手"));
+        assert!(system.contains("语音录音"));
         assert!(system.contains("去除所有填充词"));
-        assert_eq!(user, "嗯 那个 今天天气不错");
     }
 
     #[test]
     fn test_dictate_prompt_with_dictionary() {
-        let input = LLMInput {
-            mode: ProcessingMode::Dictate,
-            raw_transcript: "test".to_string(),
-            target_language: None,
-            context: InputContext::default(),
-            user_dictionary: vec!["TingYuXuan".to_string(), "Rust".to_string()],
-        };
-        let (system, _user) = build_prompt(&input.mode, &input);
-
+        let ctx = InputContext::default();
+        let dict = vec!["TingYuXuan".to_string(), "Rust".to_string()];
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Dictate,
+            &ctx,
+            &dict,
+            None,
+        );
         assert!(system.contains("TingYuXuan"));
         assert!(system.contains("Rust"));
         assert!(system.contains("用户自定义词典"));
@@ -362,83 +321,86 @@ mod tests {
 
     #[test]
     fn test_dictate_prompt_with_rich_context() {
-        let input = LLMInput {
-            mode: ProcessingMode::Dictate,
-            raw_transcript: "test".to_string(),
-            target_language: None,
-            context: InputContext {
-                app_name: Some("Visual Studio Code".to_string()),
-                window_title: Some("main.rs - tingyuxuan".to_string()),
-                ..Default::default()
-            },
-            user_dictionary: Vec::new(),
+        let ctx = InputContext {
+            app_name: Some("Visual Studio Code".to_string()),
+            window_title: Some("main.rs - tingyuxuan".to_string()),
+            ..Default::default()
         };
-        let (system, _user) = build_prompt(&input.mode, &input);
-
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Dictate,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("Visual Studio Code"));
         assert!(system.contains("main.rs - tingyuxuan"));
-        assert!(system.contains("当前应用"));
-        assert!(system.contains("窗口标题"));
     }
 
     #[test]
     fn test_translate_prompt() {
-        let input = LLMInput {
-            mode: ProcessingMode::Translate,
-            raw_transcript: "你好世界".to_string(),
-            target_language: Some("en".to_string()),
-            context: InputContext::default(),
-            user_dictionary: Vec::new(),
-        };
-        let (system, user) = build_prompt(&input.mode, &input);
-
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Translate,
+            &ctx,
+            &[],
+            Some("en"),
+        );
         assert!(system.contains("翻译"));
         assert!(system.contains("en"));
-        assert_eq!(user, "你好世界");
     }
 
     #[test]
     fn test_translate_prompt_default_language() {
-        let input = make_input(ProcessingMode::Translate, "hello");
-        let (system, _user) = build_prompt(&input.mode, &input);
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Translate,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("en"));
     }
 
     #[test]
     fn test_ai_assistant_prompt() {
-        let input = make_input(ProcessingMode::AiAssistant, "帮我写一个函数");
-        let (system, user) = build_prompt(&input.mode, &input);
-
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::AiAssistant,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("智能助手"));
-        assert_eq!(user, "帮我写一个函数");
+        assert!(system.contains("语音录音"));
     }
 
     #[test]
     fn test_edit_prompt() {
-        let input = LLMInput {
-            mode: ProcessingMode::Edit,
-            raw_transcript: "把这段改成英文".to_string(),
-            target_language: None,
-            context: InputContext {
-                selected_text: Some("你好世界".to_string()),
-                ..Default::default()
-            },
-            user_dictionary: Vec::new(),
+        let ctx = InputContext {
+            selected_text: Some("你好世界".to_string()),
+            ..Default::default()
         };
-        let (system, user) = build_prompt(&input.mode, &input);
-
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Edit,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("文本编辑助手"));
-        assert!(user.contains("你好世界"));
-        assert!(user.contains("把这段改成英文"));
+        assert!(system.contains("你好世界"));
+        assert!(system.contains("语音录音"));
     }
 
     #[test]
     fn test_edit_prompt_no_selected_text() {
-        let input = make_input(ProcessingMode::Edit, "修改一下");
-        let (_system, user) = build_prompt(&input.mode, &input);
-
-        assert!(user.contains("选中的文本"));
-        assert!(user.contains("修改一下"));
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Edit,
+            &ctx,
+            &[],
+            None,
+        );
+        assert!(system.contains("选中的文本"));
     }
 
     #[test]
@@ -568,7 +530,6 @@ mod tests {
 
     #[test]
     fn test_detect_tone_input_field_type_overrides_app() {
-        // input_field_type 优先于 app_name
         let ctx = InputContext {
             app_name: Some("Slack".to_string()),
             input_field_type: Some(InputFieldType::Email),
@@ -579,47 +540,29 @@ mod tests {
 
     #[test]
     fn test_dictate_prompt_with_list_rules() {
-        let input = make_input(ProcessingMode::Dictate, "test");
-        let (system, _) = build_prompt(&input.mode, &input);
+        let ctx = InputContext::default();
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Dictate,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("有序列表"));
         assert!(system.contains("无序列表"));
     }
 
     #[test]
     fn test_dictate_prompt_with_tone() {
-        let input = LLMInput {
-            mode: ProcessingMode::Dictate,
-            raw_transcript: "test".to_string(),
-            target_language: None,
-            context: InputContext {
-                app_name: Some("Slack - general".to_string()),
-                ..Default::default()
-            },
-            user_dictionary: Vec::new(),
+        let ctx = InputContext {
+            app_name: Some("Slack - general".to_string()),
+            ..Default::default()
         };
-        let (system, _) = build_prompt(&input.mode, &input);
+        let system = build_multimodal_system_prompt(
+            &ProcessingMode::Dictate,
+            &ctx,
+            &[],
+            None,
+        );
         assert!(system.contains("口语化"));
-    }
-
-    #[test]
-    fn test_validate_input_ok() {
-        let input = make_input(ProcessingMode::Dictate, "normal input");
-        assert!(validate_input(&input).is_ok());
-    }
-
-    #[test]
-    fn test_validate_input_transcript_too_large() {
-        let large = "x".repeat(50_001);
-        let input = make_input(ProcessingMode::Dictate, &large);
-        let err = validate_input(&input).unwrap_err();
-        assert!(matches!(err, LLMError::InputTooLarge(_)));
-    }
-
-    #[test]
-    fn test_validate_input_selected_text_too_large() {
-        let mut input = make_input(ProcessingMode::Edit, "short transcript");
-        input.context.selected_text = Some("y".repeat(100_001));
-        let err = validate_input(&input).unwrap_err();
-        assert!(matches!(err, LLMError::InputTooLarge(_)));
     }
 }

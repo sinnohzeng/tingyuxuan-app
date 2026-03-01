@@ -95,10 +95,10 @@ pub fn run() {
             {
                 let config = states.config.0.blocking_read();
                 let check_url = config
-                    .stt
+                    .llm
                     .base_url
                     .clone()
-                    .unwrap_or_else(|| "https://api.openai.com".to_string());
+                    .unwrap_or_else(|| config.llm_base_url());
                 drop(config);
 
                 let monitor = tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
@@ -135,13 +135,11 @@ pub fn run() {
             commands::cancel_recording,
             commands::get_config,
             commands::save_config,
-            commands::test_stt_connection,
             commands::test_llm_connection,
             commands::get_recent_history,
             commands::save_api_key,
             commands::get_api_key,
             commands::inject_text,
-            commands::retry_transcription,
             commands::get_dictionary,
             commands::add_dictionary_word,
             commands::remove_dictionary_word,
@@ -151,6 +149,7 @@ pub fn run() {
             commands::delete_history_batch,
             commands::clear_history,
             commands::is_first_launch,
+            commands::get_dashboard_stats,
             commands::check_platform_permissions,
             commands::open_permission_settings,
         ])

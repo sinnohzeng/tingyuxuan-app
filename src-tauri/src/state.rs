@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio_util::sync::CancellationToken;
 
 use tingyuxuan_core::config::AppConfig;
 use tingyuxuan_core::history::HistoryManager;
-use tingyuxuan_core::pipeline::ManagedSession;
 use tingyuxuan_core::pipeline::Pipeline;
+use tingyuxuan_core::pipeline::ProcessingRequest;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 use crate::platform::{PlatformDetector, PlatformInjector};
@@ -58,15 +59,15 @@ pub struct FnKeyMonitorState(pub Option<crate::platform::macos::FnKeyMonitor>);
 pub struct RAltKeyMonitorState(pub Option<crate::platform::windows::RAltKeyMonitor>);
 
 /// Tracks the in-progress recording/processing session.
-///
-/// ManagedSession 封装了 STT 会话、取消令牌和配置。
-/// Tauri 层只需维护 session_id 和 started_at 等桥接信息。
 pub struct ActiveSession {
     pub session_id: String,
-    pub managed_session: Option<ManagedSession>,
+    /// 录音参数（模式、上下文、目标语言、词典）。
+    pub config: ProcessingRequest,
+    /// 取消令牌 — 用于取消录音或处理中的 LLM 调用。
+    pub cancel_token: CancellationToken,
     /// 录音开始时间（用于计算 duration_ms）。
     pub started_at: std::time::Instant,
-    /// 贯穿 session 生命周期的 tracing span（从 start_recording 传播到 stop_recording 的 async finish task）。
+    /// 贯穿 session 生命周期的 tracing span。
     pub session_span: tracing::Span,
 }
 
