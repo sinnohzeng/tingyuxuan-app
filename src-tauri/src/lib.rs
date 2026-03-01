@@ -164,9 +164,10 @@ pub fn run() {
 /// on Wayland where global shortcuts may not work), we log a warning but do NOT
 /// abort startup.
 ///
-/// macOS: Fn 键通过 CGEventTap 监听（在 platform::macos 模块中），
-/// 其余快捷键通过 tauri-plugin-global-shortcut。
-/// Linux/Windows: 全部通过 tauri-plugin-global-shortcut。
+/// 三平台分治：
+/// - macOS: Fn 键通过 CGEventTap 监听，其余通过 tauri-plugin-global-shortcut
+/// - Windows: RAlt/Shift+RAlt 通过 WH_KEYBOARD_LL 钩子，其余通过 tauri-plugin-global-shortcut
+/// - Linux: 全部通过 tauri-plugin-global-shortcut（未来用 evdev 替换）
 fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
@@ -184,20 +185,33 @@ fn register_global_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error:
         Ok(())
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        register_standard_shortcuts(app)
+        match platform::windows::register_platform_hotkeys(app) {
+            Ok(monitor) => {
+                // 保持 RAltKeyMonitor 存活（存入 managed state）
+                app.manage(state::RAltKeyMonitorState(Some(monitor)));
+            }
+            Err(e) => {
+                tracing::warn!("Failed to register Windows platform hotkeys: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        register_linux_shortcuts(app)
     }
 }
 
-/// Linux/Windows 标准快捷键注册。
-#[cfg(not(target_os = "macos"))]
-fn register_standard_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+/// Linux 标准快捷键注册（全部通过 tauri-plugin-global-shortcut）。
+#[cfg(target_os = "linux")]
+fn register_linux_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_global_shortcut::{
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };
 
-    #[cfg(target_os = "linux")]
     {
         let display = platform::linux::detect_display_server();
         if display == platform::linux::DisplayServer::Wayland {
@@ -210,8 +224,6 @@ fn register_standard_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::erro
 
     // Default shortcuts: RAlt (dictate), Shift+RAlt (translate), Alt+Space (AI assistant).
     // NOTE: RAlt-alone may conflict with RAlt+key combos on some platforms.
-    // Alt+Space is a Windows system shortcut (window menu); if intercepted by the OS,
-    // users can remap via Settings → Shortcuts.
     let shortcuts = [
         (Shortcut::new(None, Code::AltRight), "dictate"),
         (

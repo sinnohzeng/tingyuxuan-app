@@ -51,6 +51,12 @@ pub struct MonitorState(pub tokio_util::sync::CancellationToken);
 #[allow(dead_code)]
 pub struct FnKeyMonitorState(pub Option<crate::platform::macos::FnKeyMonitor>);
 
+/// Windows RAlt 键监听器状态 — 持有 RAltKeyMonitor 使其在应用生命周期内存活。
+/// 在非 Windows 平台上不使用。
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub struct RAltKeyMonitorState(pub Option<crate::platform::windows::RAltKeyMonitor>);
+
 /// Tracks the in-progress recording/processing session.
 ///
 /// ManagedSession 封装了 STT 会话、取消令牌和配置。

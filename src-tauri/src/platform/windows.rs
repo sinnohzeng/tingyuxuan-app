@@ -407,6 +407,261 @@ fn copy_selection_via_clipboard() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// RAltKeyMonitor — 右 Alt 键全局监听（WH_KEYBOARD_LL 低级键盘钩子）
+// ---------------------------------------------------------------------------
+
+/// AltGr 检测：VK_LCONTROL 与 VK_RMENU 时间戳差值阈值（毫秒）。
+/// Windows 在按下 AltGr 时先发送幻影 VK_LCONTROL，间隔通常 ≤ 1ms。
+#[cfg(target_os = "windows")]
+const ALTGR_TIMING_THRESHOLD_MS: u32 = 1;
+
+/// 右 Alt 键监听器 — 独立线程运行 WH_KEYBOARD_LL 钩子。
+///
+/// 与 macOS `FnKeyMonitor`（CGEventTap + CFRunLoop）对称：
+/// 独立 OS 线程持有低级键盘钩子，通过 AppHandle emit 事件到主线程。
+///
+/// 设计要点：
+/// - 使用 `thread_local!` 存储钩子上下文（钩子回调保证在安装线程上执行）
+/// - AltGr 过滤：检测 VK_LCONTROL 幻影事件，避免误触发
+/// - 按键状态跟踪：仅触发下降沿，防止长按重复
+/// - 始终调用 `CallNextHookEx`，不吞键，不破坏钩子链
+#[cfg(target_os = "windows")]
+pub struct RAltKeyMonitor {
+    thread_id: u32,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+/// 钩子回调的线程局部上下文。
+#[cfg(target_os = "windows")]
+struct HookContext {
+    app_handle: tauri::AppHandle,
+    ralt_down: bool,
+    last_lctrl_time: u32,
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static HOOK_CTX: std::cell::RefCell<Option<HookContext>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "windows")]
+impl RAltKeyMonitor {
+    /// 启动 RAlt 键监听。
+    ///
+    /// RAlt 按下时 emit("shortcut-action", "dictate")；
+    /// Shift+RAlt 按下时 emit("shortcut-action", "translate")。
+    pub fn start(app: tauri::AppHandle) -> Result<Self, super::PlatformError> {
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<Result<u32, super::PlatformError>>(1);
+
+        let thread = std::thread::Builder::new()
+            .name("ralt-key-monitor".into())
+            .spawn(move || {
+                Self::run_message_loop(app, &tx);
+            })
+            .map_err(|e| {
+                super::PlatformError::InjectionFailed(format!(
+                    "Failed to spawn RAlt key monitor thread: {e}"
+                ))
+            })?;
+
+        let thread_id = rx.recv().map_err(|_| {
+            super::PlatformError::InjectionFailed(
+                "RAlt key monitor thread failed to initialize (channel closed)".into(),
+            )
+        })??;
+
+        Ok(Self {
+            thread_id,
+            _thread: thread,
+        })
+    }
+
+    /// 在当前线程内安装 WH_KEYBOARD_LL 钩子并运行消息循环。
+    fn run_message_loop(
+        app: tauri::AppHandle,
+        tx: &std::sync::mpsc::SyncSender<Result<u32, super::PlatformError>>,
+    ) {
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+        };
+
+        // 设置 thread_local 上下文
+        HOOK_CTX.with(|ctx| {
+            *ctx.borrow_mut() = Some(HookContext {
+                app_handle: app,
+                ralt_down: false,
+                last_lctrl_time: 0,
+            });
+        });
+
+        // 安装低级键盘钩子
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) };
+        let hook = match hook {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = tx.send(Err(super::PlatformError::InjectionFailed(format!(
+                    "SetWindowsHookExW failed: {e}"
+                ))));
+                return;
+            }
+        };
+
+        let thread_id = unsafe { GetCurrentThreadId() };
+        tracing::info!(thread_id, "RAltKeyMonitor started on dedicated thread");
+        let _ = tx.send(Ok(thread_id));
+
+        // 消息循环 — GetMessageW 驱动钩子回调，收到 WM_QUIT 时退出
+        let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+        loop {
+            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+            if !ret.as_bool() {
+                break; // WM_QUIT 或错误
+            }
+        }
+
+        // 清理
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
+        HOOK_CTX.with(|ctx| {
+            *ctx.borrow_mut() = None;
+        });
+        tracing::info!("RAltKeyMonitor stopped");
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for RAltKeyMonitor {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+        tracing::info!("RAltKeyMonitor dropping, posting WM_QUIT");
+        let _ = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// WH_KEYBOARD_LL 钩子回调。
+///
+/// 关键约束：必须在 ~300ms 内返回，否则 Windows 会静默移除钩子。
+/// 仅做轻量判断 + emit（异步事件，不阻塞），然后调用 CallNextHookEx。
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn hook_proc(
+    n_code: i32,
+    w_param: windows::Win32::Foundation::WPARAM,
+    l_param: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_LCONTROL, VK_RMENU, VK_SHIFT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP,
+        WM_SYSKEYUP,
+    };
+
+    if n_code as u32 == HC_ACTION {
+        // SAFETY: l_param 指向系统分配的 KBDLLHOOKSTRUCT，在回调期间有效。
+        let kb = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
+        let vk = kb.vkCode;
+        let msg = w_param.0 as u32;
+
+        HOOK_CTX.with(|cell| {
+            if let Some(ctx) = cell.borrow_mut().as_mut() {
+                // 1. 记录 VK_LCONTROL 按下时间（用于 AltGr 检测）
+                if vk == VK_LCONTROL.0 as u32
+                    && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+                {
+                    ctx.last_lctrl_time = kb.time;
+                }
+
+                // 2. 处理 VK_RMENU
+                if vk == VK_RMENU.0 as u32 {
+                    if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+                        // AltGr 过滤：幻影 LCtrl 与 RMenu 时间差 ≤ 阈值 → AltGr，忽略
+                        if kb.time.wrapping_sub(ctx.last_lctrl_time)
+                            <= ALTGR_TIMING_THRESHOLD_MS
+                        {
+                            // AltGr 输入，不触发
+                        } else if !ctx.ralt_down {
+                            // 独立 RAlt 下降沿
+                            ctx.ralt_down = true;
+
+                            // SAFETY: GetKeyState 读取按键状态，无前置条件。
+                            let shift_held = unsafe {
+                                (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0
+                            };
+                            let action = if shift_held { "translate" } else { "dictate" };
+
+                            tracing::debug!(action, "RAlt key triggered");
+                            let _ = tauri::Emitter::emit(
+                                &ctx.app_handle,
+                                "shortcut-action",
+                                action,
+                            );
+                        }
+                        // else: 长按重复的 KeyDown，忽略
+                    } else if msg == WM_KEYUP || msg == WM_SYSKEYUP {
+                        ctx.ralt_down = false;
+                    }
+                }
+            }
+        });
+    }
+
+    // 始终传递给下一个钩子 — 不吞键
+    // SAFETY: CallNextHookEx 转发钩子事件，参数来自系统回调。
+    unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+}
+
+/// 注册 Windows 平台热键。
+///
+/// - RAlt（听写）、Shift+RAlt（翻译）: 通过 WH_KEYBOARD_LL 钩子实现
+/// - Alt+Space（AI 助手）、Escape（取消）: 通过 tauri-plugin-global-shortcut
+#[cfg(target_os = "windows")]
+pub fn register_platform_hotkeys(
+    app: &tauri::App,
+) -> Result<RAltKeyMonitor, super::PlatformError> {
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+    // 1. 启动 RAlt 键监听器（处理 RAlt 和 Shift+RAlt）
+    let monitor = RAltKeyMonitor::start(app.handle().clone())?;
+
+    // 2. 注册其余快捷键（使用 global-shortcut 插件）
+    let shortcuts = [
+        (
+            Shortcut::new(Some(Modifiers::ALT), Code::Space),
+            "ai_assistant",
+        ),
+        (Shortcut::new(None, Code::Escape), "cancel"),
+    ];
+
+    let handle = app.handle().clone();
+    for (shortcut, action) in shortcuts {
+        let h = handle.clone();
+        let action_name = action.to_string();
+
+        if let Err(e) = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _sc, event| {
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                let h2 = h.clone();
+                let mode = action_name.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::handle_shortcut_action(&h2, &mode).await;
+                });
+            })
+        {
+            tracing::warn!(
+                "Failed to register shortcut for '{}': {}. Another app may have claimed it.",
+                action,
+                e
+            );
+        }
+    }
+
+    Ok(monitor)
+}
+
+// ---------------------------------------------------------------------------
 // Tests (platform-independent unit tests + cfg(windows) integration tests)
 // ---------------------------------------------------------------------------
 
@@ -469,6 +724,28 @@ mod tests {
     #[cfg(target_os = "windows")]
     mod windows_tests {
         use super::*;
+        use windows::Win32::UI::Input::KeyboardAndMouse::VK_RMENU;
+
+        #[test]
+        fn test_vk_rmenu_value() {
+            // VK_RMENU (右 Alt) = 0xA5，确认常量值正确
+            assert_eq!(VK_RMENU.0, 0xA5);
+        }
+
+        #[test]
+        fn test_altgr_timing_threshold() {
+            // AltGr 检测阈值应为 1ms
+            assert_eq!(ALTGR_TIMING_THRESHOLD_MS, 1);
+
+            // 模拟 AltGr 场景：LCtrl 和 RMenu 时间差 ≤ 1ms → 应被过滤
+            let lctrl_time: u32 = 1000;
+            let rmenu_time: u32 = 1001;
+            assert!(rmenu_time.wrapping_sub(lctrl_time) <= ALTGR_TIMING_THRESHOLD_MS);
+
+            // 模拟独立 RAlt：时间差 > 1ms → 不应被过滤
+            let rmenu_time_independent: u32 = 1050;
+            assert!(rmenu_time_independent.wrapping_sub(lctrl_time) > ALTGR_TIMING_THRESHOLD_MS);
+        }
 
         #[test]
         fn test_make_unicode_input_struct() {

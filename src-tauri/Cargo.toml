@@ -1,6 +1,6 @@
 [package]
 name = "tingyuxuan-app"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
 license = "LicenseRef-Proprietary"
@@ -33,6 +33,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Threading",
     "Win32_Foundation",
 ] }
 
