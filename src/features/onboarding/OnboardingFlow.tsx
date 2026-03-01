@@ -52,7 +52,7 @@ const STEPS: Step[] = ["intro", "setup", "permissions"];
 export default function OnboardingFlow() {
   const theme = useSystemTheme();
   const navigate = useNavigate();
-  const { config, updateConfig, saveConfig } = useConfig();
+  const { saveConfig } = useConfig();
   const [step, setStep] = useState<Step>("intro");
 
   const stepIndex = STEPS.indexOf(step);
@@ -79,17 +79,15 @@ export default function OnboardingFlow() {
           />
         );
       case "setup":
-        return config ? (
+        return (
           <SetupWizard
-            config={config}
-            updateConfig={updateConfig}
             onComplete={() => setStep("permissions")}
           />
-        ) : null;
+        );
       case "permissions":
         return <PermissionGuide onComplete={markComplete} />;
     }
-  }, [step, config, updateConfig, handleSkip, markComplete]);
+  }, [step, handleSkip, markComplete]);
 
   return (
     <FluentProvider theme={theme} className="flex flex-col h-screen">

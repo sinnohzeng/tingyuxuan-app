@@ -1,10 +1,10 @@
 /**
- * 可复用的 API Key 输入组件。
+ * API Key 输入组件 — 掩码显示 + 编辑模式。
  *
- * 内部使用 useApiKey hook 管理状态，对外仅需指定 service。
+ * 已配置：显示掩码 + "已配置" Badge + "更新" 按钮
+ * 未配置/编辑中：显示输入框 + "保存" 按钮
  */
-import { Input, Button, Badge, Field } from "@fluentui/react-components";
-import { EyeRegular, EyeOffRegular } from "@fluentui/react-icons";
+import { Input, Button, Badge, Field, Spinner } from "@fluentui/react-components";
 import { useApiKey } from "../hooks/useApiKey";
 
 interface ApiKeyFieldProps {
@@ -13,33 +13,51 @@ interface ApiKeyFieldProps {
 }
 
 export default function ApiKeyField({ service, label }: ApiKeyFieldProps) {
-  const { keyValue, showKey, keyStatus, setKeyValue, toggleShowKey, saveKey } = useApiKey(service);
+  const {
+    keyValue, maskedKey, keyStatus, isEditing,
+    setKeyValue, startEditing, cancelEditing, saveKey,
+  } = useApiKey(service);
 
-  const placeholder = keyStatus === "已配置" ? "输入新 Key 以更新" : `输入 ${label} API Key`;
+  if (keyStatus === "loading") {
+    return (
+      <Field label={label}>
+        <Spinner size="tiny" label="加载中..." />
+      </Field>
+    );
+  }
 
+  // 已配置 + 未编辑：显示掩码
+  if (keyStatus === "configured" && !isEditing) {
+    return (
+      <Field label={label}>
+        <div className="flex items-center gap-2">
+          <code className="flex-1 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded text-sm text-gray-500">
+            {maskedKey}
+          </code>
+          <Badge appearance="filled" color="success">已配置</Badge>
+          <Button appearance="secondary" size="small" onClick={startEditing}>
+            更新
+          </Button>
+        </div>
+      </Field>
+    );
+  }
+
+  // 未配置 or 编辑中：显示输入框
   return (
     <Field
       label={label}
-      hint={keyStatus ? `状态: ${keyStatus}` : undefined}
-      validationState={keyStatus === "保存失败" ? "error" : "none"}
+      validationState={keyStatus === "save_failed" ? "error" : "none"}
+      validationMessage={keyStatus === "save_failed" ? "保存失败，请重试" : undefined}
     >
       <div className="flex gap-2">
         <Input
           className="flex-1"
-          type={showKey ? "text" : "password"}
+          type="password"
           value={keyValue}
           onChange={(_, data) => setKeyValue(data.value)}
-          placeholder={placeholder}
+          placeholder={isEditing ? "输入新 Key 以更新" : `输入 ${label}`}
           onKeyDown={(e) => { if (e.key === "Enter") saveKey(); }}
-          contentAfter={
-            <Button
-              appearance="transparent"
-              size="small"
-              icon={showKey ? <EyeOffRegular /> : <EyeRegular />}
-              onClick={toggleShowKey}
-              aria-label={showKey ? "隐藏" : "显示"}
-            />
-          }
         />
         <Button
           appearance="primary"
@@ -48,8 +66,10 @@ export default function ApiKeyField({ service, label }: ApiKeyFieldProps) {
         >
           保存
         </Button>
-        {keyStatus === "已配置" && (
-          <Badge appearance="filled" color="success">已配置</Badge>
+        {isEditing && (
+          <Button appearance="secondary" onClick={cancelEditing}>
+            取消
+          </Button>
         )}
       </div>
     </Field>

@@ -21,14 +21,14 @@ export default function SettingsTab({ config, updateConfig }: SettingsTabProps) 
     <div className="flex flex-col gap-6 py-4">
       <section>
         <Title3 className="mb-3">API 配置</Title3>
-        <ApiSection config={config} updateConfig={updateConfig} />
+        <ApiSection />
       </section>
 
       <Divider />
 
       <section>
         <Title3 className="mb-3">快捷键</Title3>
-        <ShortcutSection config={config} updateConfig={updateConfig} />
+        <ShortcutSection />
       </section>
 
       <Divider />

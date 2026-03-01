@@ -5,26 +5,23 @@
  * SetupWizard 只负责步骤编排和引导文案。
  */
 import { Card, Title3, Text, Button } from "@fluentui/react-components";
-import type { AppConfig, ConfigUpdater } from "../../shared/lib/types";
 import ApiSection from "../settings/sections/ApiSection";
 
 interface SetupWizardProps {
-  config: AppConfig;
-  updateConfig: ConfigUpdater;
   onComplete: () => void;
 }
 
-export default function SetupWizard({ config, updateConfig, onComplete }: SetupWizardProps) {
+export default function SetupWizard({ onComplete }: SetupWizardProps) {
   return (
     <Card className="flex flex-col gap-6 p-8 max-w-lg mx-auto">
       <div className="flex flex-col gap-2">
         <Title3>配置 AI 服务</Title3>
         <Text className="text-gray-600">
-          选择语音识别提供商并填入 API Key。完成后点击"测试连接"验证配置。
+          填入 DashScope API Key 并点击"测试连接"验证配置。
         </Text>
       </div>
 
-      <ApiSection config={config} updateConfig={updateConfig} />
+      <ApiSection />
 
       <div className="flex justify-end pt-2">
         <Button appearance="primary" onClick={onComplete}>

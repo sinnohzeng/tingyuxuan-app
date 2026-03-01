@@ -70,7 +70,7 @@ describe("FloatingBar", () => {
     });
     render(<FloatingBar />);
 
-    expect(screen.getByText("完成")).toBeInTheDocument();
+    expect(screen.getByText("已注入文本")).toBeInTheDocument();
   });
 
   it("shows translate mode label", () => {

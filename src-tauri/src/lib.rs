@@ -56,11 +56,10 @@ pub fn run() {
                             match &event {
                                 PipelineEvent::RecordingStarted { .. } => {
                                     let _ = window.show();
-                                    let _ = window.set_focus();
+                                    // 不夺焦 — 浮动条依靠 alwaysOnTop 保持可见
                                 }
                                 PipelineEvent::Error { .. } => {
                                     let _ = window.show();
-                                    let _ = window.set_focus();
                                 }
                                 PipelineEvent::ProcessingComplete { .. } => {
                                     // Auto-hide after a short delay (frontend handles the
@@ -126,23 +125,21 @@ pub fn run() {
             // Set up system tray.
             tray::create_tray(app.handle())?;
 
-            // 关闭主窗口时：根据配置决定隐藏到托盘还是正常关闭。
-            if let Some(main_window) = app.get_webview_window("main") {
-                let config_state = app.state::<state::ConfigState>().clone();
-                let win = main_window.clone();
-                main_window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        let minimize = config_state.0.blocking_read().general.minimize_to_tray;
-                        if minimize {
-                            api.prevent_close();
-                            let _ = win.hide();
-                        }
-                    }
-                });
-            }
-
             tracing::info!("TingYuXuan started successfully");
             Ok(())
+        })
+        // 关闭主窗口时：根据配置决定隐藏到托盘还是正常关闭。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let config_state = window.state::<state::ConfigState>();
+                    let minimize = config_state.0.blocking_read().general.minimize_to_tray;
+                    if minimize {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::start_recording,

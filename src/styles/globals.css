@@ -22,3 +22,40 @@ body {
 .waveform-bar {
   transition: height 0.05s ease-out;
 }
+
+/* 浮动条入场动画 */
+@keyframes floatingBarEnter {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.animate-bar-enter {
+  animation: floatingBarEnter 0.3s ease-out both;
+}
+
+/* 录音态脉冲呼吸 */
+@keyframes recordingPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+}
+.animate-recording-pulse {
+  animation: recordingPulse 2s ease-in-out infinite;
+}
+
+/* 错误抖动 */
+@keyframes errorShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-3px); }
+  40%, 80% { transform: translateX(3px); }
+}
+.animate-error-shake {
+  animation: errorShake 0.4s ease-in-out;
+}
+
+/* 处理中脉冲进度条 */
+@keyframes progressPulse {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.animate-progress-pulse {
+  animation: progressPulse 1.5s ease-in-out infinite;
+}

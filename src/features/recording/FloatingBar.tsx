@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../../shared/stores/appStore";
 import type { PipelineEvent, UserAction } from "../../shared/lib/types";
 import { createLogger, setLogSession } from "../../shared/lib/logger";
+import { useSoundEffect } from "./hooks/useSoundEffect";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
 import ResultPanel from "./ResultPanel";
@@ -35,6 +36,24 @@ function barContainerClass(
   return "w-[400px] h-[56px]";
 }
 
+/** 根据状态计算浮动条的样式 */
+function barStyleClass(state: string): string {
+  switch (state) {
+    case "recording":
+      return "bg-blue-700/95 border-2 border-blue-400/70 animate-recording-pulse";
+    case "processing":
+      return "bg-indigo-600/95 border-2 border-indigo-400/60";
+    case "done":
+      return "bg-emerald-700/95 border-2 border-emerald-400/60";
+    case "cancelled":
+      return "bg-red-800/95 border-2 border-red-500/60";
+    case "error":
+      return "bg-red-900/95 border-2 border-red-500/70 animate-error-shake";
+    default:
+      return "bg-gray-900/90 border border-gray-700/50";
+  }
+}
+
 export default function FloatingBar() {
   const recordingState = useAppStore((s) => s.recordingState);
   const recordingMode = useAppStore((s) => s.recordingMode);
@@ -46,8 +65,27 @@ export default function FloatingBar() {
   const setRecordingState = useAppStore((s) => s.setRecordingState);
   const reset = useAppStore((s) => s.reset);
 
+  const { playStartSound, playStopSound, playErrorSound } = useSoundEffect();
+
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevStateRef = useRef(recordingState);
+
+  // 音效：状态变化时播放
+  useEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = recordingState;
+
+    if (prev === recordingState) return;
+
+    if (recordingState === "recording") {
+      playStartSound();
+    } else if (recordingState === "done") {
+      playStopSound();
+    } else if (recordingState === "error" || recordingState === "cancelled") {
+      playErrorSound();
+    }
+  }, [recordingState, playStartSound, playStopSound, playErrorSound]);
 
   // Start duration timer when recording
   useEffect(() => {
@@ -249,14 +287,9 @@ export default function FloatingBar() {
     <div className="floating-bar-window h-screen w-screen flex items-center justify-center">
       <div
         className={`
-          flex items-center rounded-2xl shadow-2xl border
-          transition-all duration-200
-          ${
-            recordingState === "cancelled"
-              ? "bg-red-900/90 border-red-700/50"
-              : "bg-gray-900/90 border-gray-700/50"
-          }
-          backdrop-blur-md
+          flex items-center rounded-2xl shadow-2xl
+          backdrop-blur-md animate-bar-enter
+          ${barStyleClass(recordingState)}
           ${barContainerClass(recordingState, recordingMode, aiResult)}
         `}
       >
@@ -267,7 +300,7 @@ export default function FloatingBar() {
             <button
               onClick={handleCancel}
               className="flex-none w-10 h-10 flex items-center justify-center
-                         text-gray-400 hover:text-red-400 hover:bg-red-900/30
+                         text-white/70 hover:text-red-300 hover:bg-red-500/20
                          rounded-xl ml-2 transition-colors"
               title="取消 (Esc)"
               aria-label="取消录制"
@@ -282,9 +315,12 @@ export default function FloatingBar() {
               <div className="w-full h-8">
                 <Waveform levels={volumeLevels} isActive={true} />
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-gray-400">
-                <span>{MODE_LABELS[recordingMode] || recordingMode}</span>
-                <span className="text-gray-600">|</span>
+              <div className="flex items-center gap-2 text-[10px] text-white/70">
+                <span className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                  {MODE_LABELS[recordingMode] || recordingMode}
+                </span>
+                <span className="text-white/30">|</span>
                 <span className="tabular-nums">{formatDuration(recordingDuration)}</span>
               </div>
             </div>
@@ -293,7 +329,7 @@ export default function FloatingBar() {
             <button
               onClick={handleConfirm}
               className="flex-none w-10 h-10 flex items-center justify-center
-                         text-gray-400 hover:text-green-400 hover:bg-green-900/30
+                         text-white/70 hover:text-green-300 hover:bg-green-500/20
                          rounded-xl mr-2 transition-colors"
               title="完成"
               aria-label="停止录制"
@@ -305,11 +341,16 @@ export default function FloatingBar() {
           </>
         )}
 
-        {/* Processing state */}
+        {/* Processing state — 脉冲进度条 */}
         {recordingState === "processing" && (
-          <div className="flex-1 flex items-center justify-center gap-3 px-4">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-            <span className="text-gray-300 text-sm">处理中...</span>
+          <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4">
+            <div className="flex items-center gap-3">
+              <div className="w-5 h-5 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+              <span className="text-white/90 text-sm">处理中...</span>
+            </div>
+            <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+              <div className="h-full w-1/3 bg-white/40 rounded-full animate-progress-pulse" />
+            </div>
           </div>
         )}
 
@@ -331,17 +372,20 @@ export default function FloatingBar() {
         {/* Done state — normal modes */}
         {recordingState === "done" && !(recordingMode === "ai_assistant" && aiResult) && (
           <div className="flex-1 flex items-center justify-center gap-2 px-4">
-            <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
-            <span className="text-green-400 text-sm">完成</span>
+            <span className="text-white text-sm">已注入文本</span>
           </div>
         )}
 
         {/* Cancelled state */}
         {recordingState === "cancelled" && (
           <div className="flex-1 flex items-center justify-center gap-2 px-4">
-            <span className="text-red-400 text-sm">已取消</span>
+            <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            <span className="text-white/80 text-sm">已取消</span>
           </div>
         )}
 

@@ -71,7 +71,7 @@ export default function SettingsDialog() {
               vertical
               selectedValue={settingsTab}
               onTabSelect={handleTabSelect}
-              className="shrink-0 w-28"
+              className="shrink-0 w-28 border-r border-gray-200 dark:border-gray-800 pr-2"
             >
               {(Object.keys(TAB_LABELS) as SettingsTab[]).map((key) => (
                 <Tab key={key} value={key}>

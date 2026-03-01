@@ -556,6 +556,8 @@ unsafe extern "system" fn hook_proc(
         WM_SYSKEYUP,
     };
 
+    let mut suppress = false;
+
     if n_code as u32 == HC_ACTION {
         // SAFETY: l_param 指向系统分配的 KBDLLHOOKSTRUCT，在回调期间有效。
         let kb = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
@@ -573,15 +575,16 @@ unsafe extern "system" fn hook_proc(
 
                 // 2. 处理 VK_RMENU
                 if vk == VK_RMENU.0 as u32 {
+                    let is_altgr = kb.time.wrapping_sub(ctx.last_lctrl_time)
+                        <= ALTGR_TIMING_THRESHOLD_MS;
+
                     if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
-                        // AltGr 过滤：幻影 LCtrl 与 RMenu 时间差 ≤ 阈值 → AltGr，忽略
-                        if kb.time.wrapping_sub(ctx.last_lctrl_time)
-                            <= ALTGR_TIMING_THRESHOLD_MS
-                        {
-                            // AltGr 输入，不触发
+                        if is_altgr {
+                            // AltGr 输入，不触发也不抑制
                         } else if !ctx.ralt_down {
                             // 独立 RAlt 下降沿
                             ctx.ralt_down = true;
+                            suppress = true;
 
                             // SAFETY: GetKeyState 读取按键状态，无前置条件。
                             let shift_held = unsafe {
@@ -589,15 +592,21 @@ unsafe extern "system" fn hook_proc(
                             };
                             let action = if shift_held { "translate" } else { "dictate" };
 
-                            tracing::debug!(action, "RAlt key triggered");
+                            tracing::debug!(action, "RAlt key triggered (suppressed)");
                             let _ = tauri::Emitter::emit(
                                 &ctx.app_handle,
                                 "shortcut-action",
                                 action,
                             );
+                        } else {
+                            // 长按重复的 KeyDown，也要抑制（避免 Alt 菜单弹出）
+                            suppress = true;
                         }
-                        // else: 长按重复的 KeyDown，忽略
                     } else if msg == WM_KEYUP || msg == WM_SYSKEYUP {
+                        if !is_altgr {
+                            // 独立 RAlt 释放，抑制以防 Alt 菜单
+                            suppress = true;
+                        }
                         ctx.ralt_down = false;
                     }
                 }
@@ -605,7 +614,10 @@ unsafe extern "system" fn hook_proc(
         });
     }
 
-    // 始终传递给下一个钩子 — 不吞键
+    if suppress {
+        // 吞掉独立 RAlt 事件，阻止其传递给其他应用
+        return windows::Win32::Foundation::LRESULT(1);
+    }
     // SAFETY: CallNextHookEx 转发钩子事件，参数来自系统回调。
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
 }

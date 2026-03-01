@@ -3,7 +3,7 @@
  */
 import { useState, useCallback } from "react";
 import { Title3, Input, Button, Text, Spinner } from "@fluentui/react-components";
-import { AddRegular } from "@fluentui/react-icons";
+import { AddRegular, BookRegular } from "@fluentui/react-icons";
 import { useDictionary } from "./hooks/useDictionary";
 import WordTagGrid from "./WordTagGrid";
 
@@ -27,13 +27,22 @@ export default function DictionaryPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <Title3>个人词典</Title3>
-      <Text size={200}>
-        添加专业术语、人名等词汇，帮助语音识别更准确。
-      </Text>
+    <div className="flex flex-col gap-5 p-6 max-w-4xl">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-3">
+          <Title3>个人词典</Title3>
+          {words.length > 0 && (
+            <Text size={200} className="text-gray-400 dark:text-gray-500 tabular-nums">
+              {words.length} 词
+            </Text>
+          )}
+        </div>
+        <Text size={200} className="text-gray-500 dark:text-gray-400">
+          添加专业术语、人名等词汇，帮助语音识别更准确。
+        </Text>
+      </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 max-w-md">
         <Input
           className="flex-1"
           value={newWord}
@@ -51,7 +60,18 @@ export default function DictionaryPage() {
         </Button>
       </div>
 
-      <WordTagGrid words={words} onRemove={removeWord} />
+      {words.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-4 py-16">
+          <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+            <BookRegular className="text-3xl text-gray-300 dark:text-gray-600" />
+          </div>
+          <Text className="text-gray-400 dark:text-gray-500">
+            还没有添加词汇，输入词汇开始构建你的专属词典。
+          </Text>
+        </div>
+      ) : (
+        <WordTagGrid words={words} onRemove={removeWord} />
+      )}
     </div>
   );
 }

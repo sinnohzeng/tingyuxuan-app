@@ -83,14 +83,6 @@ export interface TranscriptRecord {
   error_message: string | null;
 }
 
-/** Provider preset for quick setup */
-export interface ProviderPreset {
-  name: string;
-  provider: LLMProviderType;
-  base_url: string;
-  models: string[];
-}
-
 /** 设置组件通用的 config 更新函数类型 */
 export type ConfigUpdater = (updater: (prev: AppConfig) => AppConfig) => void;
 

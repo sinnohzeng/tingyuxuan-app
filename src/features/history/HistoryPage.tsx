@@ -2,7 +2,7 @@
  * 历史记录页面 — 搜索 + 列表 + 批量操作。
  */
 import { useCallback } from "react";
-import { Title3, SearchBox, Button, Spinner } from "@fluentui/react-components";
+import { Title3, SearchBox, Button, Spinner, Text } from "@fluentui/react-components";
 import { DeleteRegular } from "@fluentui/react-icons";
 import { useHistory } from "./hooks/useHistory";
 import HistoryList from "./HistoryList";
@@ -26,16 +26,24 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-6 max-w-4xl">
       <div className="flex items-center justify-between">
-        <Title3>历史记录</Title3>
+        <div className="flex items-center gap-3">
+          <Title3>历史记录</Title3>
+          {records.length > 0 && (
+            <Text size={200} className="text-gray-400 dark:text-gray-500 tabular-nums">
+              {records.length} 条
+            </Text>
+          )}
+        </div>
         {records.length > 0 && (
           <Button
             appearance="subtle"
+            size="small"
             icon={<DeleteRegular />}
             onClick={clearAll}
           >
-            清空全部
+            清空
           </Button>
         )}
       </div>
@@ -44,6 +52,7 @@ export default function HistoryPage() {
         placeholder="搜索历史记录…"
         value={searchQuery}
         onChange={(_, data) => setSearchQuery(data.value)}
+        className="max-w-sm"
       />
 
       <HistoryList

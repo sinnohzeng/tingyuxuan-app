@@ -1,7 +1,7 @@
 /**
  * 单个 API Key 的 CRUD + 状态管理 hook。
  *
- * 封装 key 的加载、保存、显示/隐藏、状态反馈，消除 STT/LLM 之间的重复代码。
+ * 已配置状态显示掩码（sk-****xxxx），不允许查看完整 key。
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createLogger } from "../../../shared/lib/logger";
@@ -10,17 +10,28 @@ const log = createLogger("useApiKey");
 
 export interface UseApiKeyReturn {
   keyValue: string;
-  showKey: boolean;
-  keyStatus: string;
+  maskedKey: string;
+  keyStatus: "loading" | "configured" | "unconfigured" | "save_failed";
+  isEditing: boolean;
   setKeyValue: (v: string) => void;
-  toggleShowKey: () => void;
+  startEditing: () => void;
+  cancelEditing: () => void;
   saveKey: () => Promise<void>;
+}
+
+/** 生成掩码：sk-****xxxx（末 4 位可见），短 key 全掩码 */
+function maskApiKey(raw: string): string {
+  if (raw.length <= 8) return "*".repeat(raw.length);
+  const prefix = raw.slice(0, 3);
+  const suffix = raw.slice(-4);
+  return `${prefix}****${suffix}`;
 }
 
 export function useApiKey(service: "llm"): UseApiKeyReturn {
   const [keyValue, setKeyValue] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [keyStatus, setKeyStatus] = useState("");
+  const [maskedKey, setMaskedKey] = useState("");
+  const [keyStatus, setKeyStatus] = useState<UseApiKeyReturn["keyStatus"]>("loading");
+  const [isEditing, setIsEditing] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
@@ -31,9 +42,15 @@ export function useApiKey(service: "llm"): UseApiKeyReturn {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const existing = await invoke<string | null>("get_api_key", { service });
-        setKeyStatus(existing ? "已配置" : "未配置");
+        if (existing) {
+          setKeyStatus("configured");
+          setMaskedKey(maskApiKey(existing));
+        } else {
+          setKeyStatus("unconfigured");
+        }
       } catch (e) {
-        log.error(`[useApiKey] 加载 ${service} API Key 状态失败:`, e);
+        log.error(`加载 ${service} API Key 状态失败:`, e);
+        setKeyStatus("unconfigured");
       }
     })();
   }, [service]);
@@ -43,20 +60,27 @@ export function useApiKey(service: "llm"): UseApiKeyReturn {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("save_api_key", { service, key: keyValue.trim() });
-      setKeyStatus("已配置");
+      setMaskedKey(maskApiKey(keyValue.trim()));
+      setKeyStatus("configured");
       setKeyValue("");
+      setIsEditing(false);
     } catch (e) {
-      log.error(`[useApiKey] 保存 ${service} API Key 失败:`, e);
-      setKeyStatus("保存失败");
+      log.error(`保存 ${service} API Key 失败:`, e);
+      setKeyStatus("save_failed");
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setKeyStatus("configured"), 3000);
     }
-    clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(
-      () => setKeyStatus((s) => (s === "保存失败" ? "" : s)),
-      3000,
-    );
   }, [keyValue, service]);
 
-  const toggleShowKey = useCallback(() => setShowKey((v) => !v), []);
+  const startEditing = useCallback(() => {
+    setIsEditing(true);
+    setKeyValue("");
+  }, []);
 
-  return { keyValue, showKey, keyStatus, setKeyValue, toggleShowKey, saveKey };
+  const cancelEditing = useCallback(() => {
+    setIsEditing(false);
+    setKeyValue("");
+  }, []);
+
+  return { keyValue, maskedKey, keyStatus, isEditing, setKeyValue, startEditing, cancelEditing, saveKey };
 }

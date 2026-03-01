@@ -2,9 +2,8 @@
  * 主窗口 Shell — 左侧导航 + 右侧内容区。
  *
  * - FluentProvider 包装整个布局，自动跟随系统亮/暗主题。
- * - 左侧：垂直导航栏（首页 / 历史 / 词典 / 设置齿轮）。
+ * - 左侧：品牌导航栏（Logo + 页面导航 + 设置齿轮）。
  * - 右侧：react-router <Outlet />。
- * - 底部齿轮触发 SettingsDialog（Sprint 2 接入）。
  */
 import { lazy, Suspense, useCallback, useEffect } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
@@ -29,6 +28,7 @@ import { useSystemTheme } from "../hooks/useSystemTheme";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useUIStore } from "../stores/uiStore";
 import ErrorBoundary from "./ErrorBoundary";
+import logoSrc from "../../assets/logo-draft.png";
 
 const HomeIcon = bundleIcon(HomeFilled, HomeRegular);
 const HistoryIcon = bundleIcon(HistoryFilled, HistoryRegular);
@@ -74,13 +74,23 @@ export default function MainLayout() {
   );
 
   return (
-    <FluentProvider theme={theme} className="flex h-screen">
+    <FluentProvider theme={theme} className="flex h-screen bg-gray-50 dark:bg-gray-950">
       {/* 侧边栏 */}
       <nav
-        className="flex flex-col w-14 border-r shrink-0"
+        className="flex flex-col w-16 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shrink-0"
         aria-label="主导航"
       >
-        <div className="flex flex-col items-center gap-1 pt-4 flex-1">
+        {/* Logo */}
+        <div className="flex items-center justify-center pt-4 pb-3">
+          <img
+            src={logoSrc}
+            alt="听语轩"
+            className="w-8 h-8 rounded-lg object-cover"
+          />
+        </div>
+
+        {/* 导航项 */}
+        <div className="flex flex-col items-center gap-1 flex-1 pt-2">
           {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
@@ -89,14 +99,21 @@ export default function MainLayout() {
               aria-label={label}
               title={label}
               className={({ isActive }) =>
-                `flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${
+                `relative flex items-center justify-center w-11 h-11 rounded-xl transition-all duration-150 ${
                   isActive
-                    ? "bg-blue-100 text-blue-700"
-                    : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                    ? "bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 shadow-sm"
+                    : "text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300"
                 }`
               }
             >
-              <Icon className="text-xl" />
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-blue-600 dark:bg-blue-400" />
+                  )}
+                  <Icon className="text-xl" />
+                </>
+              )}
             </NavLink>
           ))}
         </div>
@@ -107,7 +124,7 @@ export default function MainLayout() {
             onClick={() => openSettings()}
             aria-label="设置"
             title="设置"
-            className="flex items-center justify-center w-10 h-10 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+            className="flex items-center justify-center w-11 h-11 rounded-xl text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-600 dark:hover:text-gray-300 transition-all duration-150"
           >
             <SettingsRegular className="text-xl" />
           </button>

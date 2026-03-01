@@ -9,7 +9,7 @@ use tingyuxuan_core::history::{AggregateStats, TranscriptRecord};
 use tingyuxuan_core::llm::multimodal::MultimodalProvider;
 use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
 use tingyuxuan_core::pipeline::events::PipelineEvent;
-use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest, SessionResult};
+use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
 
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{

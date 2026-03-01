@@ -44,6 +44,6 @@ describe("HistoryPage", () => {
 
     renderWithProviders(<HistoryPage />, { initialEntries: ["/main/history"] });
 
-    expect(await screen.findByText("清空全部")).toBeInTheDocument();
+    expect(await screen.findByText("清空")).toBeInTheDocument();
   });
 });
