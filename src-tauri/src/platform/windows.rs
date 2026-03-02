@@ -444,6 +444,10 @@ thread_local! {
     static HOOK_CTX: std::cell::RefCell<Option<HookContext>> = const { std::cell::RefCell::new(None) };
 }
 
+/// 诊断用：钩子回调总调用次数（原子计数器，零开销）。
+#[cfg(target_os = "windows")]
+static HOOK_CALL_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[cfg(target_os = "windows")]
 impl RAltKeyMonitor {
     /// 启动 RAlt 键监听。
@@ -496,7 +500,21 @@ impl RAltKeyMonitor {
         });
 
         // 安装低级键盘钩子
-        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) };
+        // 传入当前进程的模块句柄 — Windows 11 某些版本要求 LL 钩子提供有效 HINSTANCE
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        let hmod = unsafe { GetModuleHandleW(None) };
+        let hinstance = match &hmod {
+            Ok(h) => {
+                eprintln!("[HOOK_INIT] hmod={:?}, installing WH_KEYBOARD_LL...", h.0);
+                Some(windows::Win32::Foundation::HINSTANCE(h.0))
+            }
+            Err(e) => {
+                eprintln!("[HOOK_INIT] GetModuleHandleW failed: {e}, using null");
+                None
+            }
+        };
+        let hook =
+            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
         let hook = match hook {
             Ok(h) => h,
             Err(e) => {
@@ -553,15 +571,23 @@ fn process_ralt_event(
     kb: &windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT,
     msg: u32,
 ) -> bool {
-    let is_altgr = kb.time.wrapping_sub(ctx.last_lctrl_time) <= ALTGR_TIMING_THRESHOLD_MS;
+    let time_diff = kb.time.wrapping_sub(ctx.last_lctrl_time);
+    let is_altgr = time_diff <= ALTGR_TIMING_THRESHOLD_MS;
     let is_down = is_key_down(msg);
+
+    eprintln!(
+        "[RALT_DIAG] is_down={is_down} is_altgr={is_altgr} diff={time_diff} ralt_down={}",
+        ctx.ralt_down
+    );
 
     if is_down {
         if is_altgr {
-            return false; // AltGr 组合键，不干预
+            eprintln!("[RALT_DIAG] => filtered as AltGr");
+            return false;
         }
         if !ctx.ralt_down {
             ctx.ralt_down = true;
+            eprintln!("[RALT_DIAG] => dispatching shortcut!");
             dispatch_shortcut(ctx);
             return true;
         }
@@ -570,7 +596,7 @@ fn process_ralt_event(
 
     // KeyUp
     ctx.ralt_down = false;
-    !is_altgr // 独立 RAlt 释放时抑制
+    !is_altgr
 }
 
 /// 异步分发快捷键到统一处理函数（handle_shortcut_action）。
@@ -610,6 +636,15 @@ unsafe extern "system" fn hook_proc(
         let kb = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
         let vk = kb.vkCode;
         let msg = w_param.0 as u32;
+
+        // 诊断：记录前 5 次任意键事件 + 所有 RAlt 事件（用 eprintln 避免 tracing 开销）
+        let count = HOOK_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 5 || vk == VK_RMENU.0 as u32 {
+            eprintln!(
+                "[HOOK_DIAG] count={count} vk=0x{vk:04X} msg=0x{msg:04X} time={}",
+                kb.time
+            );
+        }
 
         HOOK_CTX.with(|cell| {
             if let Some(ctx) = cell.borrow_mut().as_mut() {
@@ -679,6 +714,42 @@ pub fn register_platform_hotkeys(app: &tauri::App) -> Result<RAltKeyMonitor, sup
     }
 
     Ok(monitor)
+}
+
+// ---------------------------------------------------------------------------
+// 权限检测
+// ---------------------------------------------------------------------------
+
+/// 检测 Windows 平台权限状态。
+///
+/// Windows 上只需检测麦克风权限（无辅助功能/输入监控概念）。
+/// 通过 `AudioRecorder::probe_microphone()` 探测设备可用性。
+#[cfg(target_os = "windows")]
+pub fn check_permissions() -> super::PermissionReport {
+    use tingyuxuan_core::audio::recorder::AudioRecorder;
+
+    let mic = match AudioRecorder::probe_microphone() {
+        Ok(()) => super::PermissionState::Granted,
+        Err(_) => super::PermissionState::Denied,
+    };
+    super::PermissionReport {
+        all_granted: mic == super::PermissionState::Granted,
+        microphone: mic,
+        accessibility: super::PermissionState::Granted,
+        input_monitoring: super::PermissionState::Granted,
+    }
+}
+
+/// 打开 Windows 系统权限设置页面。
+#[cfg(target_os = "windows")]
+pub fn open_permission_settings_for(target: Option<&str>) {
+    let uri = match target {
+        Some("microphone") => "ms-settings:privacy-microphone",
+        _ => "ms-settings:privacy-microphone",
+    };
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", uri])
+        .spawn();
 }
 
 // ---------------------------------------------------------------------------

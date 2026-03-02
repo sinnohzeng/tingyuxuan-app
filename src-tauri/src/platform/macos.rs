@@ -644,7 +644,10 @@ pub fn shortcut_labels() -> super::ShortcutLabels {
 ///
 /// - Accessibility: `AXIsProcessTrusted()` (<0.1ms)
 /// - Input Monitoring: `CGPreflightListenEventAccess()` (<0.1ms)
-pub fn check_permissions() -> super::PermissionStatus {
+/// - Microphone: `AudioRecorder::probe_microphone()` (~1ms)
+///
+/// 返回旧的 PermissionStatus（保持向后兼容）。
+pub fn check_permissions_legacy() -> super::PermissionStatus {
     let accessibility = unsafe { ax::AXIsProcessTrusted() };
     let input_monitoring = unsafe { ax::CGPreflightListenEventAccess() };
 
@@ -656,12 +659,46 @@ pub fn check_permissions() -> super::PermissionStatus {
     }
 }
 
+/// 检查 macOS 平台权限状态（新版，返回 PermissionReport）。
+pub fn check_permissions() -> super::PermissionReport {
+    use tingyuxuan_core::audio::recorder::AudioRecorder;
+
+    let accessibility = unsafe { ax::AXIsProcessTrusted() };
+    let input_monitoring = unsafe { ax::CGPreflightListenEventAccess() };
+    let mic = match AudioRecorder::probe_microphone() {
+        Ok(()) => super::PermissionState::Granted,
+        Err(_) => super::PermissionState::Denied,
+    };
+
+    let ax_state = if accessibility {
+        super::PermissionState::Granted
+    } else {
+        super::PermissionState::Denied
+    };
+    let im_state = if input_monitoring {
+        super::PermissionState::Granted
+    } else {
+        super::PermissionState::Denied
+    };
+
+    super::PermissionReport {
+        all_granted: mic == super::PermissionState::Granted
+            && ax_state == super::PermissionState::Granted
+            && im_state == super::PermissionState::Granted,
+        microphone: mic,
+        accessibility: ax_state,
+        input_monitoring: im_state,
+    }
+}
+
 /// 打开 macOS 系统偏好设置对应的权限面板。
 ///
+/// - `target == Some("microphone")` → 麦克风面板
 /// - `target == Some("input_monitoring")` → 输入监控面板
 /// - 其他 → 辅助功能面板（默认）
 pub fn open_permission_settings_for(target: Option<&str>) {
     let pane = match target {
+        Some("microphone") => "Privacy_Microphone",
         Some("input_monitoring") => "Privacy_ListenEvent",
         _ => "Privacy_Accessibility",
     };
@@ -800,16 +837,12 @@ mod tests {
 
         #[test]
         fn test_check_permissions_no_panic() {
-            use crate::platform::PermissionStatus;
-            let status = check_permissions();
-            // 返回四值之一即可
-            assert!(matches!(
-                status,
-                PermissionStatus::Granted
-                    | PermissionStatus::AccessibilityRequired
-                    | PermissionStatus::InputMonitoringRequired
-                    | PermissionStatus::BothRequired
-            ));
+            let report = check_permissions();
+            // 检查返回的 PermissionReport 结构完整
+            let _ = report.all_granted;
+            let _ = report.microphone;
+            let _ = report.accessibility;
+            let _ = report.input_monitoring;
         }
 
         #[test]

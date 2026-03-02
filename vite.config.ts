@@ -1,11 +1,32 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // Sentry source maps 上传（仅在 CI release 构建时生效）
+    ...(process.env.SENTRY_AUTH_TOKEN
+      ? [
+          sentryVitePlugin({
+            org: process.env.SENTRY_ORG,
+            project: process.env.SENTRY_PROJECT,
+            authToken: process.env.SENTRY_AUTH_TOKEN,
+            url: process.env.SENTRY_URL,
+            sourcemaps: {
+              filesToDeleteAfterUpload: ["**/*.js.map"],
+            },
+          }),
+        ]
+      : []),
+  ],
+  build: {
+    sourcemap: true,
+  },
   clearScreen: false,
   server: {
     port: 1420,

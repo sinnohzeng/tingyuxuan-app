@@ -10,6 +10,29 @@
         "MINIMAX_API_HOST": "https://api.minimaxi.com",
         "MINIMAX_RESOURCE_MODE": "local"
       }
+    },
+    "sentry": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["mcp-servers/sentry-mcp.js"],
+      "env": {
+        "SENTRY_URL": "${SENTRY_URL}",
+        "SENTRY_AUTH_TOKEN": "${SENTRY_AUTH_TOKEN}",
+        "SENTRY_ORG": "${SENTRY_ORG}",
+        "SENTRY_PROJECT": "${SENTRY_PROJECT}"
+      }
+    },
+    "sls": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["mcp-servers/sls-mcp.js"],
+      "env": {
+        "SLS_ENDPOINT": "${SLS_ENDPOINT}",
+        "SLS_PROJECT": "${SLS_PROJECT}",
+        "SLS_LOGSTORE": "${SLS_LOGSTORE}",
+        "SLS_ACCESS_KEY_ID": "${SLS_ACCESS_KEY_ID}",
+        "SLS_ACCESS_KEY_SECRET": "${SLS_ACCESS_KEY_SECRET}"
+      }
     }
   }
 }

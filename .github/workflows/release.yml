@@ -329,6 +329,26 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # ── Sentry Release ──────────────────────────────────────
+      - name: Setup Sentry CLI
+        if: env.SENTRY_AUTH_TOKEN != ''
+        uses: getsentry/action-cli-setup@v2
+        with:
+          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Create Sentry Release
+        if: env.SENTRY_AUTH_TOKEN != ''
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sentry-cli releases new -o "$SENTRY_ORG" -p "$SENTRY_PROJECT" "$VERSION"
+          sentry-cli releases set-commits "$VERSION" --auto
+          sentry-cli releases finalize "$VERSION"
+        env:
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

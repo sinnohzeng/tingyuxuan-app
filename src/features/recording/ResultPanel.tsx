@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import DOMPurify from "dompurify";
 import { renderMarkdown } from "../../shared/lib/markdown";
+import { trackEvent } from "../../shared/lib/telemetry";
 
 interface ResultPanelProps {
   result: string;
@@ -46,6 +47,7 @@ export default function ResultPanel({
   }, []);
 
   const handleCopy = useCallback(() => {
+    trackEvent("user_action", { action: "result_copy" });
     onCopy();
     setCopied(true);
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current);

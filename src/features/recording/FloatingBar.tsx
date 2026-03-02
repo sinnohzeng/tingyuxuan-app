@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../../shared/stores/appStore";
-import type { PipelineEvent, UserAction } from "../../shared/lib/types";
+import type { PipelineEvent, UserAction, StructuredError } from "../../shared/lib/types";
 import { createLogger, setLogSession } from "../../shared/lib/logger";
+import { trackEvent } from "../../shared/lib/telemetry";
 import { useSoundEffect } from "./hooks/useSoundEffect";
 import Waveform from "./Waveform";
 import ErrorPanel from "./ErrorPanel";
@@ -220,9 +221,20 @@ export default function FloatingBar() {
             case "ai_assistant":
               if (currentState === "idle") {
                 store.setRecordingMode(action as "dictate" | "translate" | "ai_assistant");
-                invoke("start_recording", { mode: action }).catch((err: string) => {
-                  store.setError(err, "CheckApiKey");
-                });
+                // 乐观更新：立即显示录音 UI，不等待 RecordingStarted 事件
+                store.setRecordingState("recording");
+                invoke<string>("start_recording", { mode: action })
+                  .then((sessionId) => {
+                    store.setSessionId(sessionId);
+                  })
+                  .catch((errStr: string) => {
+                    try {
+                      const se = JSON.parse(errStr) as StructuredError;
+                      store.setError(se.message, se.user_action);
+                    } catch {
+                      store.setError(errStr, "Retry");
+                    }
+                  });
               }
               break;
           }
@@ -243,6 +255,7 @@ export default function FloatingBar() {
 
   const handleCancel = useCallback(async () => {
     log.info("user action: cancel");
+    trackEvent("user_action", { action: "cancel" });
     setRecordingState("cancelled");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -254,6 +267,7 @@ export default function FloatingBar() {
 
   const handleConfirm = useCallback(async () => {
     log.info("user action: confirm");
+    trackEvent("user_action", { action: "confirm" });
     setRecordingState("processing");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -264,10 +278,12 @@ export default function FloatingBar() {
   }, [setRecordingState]);
 
   const handleDismiss = useCallback(() => {
+    trackEvent("user_action", { action: "dismiss_error" });
     reset();
   }, [reset]);
 
   const handleOpenSettings = useCallback(async () => {
+    trackEvent("user_action", { action: "open_settings" });
     try {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       const win = await WebviewWindow.getByLabel("settings");
@@ -280,6 +296,16 @@ export default function FloatingBar() {
     }
     reset();
   }, [reset]);
+
+  const handleOpenMicSettings = useCallback(async () => {
+    trackEvent("user_action", { action: "open_mic_settings" });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_permission_settings", { target: "microphone" });
+    } catch {
+      /* dev mode */
+    }
+  }, []);
 
   // Don't render anything when idle
   if (recordingState === "idle") {
@@ -363,6 +389,7 @@ export default function FloatingBar() {
             result={aiResult}
             onCopy={() => navigator.clipboard.writeText(aiResult)}
             onInsert={async () => {
+              trackEvent("user_action", { action: "result_insert" });
               try {
                 const { invoke } = await import("@tauri-apps/api/core");
                 await invoke("inject_text", { text: aiResult });
@@ -399,6 +426,7 @@ export default function FloatingBar() {
             action={errorAction}
             onDismiss={handleDismiss}
             onOpenSettings={handleOpenSettings}
+            onOpenMicSettings={handleOpenMicSettings}
           />
         )}
       </div>

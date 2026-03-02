@@ -9,6 +9,7 @@
     "core:window:default",
     "global-shortcut:default",
     "shell:default",
-    "dialog:default"
+    "dialog:default",
+    "sentry:default"
   ]
 }

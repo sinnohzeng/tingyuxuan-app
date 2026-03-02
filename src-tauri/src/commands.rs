@@ -4,7 +4,7 @@ use tauri::State;
 use tracing::Instrument;
 
 use tingyuxuan_core::config::AppConfig;
-use tingyuxuan_core::error::StructuredError;
+use tingyuxuan_core::error::{PipelineError, StructuredError, UserAction};
 use tingyuxuan_core::history::{AggregateStats, TranscriptRecord};
 use tingyuxuan_core::llm::multimodal::MultimodalProvider;
 use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
@@ -14,7 +14,7 @@ use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
 use crate::platform::{ContextDetector, TextInjector};
 use crate::state::{
     ActiveSession, ConfigState, DetectorState, EventBus, HistoryState, InjectorState,
-    PipelineState, RecorderState, SessionState,
+    PipelineState, RecorderState, SessionState, TelemetryState,
 };
 
 // ---------------------------------------------------------------------------
@@ -161,14 +161,30 @@ pub async fn start_recording(
     detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
     // 获取 pipeline 引用并存入 session，防止 save_config 在录音期间重建 pipeline（TOCTOU）。
-    let pipeline = pipeline_state
-        .0
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| "请先在设置中配置 LLM 的 API Key".to_string())?;
+    let pipeline = pipeline_state.0.read().await.clone().ok_or_else(|| {
+        serde_json::to_string(&StructuredError {
+            error_code: "not_configured".into(),
+            message: "请先在设置中配置 LLM 的 API Key".into(),
+            user_action: UserAction::CheckApiKey,
+        })
+        .unwrap()
+    })?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
+
+    // Sentry breadcrumb: 录音开始
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("recording".into()),
+        message: Some(format!("start: mode={mode}")),
+        level: sentry::Level::Info,
+        data: {
+            let mut m = sentry::protocol::Map::new();
+            m.insert("session_id".into(), session_id.clone().into());
+            m
+        },
+        ..Default::default()
+    });
+
     let session_span = tracing::info_span!("session",
         session_id = %session_id,
         mode = tracing::field::Empty,
@@ -198,7 +214,13 @@ pub async fn start_recording(
     drop(config);
 
     // 1. 启动录音（PCM 采样累积在 recorder 内部的 buffer 中）。
-    recorder_state.0.start().await?;
+    tracing::info!("start_recording: calling recorder.start()");
+    if let Err(audio_err) = recorder_state.0.start().await {
+        tracing::error!(%audio_err, "start_recording: recorder.start() FAILED");
+        let se = StructuredError::from(&PipelineError::Audio(audio_err));
+        return Err(serde_json::to_string(&se).unwrap());
+    }
+    tracing::info!("start_recording: recorder started OK");
 
     // Serialize context for history storage.
     let context_json = serde_json::to_string(&context).ok();
@@ -226,10 +248,12 @@ pub async fn start_recording(
     *session_state.0.lock().await = Some(session);
 
     // Emit recording started event.
-    let _ = event_bus.0.send(PipelineEvent::RecordingStarted {
+    tracing::info!("start_recording: emitting RecordingStarted event");
+    let send_result = event_bus.0.send(PipelineEvent::RecordingStarted {
         session_id: session_id.clone(),
         mode: effective_mode.clone(),
     });
+    tracing::info!(?send_result, "start_recording: RecordingStarted sent");
 
     // Create a history record with status "recording".
     {
@@ -264,7 +288,11 @@ pub async fn stop_recording(
     injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
     // 1. 停止录音 → 获取累积的 AudioBuffer。
-    let buffer = recorder_state.0.stop().await?;
+    let buffer = recorder_state
+        .0
+        .stop()
+        .await
+        .map_err(|e| e.to_string())?;
 
     // 2. Take the active session（包含录音开始时锁定的 pipeline 引用）。
     let session = session_state
@@ -277,6 +305,20 @@ pub async fn stop_recording(
     let session_id = session.session_id.clone();
     let duration_ms = session.started_at.elapsed().as_millis() as u64;
     let session_span = session.session_span.clone();
+
+    // Sentry breadcrumb: 录音停止
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("recording".into()),
+        message: Some(format!("stop: duration={duration_ms}ms")),
+        level: sentry::Level::Info,
+        data: {
+            let mut m = sentry::protocol::Map::new();
+            m.insert("session_id".into(), session_id.clone().into());
+            m.insert("duration_ms".into(), duration_ms.into());
+            m
+        },
+        ..Default::default()
+    });
 
     // Emit recording stopped event.
     let _ = event_bus
@@ -361,6 +403,19 @@ pub async fn cancel_recording(
         // Cancel any in-progress LLM operations.
         session.cancel_token.cancel();
 
+        // Sentry breadcrumb: 录音取消
+        sentry::add_breadcrumb(sentry::Breadcrumb {
+            category: Some("recording".into()),
+            message: Some("cancel".into()),
+            level: sentry::Level::Info,
+            data: {
+                let mut m = sentry::protocol::Map::new();
+                m.insert("session_id".into(), session.session_id.clone().into());
+                m
+            },
+            ..Default::default()
+        });
+
         // Update history.
         let history = history_state.0.lock().await;
         let _ = history.update_status(&session.session_id, "cancelled");
@@ -382,10 +437,17 @@ pub async fn inject_text(
 ) -> Result<(), String> {
     check_max_len(&text, MAX_INJECT_TEXT_LEN, "注入文本")?;
     check_no_null_bytes(&text, "注入文本")?;
-    injector_state
-        .0
-        .inject_text(&text)
-        .map_err(|e| format!("Text injection failed: {e}"))
+    let char_count = text.chars().count();
+    match injector_state.0.inject_text(&text) {
+        Ok(()) => {
+            tracing::info!(chars = char_count, "Text injected");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!(%e, chars = char_count, "Injection failed");
+            Err(format!("Text injection failed: {e}"))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -579,23 +641,39 @@ pub async fn get_dashboard_stats(
 }
 
 // ---------------------------------------------------------------------------
-// Platform Permissions (macOS)
+// Telemetry
 // ---------------------------------------------------------------------------
 
-/// 检查 macOS 平台权限状态。
+/// 接收前端埋点事件，通过 Rust 后端统一上报到 SLS。
+#[tauri::command]
+#[tracing::instrument(skip_all)]
+pub async fn report_telemetry_event(
+    event: String,
+    telemetry: State<'_, TelemetryState>,
+) -> Result<(), String> {
+    if let Ok(evt) = serde_json::from_str::<tingyuxuan_core::telemetry::TelemetryEvent>(&event) {
+        telemetry.0.track(evt);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Platform Permissions
+// ---------------------------------------------------------------------------
+
+/// 检查全平台权限状态，返回 JSON 格式的 PermissionReport。
 #[tauri::command]
 #[tracing::instrument(skip_all)]
 pub async fn check_platform_permissions() -> Result<String, String> {
     #[cfg(target_os = "macos")]
-    {
-        let status = crate::platform::macos::check_permissions();
-        Ok(status.as_str().to_string())
-    }
+    let report = crate::platform::macos::check_permissions();
+    #[cfg(target_os = "windows")]
+    let report = crate::platform::windows::check_permissions();
+    #[cfg(target_os = "linux")]
+    let report = crate::platform::linux::check_permissions();
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok("granted".to_string())
-    }
+    tracing::info!(?report, "Permission check");
+    serde_json::to_string(&report).map_err(|e| e.to_string())
 }
 
 /// 打开系统权限设置页面。
@@ -603,9 +681,12 @@ pub async fn check_platform_permissions() -> Result<String, String> {
 #[tracing::instrument(skip_all)]
 pub async fn open_permission_settings(target: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
-        crate::platform::macos::open_permission_settings_for(target.as_deref());
-    }
+    crate::platform::macos::open_permission_settings_for(target.as_deref());
+    #[cfg(target_os = "windows")]
+    crate::platform::windows::open_permission_settings_for(target.as_deref());
+    #[cfg(target_os = "linux")]
+    crate::platform::linux::open_permission_settings_for(target.as_deref());
+
     let _ = target;
     Ok(())
 }

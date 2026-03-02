@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -64,13 +66,16 @@ impl Pipeline {
                 return Err(PipelineError::Cancelled);
             }
 
-            // 1. 编码音频。
+            // 1. 编码音频（带计时）。
+            let encode_start = Instant::now();
             let encoded = {
                 let _encode_span = tracing::info_span!("audio_encode").entered();
                 let result = buffer
                     .encode(AudioFormat::Wav)
                     .map_err(PipelineError::Audio)?;
+                let encode_ms = encode_start.elapsed().as_millis() as u64;
                 tracing::info!(
+                    encode_ms,
                     duration_ms = result.duration_ms,
                     encoded_bytes = result.data.len(),
                     format = result.format_str(),
@@ -91,7 +96,8 @@ impl Pipeline {
             // 3. 发送处理开始事件。
             self.emit(PipelineEvent::ProcessingStarted);
 
-            // 4. 调用 LLM（带重试和取消支持）。
+            // 4. 调用 LLM（带重试、取消支持和计时）。
+            let llm_start = Instant::now();
             let llm_result = {
                 let llm = &self.llm;
                 let llm_input = &input;
@@ -104,10 +110,15 @@ impl Pipeline {
                     }
                 }
             };
+            let llm_ms = llm_start.elapsed().as_millis() as u64;
 
             let llm_result = match llm_result {
-                Ok(r) => r,
+                Ok(r) => {
+                    tracing::info!(llm_ms, tokens = ?r.tokens_used, "LLM complete");
+                    r
+                }
                 Err(llm_err) => {
+                    tracing::error!(llm_ms, %llm_err, "LLM failed");
                     self.emit(PipelineEvent::Error {
                         message: llm_err.to_string(),
                         user_action: llm_err.user_action(),

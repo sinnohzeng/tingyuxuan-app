@@ -8,6 +8,7 @@ describe("ErrorPanel", () => {
     action: "Retry" as const,
     onDismiss: vi.fn(),
     onOpenSettings: vi.fn(),
+    onOpenMicSettings: vi.fn(),
   };
 
   it("renders without crashing", () => {
@@ -57,13 +58,13 @@ describe("ErrorPanel", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("renders CheckMicrophone action with acknowledge button", () => {
-    const onDismiss = vi.fn();
-    render(<ErrorPanel {...defaultProps} action="CheckMicrophone" onDismiss={onDismiss} />);
+  it("renders CheckMicrophone action with mic settings button", () => {
+    const onOpenMicSettings = vi.fn();
+    render(<ErrorPanel {...defaultProps} action="CheckMicrophone" onOpenMicSettings={onOpenMicSettings} />);
 
-    const button = screen.getByText("知道了");
+    const button = screen.getByText("打开麦克风设置");
     expect(button).toBeInTheDocument();
     fireEvent.click(button);
-    expect(onDismiss).toHaveBeenCalledOnce();
+    expect(onOpenMicSettings).toHaveBeenCalledOnce();
   });
 });

@@ -83,6 +83,21 @@ export interface TranscriptRecord {
   error_message: string | null;
 }
 
+/** 全平台权限检测报告（镜像 Rust PermissionReport） */
+export interface PermissionReport {
+  all_granted: boolean;
+  microphone: "granted" | "denied" | "unknown";
+  accessibility: "granted" | "denied" | "unknown";
+  input_monitoring: "granted" | "denied" | "unknown";
+}
+
+/** 结构化错误（镜像 Rust StructuredError） */
+export interface StructuredError {
+  error_code: string;
+  message: string;
+  user_action: UserAction;
+}
+
 /** 设置组件通用的 config 更新函数类型 */
 export type ConfigUpdater = (updater: (prev: AppConfig) => AppConfig) => void;
 

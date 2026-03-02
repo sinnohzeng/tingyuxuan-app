@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use tingyuxuan_core::audio::encoder::AudioBuffer;
 use tingyuxuan_core::audio::recorder::AudioRecorder;
+use tingyuxuan_core::error::AudioError;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 // ---------------------------------------------------------------------------
@@ -23,13 +24,13 @@ use tingyuxuan_core::pipeline::events::PipelineEvent;
 
 enum RecorderCommand {
     Start {
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), AudioError>>,
     },
     Stop {
-        reply: oneshot::Sender<Result<AudioBuffer, String>>,
+        reply: oneshot::Sender<Result<AudioBuffer, AudioError>>,
     },
     Cancel {
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<(), AudioError>>,
     },
     IsRecording {
         reply: oneshot::Sender<bool>,
@@ -74,36 +75,36 @@ impl RecorderHandle {
     }
 
     /// Start recording.
-    pub async fn start(&self) -> Result<(), String> {
+    pub async fn start(&self) -> Result<(), AudioError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Start { reply: tx })
             .await
-            .map_err(|_| "Recorder actor is gone".to_string())?;
+            .map_err(|_| AudioError::StreamError("Recorder actor is gone".into()))?;
         rx.await
-            .map_err(|_| "Recorder reply channel dropped".to_string())?
+            .map_err(|_| AudioError::StreamError("Recorder reply channel dropped".into()))?
     }
 
     /// Stop recording and return the accumulated audio buffer.
-    pub async fn stop(&self) -> Result<AudioBuffer, String> {
+    pub async fn stop(&self) -> Result<AudioBuffer, AudioError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Stop { reply: tx })
             .await
-            .map_err(|_| "Recorder actor is gone".to_string())?;
+            .map_err(|_| AudioError::StreamError("Recorder actor is gone".into()))?;
         rx.await
-            .map_err(|_| "Recorder reply channel dropped".to_string())?
+            .map_err(|_| AudioError::StreamError("Recorder reply channel dropped".into()))?
     }
 
     /// Cancel the current recording.
-    pub async fn cancel(&self) -> Result<(), String> {
+    pub async fn cancel(&self) -> Result<(), AudioError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(RecorderCommand::Cancel { reply: tx })
             .await
-            .map_err(|_| "Recorder actor is gone".to_string())?;
+            .map_err(|_| AudioError::StreamError("Recorder actor is gone".into()))?;
         rx.await
-            .map_err(|_| "Recorder reply channel dropped".to_string())?
+            .map_err(|_| AudioError::StreamError("Recorder reply channel dropped".into()))?
     }
 
     /// Check whether the recorder is currently recording.
@@ -167,21 +168,21 @@ fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
     match cmd {
         RecorderCommand::Start { reply } => {
             tracing::debug!("Recorder command: Start");
-            let result = recorder.start().map_err(|e| e.to_string());
+            let result = recorder.start();
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");
             }
         }
         RecorderCommand::Stop { reply } => {
             tracing::debug!("Recorder command: Stop");
-            let result = recorder.stop().map_err(|e| e.to_string());
+            let result = recorder.stop();
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");
             }
         }
         RecorderCommand::Cancel { reply } => {
             tracing::debug!("Recorder command: Cancel");
-            let result = recorder.cancel().map_err(|e| e.to_string());
+            let result = recorder.cancel();
             if reply.send(result).is_err() {
                 tracing::warn!("Reply channel dropped (caller timed out?)");
             }
@@ -194,19 +195,20 @@ fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
     }
 }
 
-/// Drain all incoming commands with an error message (used when the recorder
+/// Drain all incoming commands with an error (used when the recorder
 /// failed to initialise).
 async fn drain_with_error(cmd_rx: &mut mpsc::Receiver<RecorderCommand>, error_msg: &str) {
+    let err = || AudioError::StreamError(format!("Audio not available: {error_msg}"));
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             RecorderCommand::Start { reply, .. } => {
-                let _ = reply.send(Err(error_msg.to_string()));
+                let _ = reply.send(Err(err()));
             }
             RecorderCommand::Stop { reply } => {
-                let _ = reply.send(Err(error_msg.to_string()));
+                let _ = reply.send(Err(err()));
             }
             RecorderCommand::Cancel { reply } => {
-                let _ = reply.send(Err(error_msg.to_string()));
+                let _ = reply.send(Err(err()));
             }
             RecorderCommand::IsRecording { reply } => {
                 let _ = reply.send(false);

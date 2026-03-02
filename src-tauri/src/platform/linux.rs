@@ -307,6 +307,39 @@ impl ContextDetector for LinuxContextDetector {
 }
 
 // ---------------------------------------------------------------------------
+// 权限检测
+// ---------------------------------------------------------------------------
+
+/// 检测 Linux 平台权限状态。
+///
+/// Linux 上只需检测麦克风权限（通过 cpal 探测设备）。
+/// 辅助功能和输入监控概念不适用 Linux，始终返回 Granted。
+pub fn check_permissions() -> super::PermissionReport {
+    use tingyuxuan_core::audio::recorder::AudioRecorder;
+
+    let mic = match AudioRecorder::probe_microphone() {
+        Ok(()) => super::PermissionState::Granted,
+        Err(_) => super::PermissionState::Denied,
+    };
+    super::PermissionReport {
+        all_granted: mic == super::PermissionState::Granted,
+        microphone: mic,
+        accessibility: super::PermissionState::Granted,
+        input_monitoring: super::PermissionState::Granted,
+    }
+}
+
+/// 打开 Linux 音频设置。
+pub fn open_permission_settings_for(_target: Option<&str>) {
+    // 优先尝试 pavucontrol（PulseAudio 控制），回退到 GNOME 设置
+    if Command::new("pavucontrol").spawn().is_err() {
+        let _ = Command::new("gnome-control-center")
+            .arg("sound")
+            .spawn();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

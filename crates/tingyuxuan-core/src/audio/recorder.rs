@@ -89,6 +89,30 @@ impl AudioRecorder {
         })
     }
 
+    /// 探测麦克风是否可用（静态方法，无需创建 AudioRecorder 实例）。
+    ///
+    /// 用于权限检测：`default_input_device()` None → NoInputDevice；
+    /// `supported_input_configs()` 失败 → PermissionDenied。
+    /// Mock 模式下始终返回 Ok。
+    pub fn probe_microphone() -> Result<(), AudioError> {
+        let mock = std::env::var("TINGYUXUAN_MOCK_AUDIO")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if mock {
+            return Ok(());
+        }
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or(AudioError::NoInputDevice)?;
+        device
+            .supported_input_configs()
+            .map_err(|_| AudioError::PermissionDenied)?
+            .next()
+            .ok_or(AudioError::NoInputDevice)?;
+        Ok(())
+    }
+
     /// Starts recording. PCM samples are accumulated in an internal buffer.
     ///
     /// Call [`stop`] to end recording and retrieve the accumulated `AudioBuffer`.
@@ -110,13 +134,22 @@ impl AudioRecorder {
         }
 
         tracing::debug!(mock = self.mock_mode, "Starting audio capture");
-        if self.mock_mode {
-            self.start_mock_stream()?;
+        let result = if self.mock_mode {
+            self.start_mock_stream()
         } else {
-            self.start_real_stream()?;
+            self.start_real_stream()
+        };
+
+        // 流启动失败时重置 is_recording，避免卡在虚假录音状态
+        if result.is_err() {
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("RecorderInner: lock poisoned in start() rollback");
+            inner.is_recording = false;
         }
 
-        Ok(())
+        result
     }
 
     /// Stops recording and returns the accumulated audio buffer.
@@ -221,6 +254,16 @@ impl AudioRecorder {
         let config = Self::select_input_config(supported)?;
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
+
+        #[allow(deprecated)] // cpal 0.17.3 deprecated name() in favor of description()
+        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+        tracing::info!(
+            device = %device_name,
+            sample_rate = stream_config.sample_rate,
+            channels = stream_config.channels,
+            format = ?sample_format,
+            "Audio device selected"
+        );
 
         let inner = Arc::clone(&self.inner);
         let channels = stream_config.channels as usize;

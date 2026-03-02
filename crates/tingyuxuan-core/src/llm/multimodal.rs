@@ -124,6 +124,8 @@ impl MultimodalProvider {
         let mut tokens_used: Option<u32> = None;
         // 跨 chunk 的残行缓冲：网络 chunk 边界不一定对齐行边界。
         let mut line_buf = String::new();
+        let sse_start = std::time::Instant::now();
+        let mut ttfb_logged = false;
 
         loop {
             let maybe_chunk = tokio::time::timeout(CHUNK_READ_TIMEOUT, stream.next()).await;
@@ -162,6 +164,14 @@ impl MultimodalProvider {
                         && let Some(ref delta) = choice.delta
                         && let Some(ref content) = delta.content
                     {
+                        // 首个 content chunk 到达时记录 TTFB
+                        if !ttfb_logged && !content.is_empty() {
+                            tracing::info!(
+                                ttfb_ms = sse_start.elapsed().as_millis() as u64,
+                                "LLM TTFB"
+                            );
+                            ttfb_logged = true;
+                        }
                         result_text.push_str(content);
                     }
                     if let Some(usage) = chunk.usage {

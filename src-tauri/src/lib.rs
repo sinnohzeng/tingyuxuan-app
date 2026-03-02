@@ -14,8 +14,15 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _log_guard = init_tracing();
+    let sentry_client = init_sentry();
 
     tauri::Builder::default()
+        // 允许设备事件在所有窗口焦点状态下传递，确保 WH_KEYBOARD_LL
+        // 钩子在 Tauri/WebView2 窗口获焦时仍能接收键盘事件。
+        // 默认值 Unfocused 会导致 Tauri 窗口获焦时钩子收不到事件。
+        // 参考: https://github.com/tauri-apps/tauri/issues/13919
+        .device_event_filter(tauri::DeviceEventFilter::Never)
+        .plugin(tauri_plugin_sentry::init(&sentry_client))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init()) // 用于 shell:default 权能（未来可能需要 open URL）
         .setup(|app| {
@@ -51,12 +58,17 @@ pub fn run() {
                         }
                     };
                     {
+                        // 诊断日志：非 VolumeUpdate 事件提升到 info 级别
+                        if !matches!(&event, PipelineEvent::VolumeUpdate { .. }) {
+                            tracing::info!(?event, "Event bridge: received pipeline event");
+                        }
+
                         // Window visibility management.
                         if let Some(window) = handle.get_webview_window("floating-bar") {
                             match &event {
                                 PipelineEvent::RecordingStarted { .. } => {
-                                    let _ = window.show();
-                                    // 不夺焦 — 浮动条依靠 alwaysOnTop 保持可见
+                                    let result = window.show();
+                                    tracing::info!(?result, "Event bridge: floating-bar window.show()");
                                 }
                                 PipelineEvent::Error { .. } => {
                                     let _ = window.show();
@@ -67,6 +79,8 @@ pub fn run() {
                                 }
                                 _ => {}
                             }
+                        } else {
+                            tracing::warn!("Event bridge: floating-bar window NOT FOUND");
                         }
 
                         // Track network status.
@@ -75,10 +89,9 @@ pub fn run() {
                         }
 
                         // Forward all events to the frontend.
-                        if !matches!(&event, PipelineEvent::VolumeUpdate { .. }) {
-                            tracing::debug!("Forwarding pipeline event to frontend");
+                        if let Err(e) = handle.emit("pipeline-event", &event) {
+                            tracing::error!(?e, "Failed to emit pipeline-event to frontend");
                         }
-                        let _ = handle.emit("pipeline-event", &event);
                     }
                 }
             });
@@ -120,6 +133,11 @@ pub fn run() {
             app.manage(states.network);
             app.manage(states.injector);
             app.manage(states.detector);
+
+            // Initialize telemetry backend (SLS or noop).
+            let app_version = env!("CARGO_PKG_VERSION");
+            let telemetry_backend = tingyuxuan_core::telemetry::sls::create_backend(app_version);
+            app.manage(state::TelemetryState(telemetry_backend));
 
             // Set up system tray.
             tray::create_tray(app.handle())?;
@@ -163,6 +181,7 @@ pub fn run() {
             commands::get_dashboard_stats,
             commands::check_platform_permissions,
             commands::open_permission_settings,
+            commands::report_telemetry_event,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TingYuXuan");
@@ -281,27 +300,56 @@ fn register_linux_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::
 pub(crate) async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
     use crate::state::RecorderState;
 
-    tracing::debug!(action, "Shortcut triggered");
+    tracing::info!(action, "Shortcut triggered");
 
     match action {
         "cancel" => {
             // Cancel is always safe to call — it's a no-op if not recording.
+            tracing::info!("Emitting shortcut-action: cancel");
             let _ = handle.emit("shortcut-action", "cancel");
         }
         mode @ ("dictate" | "translate" | "ai_assistant") => {
             // Toggle behaviour: if already recording, stop; otherwise start.
             let recorder = handle.state::<RecorderState>();
             let is_recording = recorder.0.is_recording().await;
-            tracing::debug!(mode, is_recording, "Toggle recording");
+            tracing::info!(mode, is_recording, "Toggle recording");
 
             if is_recording {
+                tracing::info!("Emitting shortcut-action: stop");
                 let _ = handle.emit("shortcut-action", "stop");
             } else {
+                tracing::info!(mode, "Emitting shortcut-action: start");
                 let _ = handle.emit("shortcut-action", mode);
             }
         }
         _ => {}
     }
+}
+
+/// 初始化 Sentry 错误/崩溃上报。
+///
+/// DSN 从环境变量 `SENTRY_DSN` 读取。未设置时 Sentry 处于禁用状态（零开销）。
+/// 先用 sentry.io SaaS 免费版快速跑通，上线前可迁移到自托管（只需改 DSN）。
+fn init_sentry() -> sentry::ClientInitGuard {
+    let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
+    sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            environment: Some(
+                if cfg!(debug_assertions) {
+                    "development"
+                } else {
+                    "production"
+                }
+                .into(),
+            ),
+            auto_session_tracking: true,
+            sample_rate: 1.0,
+            traces_sample_rate: 0.2,
+            ..Default::default()
+        },
+    ))
 }
 
 /// 初始化 tracing subscriber：终端 + 可选日志文件。

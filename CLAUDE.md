@@ -15,7 +15,8 @@
 | Backend | Rust 2024 edition + tokio 1.x + reqwest 0.13 + rusqlite 0.38 |
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
 | UI 组件库 | Fluent UI 2 (@fluentui/react-components) |
-| Testing | 122 Rust + 71 vitest + 13 JNI + 7 Android 单元测试 |
+| 可观测性 | Sentry 0.42 + tauri-plugin-sentry 0.5 (崩溃/错误) + SLS Web Tracking (埋点) |
+| Testing | 124 Rust + 71 vitest + 13 JNI + 7 Android 单元测试 |
 
 ## 项目结构
 
@@ -34,7 +35,7 @@ src/                      React 前端（feature-based 目录）
   shared/                 跨功能共享
     components/           MainLayout、ToastHost
     hooks/                useTauriEvent
-    lib/                  types、logger、theme
+    lib/                  types、logger、theme、telemetry
     stores/               appStore、uiStore、statsStore
 android/                  Android 原生输入法
 docs/                     DDD 文档体系
@@ -45,7 +46,7 @@ docs/                     DDD 文档体系
 
 ```bash
 # 测试
-cargo test -p tingyuxuan-core          # 122 Rust tests
+cargo test -p tingyuxuan-core          # 124 Rust tests
 npm test                                # 71 frontend tests
 npx tsc --noEmit                        # TypeScript 类型检查
 
@@ -134,7 +135,18 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 | `remove_dictionary_word` | `word: String` | `()` | 删除词汇 |
 | `check_platform_permissions` | — | `String` | 检查权限状态 |
 | `open_permission_settings` | `target: Option<String>` | `()` | 打开权限设置 |
+| `report_telemetry_event` | `event: String` | `()` | 前端埋点上报 |
 | `is_first_launch` | — | `bool` | 首次启动检查 |
+
+## 环境变量
+
+| 变量 | 用途 | 必需 |
+|------|------|------|
+| `TINGYUXUAN_MOCK_AUDIO` | `1` 启用录音 mock 模式 | 开发可选 |
+| `SENTRY_DSN` | Sentry 错误上报 DSN | 生产必需 |
+| `SLS_ENDPOINT` | 阿里云 SLS 区域 endpoint | 埋点必需 |
+| `SLS_PROJECT` | SLS Project 名称 | 埋点必需 |
+| `SLS_LOGSTORE` | SLS Logstore 名称 | 埋点必需 |
 
 ## MCP 服务器（AI 工具链）
 
@@ -188,3 +200,15 @@ macOS/Linux 用户无需此步骤，项目 `.mcp.json` 直接生效。
 **第 4 步：验证**
 
 重启 Claude Code，输入 `/mcp` 确认 minimax 服务器状态为 connected。
+
+### Sentry MCP（错误/崩溃查询）
+
+**提供工具**：`sentry_list_issues`、`sentry_get_issue`、`sentry_get_latest_event`、`sentry_search`
+
+**环境变量**：`SENTRY_URL`、`SENTRY_AUTH_TOKEN`、`SENTRY_ORG`、`SENTRY_PROJECT`
+
+### SLS MCP（埋点数据查询）
+
+**提供工具**：`sls_query`、`sls_get_session`、`sls_error_stats`、`sls_performance`
+
+**环境变量**：`SLS_ENDPOINT`、`SLS_PROJECT`、`SLS_LOGSTORE`、`SLS_ACCESS_KEY_ID`、`SLS_ACCESS_KEY_SECRET`

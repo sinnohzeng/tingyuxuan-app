@@ -155,6 +155,29 @@ impl PermissionStatus {
     }
 }
 
+/// 全平台权限检测报告。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PermissionReport {
+    /// 所有必要权限是否已全部授予。
+    pub all_granted: bool,
+    /// 麦克风权限（全平台）。
+    pub microphone: PermissionState,
+    /// 辅助功能权限（仅 macOS，其他平台始终 Granted）。
+    pub accessibility: PermissionState,
+    /// 输入监控权限（仅 macOS，其他平台始终 Granted）。
+    pub input_monitoring: PermissionState,
+}
+
+/// 单项权限的状态。
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // Unknown 暂未使用，保留以兼容未来平台
+pub enum PermissionState {
+    Granted,
+    Denied,
+    Unknown,
+}
+
 /// 获取当前平台的快捷键显示标签。
 pub fn shortcut_labels() -> ShortcutLabels {
     #[cfg(target_os = "macos")]
