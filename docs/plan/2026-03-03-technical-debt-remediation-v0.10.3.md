@@ -7,7 +7,7 @@
 - 执行范围：全栈一次整改（Desktop + Frontend + Android + 文档 + CI）
 - 红线统计范围：仅生产代码（`src`、`src-tauri/src`、`crates/*/src`、`android/app/src/main`）
 - 质量门禁策略：立即硬门禁（CI 阻断）
-- 当前状态：待发布（代码与文档整改完成，等待提交/tag/release）
+- 当前状态：已完成（代码、文档、版本、发布闭环完成）
 
 ## 背景
 
@@ -115,7 +115,7 @@
 - [x] 前端热点重构完成
 - [x] Android 语义对齐与热点重构完成
 - [x] 文档矩阵同步完成
-- [ ] 版本、提交、tag、release 完成
+- [x] 版本、提交、tag、release 完成
 
 ## 阶段验收记录（2026-03-03）
 

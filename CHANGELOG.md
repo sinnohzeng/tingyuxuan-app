@@ -6,6 +6,39 @@
 
 ---
 
+## [0.10.3] - 2026-03-03
+
+### 变更
+
+**技术债修复与质量红线硬门禁**
+- 新增 `npm run quality:redline`（生产代码红线检查：文件行数 / 函数行数 / 分支数 / 嵌套层级）
+- CI 接入红线阻断（`frontend-check` 阶段强制执行）
+- Rust 核心热点重构：录音、编排、重试、配置迁移、历史迁移、遥测等模块拆分降复杂度
+- Tauri 平台层重构：Linux / macOS / Windows 关键长函数拆分，行为保持兼容
+- 前端热点重构：`FloatingBar`、`MainLayout` 与多处 hooks 拆分
+
+**Android 语义对齐（单步多模态）**
+- `ConfigStore` 改为仅 LLM 必填，兼容读取旧 STT 字段并迁移，不再写入 `stt`
+- 设置页与引导页移除 STT 必填语义
+- IME 状态机与控制器文案统一为单步多模态处理
+- JNI/Kotlin 注释与错误映射同步更新，保持 JNI 签名兼容
+
+**文档与版本闭环**
+- 新增并启用当前执行 SSOT：`docs/plan/2026-03-03-technical-debt-remediation-v0.10.3.md`
+- 同步更新架构总览、模块文档（audio/pipeline/security/history/jni-bridge/config）、ADR-0007、README、PRD
+- 版本统一到 `0.10.3`（`package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` / Android `versionName`）
+
+---
+
+## [0.10.2] - 2026-03-03
+
+### 变更
+
+- 项目文档系统性治理：PRD 重写、文档目录整合、CHANGELOG 补全、文档治理规则固化
+- 修复 macOS 权限兼容函数导致的 CI 告警
+
+---
+
 ## [0.10.1] - 2026-03-03
 
 ### 变更
