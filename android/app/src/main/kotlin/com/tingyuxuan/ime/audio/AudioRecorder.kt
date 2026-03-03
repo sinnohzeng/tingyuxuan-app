@@ -18,7 +18,7 @@ import kotlin.math.sqrt
  * - 位深: 16-bit signed PCM
  *
  * 不再写入 WAV 文件，而是通过 [AudioChunkListener] 回调实时发送 PCM 帧，
- * 由调用方转发到 Rust 流式 STT。
+ * 由调用方转发到 Rust 单步多模态管线。
  */
 class AudioRecorder {
 

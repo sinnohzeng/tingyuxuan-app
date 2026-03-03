@@ -22,10 +22,10 @@ sealed class IMEState {
         val amplitude: Float = 0f,
     ) : IMEState()
 
-    /** 录音完成，正在处理（STT → LLM） */
+    /** 录音完成，正在处理（单步多模态） */
     data class Processing(
         val mode: ProcessingMode,
-        val stage: ProcessingStage = ProcessingStage.Transcribing,
+        val stage: ProcessingStage = ProcessingStage.Thinking,
     ) : IMEState()
 
     /** 处理完成，文本已输出 */
@@ -56,8 +56,8 @@ enum class ProcessingMode(val id: String, val label: String) {
  * 处理阶段 — 用于 Processing 状态的进度展示。
  */
 enum class ProcessingStage(val label: String) {
-    Transcribing("正在识别..."),
-    Polishing("正在优化..."),
+    Thinking("正在思考..."),
+    Finalizing("正在整理结果..."),
 }
 
 /**
@@ -68,8 +68,7 @@ enum class ErrorCode(val userAction: UserAction) {
     ApiKeyMissing(UserAction.OpenSettings),
     NativeLibraryMissing(UserAction.Reinstall),
     NetworkError(UserAction.Retry),
-    SttAuthFailed(UserAction.CheckApiKey),
-    LlmAuthFailed(UserAction.CheckApiKey),
+    ProviderAuthFailed(UserAction.CheckApiKey),
     Timeout(UserAction.Retry),
     Unknown(UserAction.Dismiss),
 }

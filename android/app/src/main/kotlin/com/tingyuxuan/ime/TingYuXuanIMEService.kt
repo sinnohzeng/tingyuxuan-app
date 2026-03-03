@@ -176,27 +176,27 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
     }
 
     private fun startRecording(mode: ProcessingMode) {
-        val currentState = _state.value
-
-        // 密码字段禁止录音
-        if (currentState is IMEState.Idle && currentState.isPasswordField) {
-            _state.value = IMEState.Error(ErrorCode.Unknown, "密码输入框中不可使用语音输入", failedMode = mode)
+        val startupError = validateRecordingStartup(mode)
+        if (startupError != null) {
+            _state.value = startupError
             return
         }
+        launchRecordingPipeline(mode, collectContext().toJson())
+    }
 
-        // Pipeline 未初始化时尝试重新初始化
-        if (!pipelineController.isInitialized) {
-            val error = pipelineController.reinitialize()
-            if (error != null) {
-                _state.value = IMEState.Error(error, errorMessage(error), failedMode = mode)
-                return
-            }
+    private fun validateRecordingStartup(mode: ProcessingMode): IMEState.Error? {
+        val currentState = _state.value
+        if (currentState is IMEState.Idle && currentState.isPasswordField) {
+            return IMEState.Error(ErrorCode.Unknown, "密码输入框中不可使用语音输入", failedMode = mode)
         }
+        if (pipelineController.isInitialized) {
+            return null
+        }
+        val error = pipelineController.reinitialize() ?: return null
+        return IMEState.Error(error, errorMessage(error), failedMode = mode)
+    }
 
-        // 采集上下文（在主线程，因为 InputConnection 只能在 IME 线程访问）
-        val contextJson = collectContext().toJson()
-
-        // 1. 建立流式 STT 连接（在 IO 线程，避免阻塞主线程）
+    private fun launchRecordingPipeline(mode: ProcessingMode, contextJson: String) {
         scope.launch {
             val streamError = pipelineController.startStreaming(mode, contextJson)
             if (streamError != null) {
@@ -205,37 +205,38 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
                 }
                 return@launch
             }
-
             withContext(Dispatchers.Main) {
-                // 状态守卫：IO→Main 切换期间可能有取消操作
-                if (_state.value !is IMEState.Idle) {
-                    pipelineController.cancelStreaming()
-                    return@withContext
-                }
+                beginRecordingSession(mode)
+            }
+        }
+    }
 
-                // 2. 开始录音，PCM 帧实时转发到 STT
-                val recordError = recordingController.start(mode) { pcmData ->
-                    pipelineController.sendAudioChunk(pcmData)
-                }
-                if (recordError != null) {
-                    pipelineController.cancelStreaming()
-                    _state.value = IMEState.Error(recordError, errorMessage(recordError), failedMode = mode)
-                    return@withContext
-                }
+    private fun beginRecordingSession(mode: ProcessingMode) {
+        if (_state.value !is IMEState.Idle) {
+            pipelineController.cancelStreaming()
+            return
+        }
+        val recordError = recordingController.start(mode) { pcmData ->
+            pipelineController.sendAudioChunk(pcmData)
+        }
+        if (recordError != null) {
+            pipelineController.cancelStreaming()
+            _state.value = IMEState.Error(recordError, errorMessage(recordError), failedMode = mode)
+            return
+        }
+        _state.value = IMEState.Recording(mode = mode)
+        startAmplitudeUpdates()
+    }
 
-                _state.value = IMEState.Recording(mode = mode)
-
-                // 启动振幅更新（~20fps）
-                amplitudeJob?.cancel()
-                amplitudeJob = scope.launch(Dispatchers.Main) {
-                    while (isActive && recordingController.isRecording) {
-                        val current = _state.value
-                        if (current is IMEState.Recording) {
-                            _state.value = current.copy(amplitude = recordingController.amplitude)
-                        }
-                        delay(50)
-                    }
+    private fun startAmplitudeUpdates() {
+        amplitudeJob?.cancel()
+        amplitudeJob = scope.launch(Dispatchers.Main) {
+            while (isActive && recordingController.isRecording) {
+                val current = _state.value
+                if (current is IMEState.Recording) {
+                    _state.value = current.copy(amplitude = recordingController.amplitude)
                 }
+                delay(50)
             }
         }
     }
@@ -244,12 +245,12 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         amplitudeJob?.cancel()
         val mode = currentMode
 
-        // 1. 停止录音 — 音频帧停止发送，STT 收到结束信号
+        // 1. 停止录音并结束音频流
         recordingController.stop()
 
-        _state.value = IMEState.Processing(mode = mode, stage = ProcessingStage.Transcribing)
+        _state.value = IMEState.Processing(mode = mode, stage = ProcessingStage.Thinking)
 
-        // 2. 收集 STT 结果 → LLM 处理（阻塞调用，在 IO 线程）
+        // 2. 单步多模态处理（阻塞调用，在 IO 线程）
         scope.launch {
             val result = pipelineController.stopStreaming()
             withContext(Dispatchers.Main) {
@@ -340,76 +341,64 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
      */
     private fun collectContext(): InputContextData {
         val editorInfo = currentEditorInfo
-
-        // 剪贴板 — 先于 selectedText 采集（避免后续操作覆盖）
-        val clipboardText = try {
-            val clipboard = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
-            clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
-        } catch (e: Exception) {
-            Log.d(TAG, "Failed to read clipboard", e)
-            null
-        }
-
-        // InputConnection 文本上下文
         val connection = currentInputConnection
-        val surroundingText = try {
-            if (connection != null) {
-                val before = connection.getTextBeforeCursor(500, 0)?.toString() ?: ""
-                val after = connection.getTextAfterCursor(500, 0)?.toString() ?: ""
-                val combined = before + after
-                combined.ifEmpty { null }
-            } else null
-        } catch (e: Exception) {
-            Log.d(TAG, "Failed to read surrounding text", e)
-            null
-        }
-
-        val selectedText = try {
-            connection?.getSelectedText(0)?.toString()
-        } catch (e: Exception) {
-            Log.d(TAG, "Failed to read selected text", e)
-            null
-        }
-
-        // 应用信息
         val appPackage = editorInfo?.packageName
-        val appName = try {
-            appPackage?.let { pkg ->
-                val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    packageManager.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
-                } else {
-                    @Suppress("DEPRECATION")
-                    packageManager.getApplicationInfo(pkg, 0)
-                }
-                packageManager.getApplicationLabel(appInfo).toString()
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Failed to resolve app name for $appPackage", e)
-            null
-        }
-
-        // 输入框类型
-        val inputFieldType = editorInfo?.let { parseInputFieldType(it.inputType) }
-
-        // hint 文本
-        val inputHint = editorInfo?.hintText?.toString()
-
-        // 编辑器动作
-        val editorAction = editorInfo?.let { parseEditorAction(it.imeOptions) }
-
         return InputContextData(
-            appName = appName,
+            appName = resolveAppName(appPackage),
             appPackage = appPackage,
             windowTitle = null, // Android 无窗口标题概念
             browserUrl = null, // 需要无障碍服务，本阶段不实现
-            inputFieldType = inputFieldType,
-            inputHint = inputHint,
-            editorAction = editorAction,
-            surroundingText = surroundingText,
-            selectedText = selectedText,
-            clipboardText = clipboardText,
+            inputFieldType = editorInfo?.let { parseInputFieldType(it.inputType) },
+            inputHint = editorInfo?.hintText?.toString(),
+            editorAction = editorInfo?.let { parseEditorAction(it.imeOptions) },
+            surroundingText = readSurroundingText(connection),
+            selectedText = readSelectedText(connection),
+            clipboardText = readClipboardText(),
             screenText = null, // 需要无障碍服务，本阶段不实现
         )
+    }
+
+    private fun readClipboardText(): String? = try {
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.primaryClip?.getItemAt(0)?.text?.toString()
+    } catch (e: Exception) {
+        Log.d(TAG, "Failed to read clipboard", e)
+        null
+    }
+
+    private fun readSurroundingText(connection: android.view.inputmethod.InputConnection?): String? = try {
+        if (connection == null) {
+            null
+        } else {
+            val before = connection.getTextBeforeCursor(500, 0)?.toString() ?: ""
+            val after = connection.getTextAfterCursor(500, 0)?.toString() ?: ""
+            (before + after).ifEmpty { null }
+        }
+    } catch (e: Exception) {
+        Log.d(TAG, "Failed to read surrounding text", e)
+        null
+    }
+
+    private fun readSelectedText(connection: android.view.inputmethod.InputConnection?): String? = try {
+        connection?.getSelectedText(0)?.toString()
+    } catch (e: Exception) {
+        Log.d(TAG, "Failed to read selected text", e)
+        null
+    }
+
+    private fun resolveAppName(appPackage: String?): String? = try {
+        appPackage?.let { pkg ->
+            val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getApplicationInfo(pkg, 0)
+            }
+            packageManager.getApplicationLabel(appInfo).toString()
+        }
+    } catch (e: Exception) {
+        Log.d(TAG, "Failed to resolve app name for $appPackage", e)
+        null
     }
 
     /**
@@ -449,8 +438,7 @@ class TingYuXuanIMEService : LifecycleInputMethodService() {
         ErrorCode.ApiKeyMissing -> "请先配置 API Key"
         ErrorCode.NativeLibraryMissing -> "核心库加载失败，请重新安装"
         ErrorCode.NetworkError -> "网络连接失败，请检查网络"
-        ErrorCode.SttAuthFailed -> "语音识别 API Key 无效"
-        ErrorCode.LlmAuthFailed -> "语言模型 API Key 无效"
+        ErrorCode.ProviderAuthFailed -> "LLM API Key 无效"
         ErrorCode.Timeout -> "请求超时，请重试"
         ErrorCode.Unknown -> "发生未知错误"
     }

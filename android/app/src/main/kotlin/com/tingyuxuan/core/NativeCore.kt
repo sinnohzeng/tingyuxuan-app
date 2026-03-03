@@ -44,7 +44,7 @@ object NativeCore {
     external fun initPipeline(configJson: String): Long
 
     /**
-     * 开始流式 STT 会话。建立 WebSocket 连接，准备接收音频帧。
+     * 开始音频流会话，准备接收 PCM 音频帧。
      *
      * @param handle Pipeline handle from [initPipeline].
      * @param mode Processing mode: "dictate", "translate", "edit", "ai_assistant".
@@ -54,7 +54,7 @@ object NativeCore {
     external fun startStreaming(handle: Long, mode: String, contextJson: String): String
 
     /**
-     * 发送一帧 PCM 音频到流式 STT。
+     * 发送一帧 PCM 音频到当前音频流会话。
      *
      * @param handle Pipeline handle.
      * @param pcmData 16kHz mono PCM16 音频数据。
@@ -63,9 +63,9 @@ object NativeCore {
     external fun sendAudioChunk(handle: Long, pcmData: ShortArray): Boolean
 
     /**
-     * 停止流式录音，收集 STT 结果并执行 LLM 处理。
+     * 停止录音并触发单步多模态处理。
      *
-     * 阻塞调用 — 等待 STT 最终结果和 LLM 处理完成。
+     * 阻塞调用 — 等待处理完成。
      *
      * @param handle Pipeline handle.
      * @return JSON string: `{"success": true, "text": "..."}` or error JSON.
@@ -88,10 +88,10 @@ object NativeCore {
     external fun validateConfig(configJson: String): String
 
     /**
-     * Test connectivity to STT or LLM service.
+     * Test connectivity to model service.
      *
      * @param configJson Full config JSON.
-     * @param service "stt" or "llm".
+     * @param service service id，当前仅支持 "llm"。
      * @return JSON string: `{"success": true}` or `{"success": false, "error": "..."}`.
      */
     external fun testConnection(configJson: String, service: String): String

@@ -15,7 +15,7 @@ import org.json.JSONObject
  *
  * 职责：
  * - 初始化/销毁 Pipeline handle
- * - 管理流式 STT 会话（startStreaming / sendAudioChunk / stopStreaming）
+ * - 管理音频流会话（startStreaming / sendAudioChunk / stopStreaming）
  * - 映射 Rust 错误到 Kotlin ErrorCode
  */
 class PipelineController(private val context: Context) {
@@ -74,11 +74,9 @@ class PipelineController(private val context: Context) {
     }
 
     /**
-     * 开始流式 STT 会话。
+     * 开始音频流会话。
      *
-     * 建立 WebSocket 连接，准备接收音频帧。
      * 调用后通过 [sendAudioChunk] 发送 PCM 数据。
-     *
      * @param mode 处理模式
      * @param contextJson InputContext 的 JSON 序列化（空字符串表示无上下文）
      * @return null 表示成功，非 null 表示失败
@@ -107,7 +105,7 @@ class PipelineController(private val context: Context) {
                 null
             } else {
                 val errorCode = obj.optString("error_code", "unknown")
-                val message = obj.optString("message", "流式连接失败")
+                val message = obj.optString("message", "会话启动失败")
                 ProcessResult.Failure(mapErrorCode(errorCode), message)
             }
         } catch (e: Exception) {
@@ -117,10 +115,7 @@ class PipelineController(private val context: Context) {
     }
 
     /**
-     * 发送一帧 PCM 音频数据到流式 STT。
-     *
-     * @param pcmData 16kHz mono PCM16 音频数据
-     * @return true 表示发送成功
+     * 发送一帧 PCM 音频数据到音频流会话。
      */
     fun sendAudioChunk(pcmData: ShortArray): Boolean {
         val handle = pipelineHandle
@@ -134,11 +129,7 @@ class PipelineController(private val context: Context) {
     }
 
     /**
-     * 停止流式录音，收集 STT 结果并执行 LLM 处理。
-     *
-     * 阻塞调用 — 在 IO 线程中执行。
-     *
-     * @return [ProcessResult.Success] 或 [ProcessResult.Failure]
+     * 停止流式录音并触发单步多模态处理。
      */
     suspend fun stopStreaming(): ProcessResult = withContext(Dispatchers.IO) {
         isStreaming = false
@@ -204,8 +195,8 @@ class PipelineController(private val context: Context) {
     }
 
     private fun mapErrorCode(code: String): ErrorCode = when (code) {
-        "stt_auth_failed" -> ErrorCode.SttAuthFailed
-        "llm_auth_failed" -> ErrorCode.LlmAuthFailed
+        "stt_auth_failed" -> ErrorCode.ProviderAuthFailed
+        "llm_auth_failed" -> ErrorCode.ProviderAuthFailed
         "timeout" -> ErrorCode.Timeout
         "network_error" -> ErrorCode.NetworkError
         "not_configured" -> ErrorCode.ApiKeyMissing

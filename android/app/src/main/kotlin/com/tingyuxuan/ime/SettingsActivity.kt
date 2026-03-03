@@ -3,11 +3,35 @@ package com.tingyuxuan.ime
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.ExposedDropdownMenu
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -18,12 +42,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * 设置页面 — 完整的 API 配置、连接测试、语言设置。
- *
- * 从 Onboarding 或键盘设置按钮跳转进入。
+ * 设置页面：单步多模态配置（仅 LLM 必填）+ 语言参数。
  */
 class SettingsActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val configStore = ConfigStore(this)
@@ -36,22 +57,13 @@ class SettingsActivity : ComponentActivity() {
     }
 }
 
-// --- STT 供应商选项 ---
-private val STT_PROVIDERS = listOf(
-    "whisper" to "OpenAI Whisper",
-    "dashscope_asr" to "DashScope ASR (阿里云)",
-    "custom" to "自定义",
-)
-
-// --- LLM 供应商选项 ---
 private val LLM_PROVIDERS = listOf(
-    "openai" to "OpenAI",
     "dashscope" to "DashScope (通义千问)",
+    "openai" to "OpenAI",
     "volcengine" to "Volcengine (豆包)",
     "custom" to "自定义",
 )
 
-// --- 翻译目标语言 ---
 private val TRANSLATION_LANGUAGES = listOf(
     "en" to "English",
     "zh" to "中文",
@@ -65,34 +77,18 @@ private val TRANSLATION_LANGUAGES = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(configStore: ConfigStore) {
-    // STT 配置
-    var sttProvider by remember { mutableStateOf(configStore.sttProvider) }
-    var sttApiKey by remember { mutableStateOf(configStore.sttApiKey) }
-    var sttBaseUrl by remember { mutableStateOf(configStore.sttBaseUrl ?: "") }
-    var sttModel by remember { mutableStateOf(configStore.sttModel ?: "") }
-
-    // LLM 配置
     var llmProvider by remember { mutableStateOf(configStore.llmProvider) }
     var llmApiKey by remember { mutableStateOf(configStore.llmApiKey) }
     var llmBaseUrl by remember { mutableStateOf(configStore.llmBaseUrl ?: "") }
     var llmModel by remember { mutableStateOf(configStore.llmModel) }
-
-    // 语言配置
     var translationTarget by remember { mutableStateOf(configStore.translationTarget) }
 
-    // UI 状态
     var saved by remember { mutableStateOf(false) }
-    var sttTestResult by remember { mutableStateOf<String?>(null) }
-    var llmTestResult by remember { mutableStateOf<String?>(null) }
+    var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // 保存所有设置
     fun saveAll() {
-        configStore.sttProvider = sttProvider
-        configStore.sttApiKey = sttApiKey
-        configStore.sttBaseUrl = sttBaseUrl.ifEmpty { null }
-        configStore.sttModel = sttModel.ifEmpty { null }
         configStore.llmProvider = llmProvider
         configStore.llmApiKey = llmApiKey
         configStore.llmBaseUrl = llmBaseUrl.ifEmpty { null }
@@ -101,46 +97,33 @@ private fun SettingsScreen(configStore: ConfigStore) {
         saved = true
     }
 
-    // 测试连接
-    fun testConnection(service: String, onResult: (String) -> Unit) {
+    fun testLlmConnection() {
         if (!NativeCore.isLoaded) {
-            onResult("核心库未加载")
+            testResult = "核心库未加载"
             return
         }
-        // 先保存再测试
         saveAll()
         val configJson = configStore.buildConfigJson()
         if (configJson == null) {
-            onResult("请先填写 API Key")
+            testResult = "请先填写 LLM API Key"
             return
         }
         testing = true
         coroutineScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
-                    NativeCore.testConnection(configJson, service)
+                    NativeCore.testConnection(configJson, "llm")
                 } catch (e: Exception) {
-                    """{"success": false, "error": "${e.message}"}"""
+                    """{"success": false, "message": "${e.message}"}"""
                 }
             }
             testing = false
-            try {
-                val json = JSONObject(result)
-                if (json.optBoolean("success", false)) {
-                    onResult("连接成功 \u2713")
-                } else {
-                    onResult("连接失败: ${json.optString("error", "未知错误")}")
-                }
-            } catch (e: Exception) {
-                onResult("解析失败: ${e.message}")
-            }
+            testResult = parseConnectionResult(result)
         }
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("听语轩 设置") })
-        }
+        topBar = { TopAppBar(title = { Text("听语轩 设置") }) },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -150,69 +133,6 @@ private fun SettingsScreen(configStore: ConfigStore) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // === STT 配置 ===
-            SectionHeader("语音识别 (STT)")
-
-            ProviderSelector(
-                label = "STT 供应商",
-                providers = STT_PROVIDERS,
-                selected = sttProvider,
-                onSelected = { sttProvider = it },
-            )
-
-            OutlinedTextField(
-                value = sttApiKey,
-                onValueChange = { sttApiKey = it },
-                label = { Text("STT API Key") },
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            OutlinedTextField(
-                value = sttBaseUrl,
-                onValueChange = { sttBaseUrl = it },
-                label = { Text("STT Base URL（可选）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            OutlinedTextField(
-                value = sttModel,
-                onValueChange = { sttModel = it },
-                label = { Text("STT 模型（可选）") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            // STT 连接测试
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = { testConnection("stt") { sttTestResult = it } },
-                    enabled = !testing && sttApiKey.isNotEmpty(),
-                ) {
-                    Text(if (testing) "测试中..." else "测试 STT 连接")
-                }
-                sttTestResult?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (it.contains("\u2713")) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-            // === LLM 配置 ===
             SectionHeader("语言模型 (LLM)")
 
             ProviderSelector(
@@ -247,34 +167,26 @@ private fun SettingsScreen(configStore: ConfigStore) {
                 singleLine = true,
             )
 
-            // LLM 连接测试
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            OutlinedButton(
+                onClick = ::testLlmConnection,
+                enabled = !testing && llmApiKey.isNotEmpty(),
             ) {
-                OutlinedButton(
-                    onClick = { testConnection("llm") { llmTestResult = it } },
-                    enabled = !testing && llmApiKey.isNotEmpty(),
-                ) {
-                    Text(if (testing) "测试中..." else "测试 LLM 连接")
-                }
-                llmTestResult?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (it.contains("\u2713")) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                Text(if (testing) "测试中..." else "测试 LLM 连接")
+            }
+            testResult?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it.contains("\u2713")) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            // === 语言设置 ===
             SectionHeader("语言设置")
 
             ProviderSelector(
@@ -286,7 +198,6 @@ private fun SettingsScreen(configStore: ConfigStore) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            // === 保存按钮 ===
             Button(
                 onClick = { saveAll() },
                 modifier = Modifier.fillMaxWidth(),
@@ -304,23 +215,39 @@ private fun SettingsScreen(configStore: ConfigStore) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            // === 关于 ===
             SectionHeader("关于")
-
             val coreVersion = remember {
                 if (NativeCore.isLoaded) {
-                    try { NativeCore.getVersion() } catch (_: Exception) { "未知" }
-                } else "核心库未加载"
+                    try {
+                        NativeCore.getVersion()
+                    } catch (_: Exception) {
+                        "未知"
+                    }
+                } else {
+                    "核心库未加载"
+                }
             }
-
             Text(
-                "应用版本: 0.4.0\n核心库版本: $coreVersion",
+                "应用版本: 0.10.3\n核心库版本: $coreVersion",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             Spacer(modifier = Modifier.height(32.dp))
         }
+    }
+}
+
+private fun parseConnectionResult(result: String): String {
+    return try {
+        val json = JSONObject(result)
+        if (json.optBoolean("success", false)) {
+            "连接成功 \u2713"
+        } else {
+            "连接失败: ${json.optString("message", "未知错误")}"
+        }
+    } catch (e: Exception) {
+        "解析失败: ${e.message}"
     }
 }
 

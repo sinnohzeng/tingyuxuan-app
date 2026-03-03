@@ -181,7 +181,7 @@ private fun OnboardingScreen(
             SetupStepCard(
                 stepNumber = 3,
                 title = "配置 API Key",
-                description = "设置语音识别 (STT) 和语言模型 (LLM) 的 API Key",
+                description = "设置多模态语言模型 (LLM) 的 API Key",
                 isDone = apiConfigured,
                 buttonLabel = "去配置",
                 onAction = onOpenSettings,
