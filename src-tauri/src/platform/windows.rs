@@ -536,7 +536,9 @@ fn install_keyboard_hook(
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD_LL};
 
-    let hinstance = unsafe { GetModuleHandleW(None) }.ok().map(|h| HINSTANCE(h.0));
+    let hinstance = unsafe { GetModuleHandleW(None) }
+        .ok()
+        .map(|h| HINSTANCE(h.0));
     let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
     match hook {
         Ok(h) => Some(h),
@@ -564,7 +566,9 @@ fn run_windows_message_loop(
     msg: &mut windows::Win32::UI::WindowsAndMessaging::MSG,
     wm_ralt_action: u32,
 ) {
-    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, TranslateMessage,
+    };
 
     loop {
         let ret = unsafe { GetMessageW(msg, None, 0, 0) };

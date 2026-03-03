@@ -77,7 +77,8 @@ impl Pipeline {
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
-        let span = tracing::info_span!("pipeline", mode = %request.mode, audio_samples = buffer.len());
+        let span =
+            tracing::info_span!("pipeline", mode = %request.mode, audio_samples = buffer.len());
         async {
             ensure_not_cancelled(&cancel_token)?;
             let primary = self.build_primary_input(&buffer, request)?;
@@ -131,7 +132,9 @@ impl Pipeline {
                 if primary.primary_was_mp3 && should_retry_with_wav(&llm_err) =>
             {
                 tracing::warn!(%llm_err, "Server rejected MP3 input, retrying once with WAV");
-                let fallback_audio = buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?;
+                let fallback_audio = buffer
+                    .encode(AudioFormat::Wav)
+                    .map_err(PipelineError::Audio)?;
                 let fallback_input = build_processing_input(request, fallback_audio);
                 self.invoke_llm(&fallback_input, cancel_token).await
             }
@@ -177,7 +180,9 @@ fn encode_audio_with_fallback(
         Ok(mp3) => mp3,
         Err(mp3_err) => {
             tracing::warn!(%mp3_err, "MP3 encode failed, falling back to WAV");
-            buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?
+            buffer
+                .encode(AudioFormat::Wav)
+                .map_err(PipelineError::Audio)?
         }
     };
     log_audio_encoding_metrics(&encoded, encode_start, raw_pcm_bytes);

@@ -152,9 +152,9 @@
 
 1. Typeless 官网：<https://www.typeless.com/>
 2. Typeless Data Controls：<https://www.typeless.com/data-controls>
-3. Typeless Quick Start：<https://www.typeless.com/help/quick-start-guide>
-4. Typeless Release Notes：<https://www.typeless.com/release-notes>
-5. Typeless Privacy Policy：<https://www.typeless.com/privacy-policy>
+3. Typeless Quick Start：<https://www.typeless.com/help/quickstart/first-dictation>
+4. Typeless Release Notes：<https://www.typeless.com/help/release-notes>
+5. Typeless Privacy Policy：<https://www.typeless.com/privacy>
 6. 阿里云模型列表：<https://help.aliyun.com/zh/model-studio/model-list>
 7. 阿里云 Realtime API：<https://help.aliyun.com/zh/model-studio/realtime-api>
 8. 阿里云 Qwen-Omni：<https://help.aliyun.com/zh/model-studio/qwen-omni>

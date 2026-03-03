@@ -514,7 +514,12 @@ fn create_fn_event_tap(
             if is_tap_disabled_event(event_type as u32) {
                 return None;
             }
-            handle_fn_flags_change(&app, &fn_pressed_clone, event.get_flags().bits(), fn_flag_mask);
+            handle_fn_flags_change(
+                &app,
+                &fn_pressed_clone,
+                event.get_flags().bits(),
+                fn_flag_mask,
+            );
             None
         },
     )

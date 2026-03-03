@@ -4,7 +4,7 @@
 
 ## 1. Typeless 产品分析
 
-[Typeless](https://typeless.so/) 是目前最具代表性的 AI 语音输入工具，主打"用说话代替打字"。
+[Typeless](https://www.typeless.com/) 是目前最具代表性的 AI 语音输入工具，主打"用说话代替打字"。
 
 ### 定价模型
 

@@ -230,7 +230,8 @@ async fn build_start_context(
 ) -> StartContext {
     let session_id = uuid::Uuid::new_v4().to_string();
     add_start_breadcrumb(&session_id, &mode);
-    let session_span = tracing::info_span!("session", session_id = %session_id, mode = tracing::field::Empty);
+    let session_span =
+        tracing::info_span!("session", session_id = %session_id, mode = tracing::field::Empty);
     let context = detector_state.0.collect_context();
     let processing_mode = resolve_processing_mode(&mode, &context);
     let (target_language, user_dictionary) =
@@ -272,8 +273,13 @@ fn add_start_breadcrumb(session_id: &str, mode: &str) {
     });
 }
 
-fn resolve_processing_mode(mode: &str, context: &tingyuxuan_core::context::InputContext) -> ProcessingMode {
-    let parsed = mode.parse::<ProcessingMode>().unwrap_or(ProcessingMode::Dictate);
+fn resolve_processing_mode(
+    mode: &str,
+    context: &tingyuxuan_core::context::InputContext,
+) -> ProcessingMode {
+    let parsed = mode
+        .parse::<ProcessingMode>()
+        .unwrap_or(ProcessingMode::Dictate);
     if context.selected_text.is_some() && matches!(parsed, ProcessingMode::Dictate) {
         tracing::info!("Auto-switched to Edit mode (selected text detected)");
         return ProcessingMode::Edit;
@@ -316,7 +322,10 @@ async fn start_recorder(
     Ok(())
 }
 
-async fn create_recording_history(history_state: &State<'_, HistoryState>, start_ctx: &StartContext) {
+async fn create_recording_history(
+    history_state: &State<'_, HistoryState>,
+    start_ctx: &StartContext,
+) {
     let history = history_state.0.lock().await;
     let record = TranscriptRecord {
         id: start_ctx.session_id.clone(),
@@ -361,11 +370,19 @@ pub async fn stop_recording(
     let _ = event_bus.0.send(PipelineEvent::RecordingStopped {
         duration_ms: stop_ctx.duration_ms,
     });
-    if let Some(status) = validate_buffer(&buffer, &event_bus, &history_state, &stop_ctx.session_id).await {
+    if let Some(status) =
+        validate_buffer(&buffer, &event_bus, &history_state, &stop_ctx.session_id).await
+    {
         return Ok(status);
     }
 
-    spawn_processing_task(buffer, stop_ctx, &injector_state, &event_bus, &history_state);
+    spawn_processing_task(
+        buffer,
+        stop_ctx,
+        &injector_state,
+        &event_bus,
+        &history_state,
+    );
     Ok("processing".to_string())
 }
 
@@ -395,7 +412,9 @@ impl StopContext {
     }
 }
 
-async fn take_active_session(session_state: &State<'_, SessionState>) -> Result<ActiveSession, String> {
+async fn take_active_session(
+    session_state: &State<'_, SessionState>,
+) -> Result<ActiveSession, String> {
     session_state
         .0
         .lock()
@@ -443,7 +462,10 @@ async fn reject_too_long(
     if buffer.duration_ms() <= MAX_AUDIO_DURATION_MS {
         return None;
     }
-    tracing::warn!(duration_ms = buffer.duration_ms(), "Audio exceeds MVP max duration");
+    tracing::warn!(
+        duration_ms = buffer.duration_ms(),
+        "Audio exceeds MVP max duration"
+    );
     let _ = event_bus.0.send(PipelineEvent::Error {
         message: "当前版本仅支持单次录音小于等于 5 分钟".to_string(),
         user_action: tingyuxuan_core::error::UserAction::Retry,
@@ -477,7 +499,11 @@ async fn reject_silence(
     session_id: &str,
 ) -> Option<String> {
     let rms = buffer.rms_level();
-    tracing::info!(rms, duration_ms = buffer.duration_ms(), "Audio buffer stats");
+    tracing::info!(
+        rms,
+        duration_ms = buffer.duration_ms(),
+        "Audio buffer stats"
+    );
     if rms >= 200.0 {
         return None;
     }
@@ -588,10 +614,7 @@ pub async fn cancel_recording(
     Ok(())
 }
 
-async fn handle_session_cancelled(
-    session: ActiveSession,
-    history_state: &State<'_, HistoryState>,
-) {
+async fn handle_session_cancelled(session: ActiveSession, history_state: &State<'_, HistoryState>) {
     session.cancel_token.cancel();
     add_cancel_breadcrumb(&session.session_id);
     update_history_status(history_state, &session.session_id, "cancelled").await;

@@ -338,7 +338,9 @@ impl AudioRecorder {
                 log_stream_error,
                 None,
             )
-            .map_err(|e| AudioError::StreamError(format!("Failed to build i16 input stream: {}", e)))
+            .map_err(|e| {
+                AudioError::StreamError(format!("Failed to build i16 input stream: {}", e))
+            })
     }
 
     fn build_f32_stream(
@@ -358,7 +360,9 @@ impl AudioRecorder {
                 log_stream_error,
                 None,
             )
-            .map_err(|e| AudioError::StreamError(format!("Failed to build f32 input stream: {}", e)))
+            .map_err(|e| {
+                AudioError::StreamError(format!("Failed to build f32 input stream: {}", e))
+            })
     }
 
     fn build_u16_stream(
@@ -378,7 +382,9 @@ impl AudioRecorder {
                 log_stream_error,
                 None,
             )
-            .map_err(|e| AudioError::StreamError(format!("Failed to build u16 input stream: {}", e)))
+            .map_err(|e| {
+                AudioError::StreamError(format!("Failed to build u16 input stream: {}", e))
+            })
     }
 
     fn build_u8_stream(
@@ -485,7 +491,9 @@ impl AudioRecorder {
         if !guard.is_recording {
             return false;
         }
-        guard.buffer.extend_from_slice(&vec![0i16; RMS_WINDOW_SAMPLES]);
+        guard
+            .buffer
+            .extend_from_slice(&vec![0i16; RMS_WINDOW_SAMPLES]);
         guard.sample_count += RMS_WINDOW_SAMPLES as u64;
         if guard.buffer.len() >= MAX_SAMPLES {
             guard.is_recording = false;

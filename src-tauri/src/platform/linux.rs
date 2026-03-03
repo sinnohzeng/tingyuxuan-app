@@ -179,9 +179,11 @@ impl LinuxTextInjector {
 
     fn inject_direct_mode(&self, text: &str) -> Result<(), PlatformError> {
         match self.display {
-            DisplayServer::X11 => {
-                type_with_tool("xdotool", &["type", "--clearmodifiers", "--", text], "xdotool")
-            }
+            DisplayServer::X11 => type_with_tool(
+                "xdotool",
+                &["type", "--clearmodifiers", "--", text],
+                "xdotool",
+            ),
             DisplayServer::Wayland => type_with_tool("wtype", &["--", text], "wtype"),
             DisplayServer::Unknown => type_with_tool("ydotool", &["type", "--", text], "ydotool"),
         }

@@ -140,8 +140,7 @@ impl AudioBuffer {
     fn encode_mp3(&self) -> Result<EncodedAudio, AudioError> {
         self.validate_mp3_input()?;
         let config = self.build_mp3_config();
-        let data =
-            encode_pcm_to_mp3(config, &self.samples).map_err(mp3_encode_error)?;
+        let data = encode_pcm_to_mp3(config, &self.samples).map_err(mp3_encode_error)?;
         ensure_mp3_output(&data)?;
 
         Ok(EncodedAudio {

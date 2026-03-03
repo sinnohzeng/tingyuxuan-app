@@ -97,7 +97,10 @@ impl SlsTransport {
                 return;
             }
         };
-        log_flush_result(post_payload(&client, endpoint, &payload).await, events.len());
+        log_flush_result(
+            post_payload(&client, endpoint, &payload).await,
+            events.len(),
+        );
     }
 }
 

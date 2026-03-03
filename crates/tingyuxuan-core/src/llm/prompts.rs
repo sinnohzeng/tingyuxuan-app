@@ -190,7 +190,11 @@ fn push_string_field(parts: &mut Vec<String>, label: &str, value: Option<&str>) 
     }
 }
 
-fn push_display_field<T: std::fmt::Display>(parts: &mut Vec<String>, label: &str, value: Option<&T>) {
+fn push_display_field<T: std::fmt::Display>(
+    parts: &mut Vec<String>,
+    label: &str,
+    value: Option<&T>,
+) {
     if let Some(v) = value {
         parts.push(format!("{label}：{v}"));
     }
@@ -219,10 +223,14 @@ fn tone_from_input_field(field_type: Option<&InputFieldType>) -> Option<Tone> {
 }
 
 fn collect_tone_sources(ctx: &InputContext) -> Vec<&str> {
-    [ctx.app_name.as_deref(), ctx.window_title.as_deref(), ctx.browser_url.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect()
+    [
+        ctx.app_name.as_deref(),
+        ctx.window_title.as_deref(),
+        ctx.browser_url.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn classify_source_tone(lower: &str) -> Option<Tone> {

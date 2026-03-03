@@ -125,7 +125,9 @@ impl MultimodalProvider {
             .map_err(map_network_error)
     }
 
-    async fn ensure_success_response(response: reqwest::Response) -> Result<reqwest::Response, LLMError> {
+    async fn ensure_success_response(
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response, LLMError> {
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -228,7 +230,13 @@ fn process_sse_lines(
 ) -> Result<bool, LLMError> {
     while let Some(newline_pos) = line_buf.find('\n') {
         let line: String = line_buf.drain(..=newline_pos).collect();
-        if let Some(done) = process_sse_line(line.trim(), result_text, tokens_used, ttfb_logged, sse_start)? {
+        if let Some(done) = process_sse_line(
+            line.trim(),
+            result_text,
+            tokens_used,
+            ttfb_logged,
+            sse_start,
+        )? {
             return Ok(done);
         }
     }
@@ -275,10 +283,7 @@ fn append_delta_content(
         && let Some(ref content) = delta.content
     {
         if !*ttfb_logged && !content.is_empty() {
-            tracing::info!(
-                ttfb_ms = sse_start.elapsed().as_millis() as u64,
-                "LLM TTFB"
-            );
+            tracing::info!(ttfb_ms = sse_start.elapsed().as_millis() as u64, "LLM TTFB");
             *ttfb_logged = true;
         }
         result_text.push_str(content);

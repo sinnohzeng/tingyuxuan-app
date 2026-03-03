@@ -178,10 +178,7 @@ fn parse_mic_menu_id(menu_id: &str) -> Option<Option<String>> {
     }
 }
 
-async fn persist_selected_mic(
-    app: &AppHandle,
-    device_id: Option<String>,
-) -> Result<(), ()> {
+async fn persist_selected_mic(app: &AppHandle, device_id: Option<String>) -> Result<(), ()> {
     if let Some(config_state) = app.try_state::<ConfigState>() {
         let mut config = config_state.0.write().await;
         config.audio.input_device_id = device_id;

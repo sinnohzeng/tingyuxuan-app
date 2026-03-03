@@ -36,7 +36,33 @@ fn build_tauri_app(sentry_client: &sentry::ClientInitGuard) -> tauri::Builder<ta
         .plugin(tauri_plugin_opener::init())
         .setup(setup_app)
         .on_window_event(handle_main_close)
-        .invoke_handler(tauri::generate_handler![commands::start_recording, commands::stop_recording, commands::cancel_recording, commands::get_config, commands::save_config, commands::test_multimodal_connection, commands::get_recent_history, commands::save_api_key, commands::get_api_key, commands::inject_text, commands::get_dictionary, commands::add_dictionary_word, commands::remove_dictionary_word, commands::search_history, commands::get_history_page, commands::delete_history, commands::delete_history_batch, commands::clear_history, commands::is_first_launch, commands::get_dashboard_stats, commands::check_platform_permissions, commands::open_permission_settings, commands::report_telemetry_event, commands::list_input_devices, commands::set_input_device])
+        .invoke_handler(tauri::generate_handler![
+            commands::start_recording,
+            commands::stop_recording,
+            commands::cancel_recording,
+            commands::get_config,
+            commands::save_config,
+            commands::test_multimodal_connection,
+            commands::get_recent_history,
+            commands::save_api_key,
+            commands::get_api_key,
+            commands::inject_text,
+            commands::get_dictionary,
+            commands::add_dictionary_word,
+            commands::remove_dictionary_word,
+            commands::search_history,
+            commands::get_history_page,
+            commands::delete_history,
+            commands::delete_history_batch,
+            commands::clear_history,
+            commands::is_first_launch,
+            commands::get_dashboard_stats,
+            commands::check_platform_permissions,
+            commands::open_permission_settings,
+            commands::report_telemetry_event,
+            commands::list_input_devices,
+            commands::set_input_device
+        ])
 }
 
 fn setup_app(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -81,7 +107,8 @@ fn setup_network_monitor(app: &mut App, states: &AppStates) {
 
     let monitor = tingyuxuan_core::pipeline::network::NetworkMonitor::new(check_url);
     let event_bus_clone = states.event_bus.0.clone();
-    let monitor_token = tauri::async_runtime::block_on(async move { monitor.start(event_bus_clone) });
+    let monitor_token =
+        tauri::async_runtime::block_on(async move { monitor.start(event_bus_clone) });
     app.manage(state::MonitorState(monitor_token));
 }
 
@@ -275,8 +302,14 @@ fn register_linux_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::
     warn_if_wayland();
     let shortcuts = [
         (Shortcut::new(None, Code::AltRight), "dictate"),
-        (Shortcut::new(Some(Modifiers::SHIFT), Code::AltRight), "translate"),
-        (Shortcut::new(Some(Modifiers::ALT), Code::Space), "ai_assistant"),
+        (
+            Shortcut::new(Some(Modifiers::SHIFT), Code::AltRight),
+            "translate",
+        ),
+        (
+            Shortcut::new(Some(Modifiers::ALT), Code::Space),
+            "ai_assistant",
+        ),
         (Shortcut::new(None, Code::Escape), "cancel"),
     ];
     let handle = app.handle().clone();
@@ -410,12 +443,18 @@ async fn handle_mode_shortcut(
             let _ = handle.emit("shortcut-action", action);
         }
         SessionPhase::Starting { triggered_at } => {
-            tracing::info!(elapsed_ms = triggered_at.elapsed().as_millis(), "Shortcut: ignoring (recorder still starting)");
+            tracing::info!(
+                elapsed_ms = triggered_at.elapsed().as_millis(),
+                "Shortcut: ignoring (recorder still starting)"
+            );
         }
         SessionPhase::Recording { started_at } => {
             let elapsed = started_at.elapsed();
             if elapsed < std::time::Duration::from_millis(DEBOUNCE_MS) {
-                tracing::info!(elapsed_ms = elapsed.as_millis(), "Shortcut: debounce (too quick, ignoring)");
+                tracing::info!(
+                    elapsed_ms = elapsed.as_millis(),
+                    "Shortcut: debounce (too quick, ignoring)"
+                );
                 return;
             }
             *phase = SessionPhase::Thinking;
@@ -434,7 +473,14 @@ fn init_sentry() -> sentry::ClientInitGuard {
         dsn,
         sentry::ClientOptions {
             release: sentry::release_name!(),
-            environment: Some(if cfg!(debug_assertions) { "development" } else { "production" }.into()),
+            environment: Some(
+                if cfg!(debug_assertions) {
+                    "development"
+                } else {
+                    "production"
+                }
+                .into(),
+            ),
             auto_session_tracking: true,
             sample_rate: 1.0,
             traces_sample_rate: 0.2,
