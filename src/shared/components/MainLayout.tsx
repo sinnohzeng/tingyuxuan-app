@@ -88,38 +88,8 @@ export default function MainLayout() {
         const { listen } = await import("@tauri-apps/api/event");
         const { invoke } = await import("@tauri-apps/api/core");
 
-        const u = await listen<string>("shortcut-action", async (event) => {
-          const action = event.payload;
-          log.info(`快捷键: ${action}`);
-
-          // 视觉脉冲反馈
-          setShortcutPulse(action);
-          setTimeout(() => setShortcutPulse(null), 800);
-
-          // 后端已做 toggle 判断：录音中发 "stop"，非录音中发模式名。
-          // 主窗口和浮动条是独立 JS 上下文，Zustand store 不共享，
-          // 因此不依赖本窗口 store 状态做守卫，直接执行后端指令。
-          switch (action) {
-            case "cancel":
-              trackEvent("user_action", { action: "cancel" });
-              invoke("cancel_recording").catch(() => {});
-              break;
-            case "stop":
-              invoke("stop_recording").catch(() => {});
-              break;
-            case "dictate":
-            case "translate":
-            case "ai_assistant":
-              trackEvent("user_action", { action: `start_${action}` });
-              invoke<string>("start_recording", { mode: action })
-                .then((sessionId) => {
-                  setLogSession(sessionId);
-                })
-                .catch((errStr: string) => {
-                  log.warn(`录音启动失败: ${errStr}`);
-                });
-              break;
-          }
+        const u = await listen<string>("shortcut-action", (event) => {
+          void handleShortcutAction(event.payload, invoke, setShortcutPulse);
         });
         if (cleaned) { u(); return; }
         unlisteners.push(u);
@@ -224,4 +194,38 @@ export default function MainLayout() {
       <ToastHost />
     </FluentProvider>
   );
+}
+
+type TauriInvoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+async function handleShortcutAction(
+  action: string,
+  invoke: TauriInvoke,
+  setShortcutPulse: (action: string | null) => void,
+) {
+  log.info(`快捷键: ${action}`);
+  setShortcutPulse(action);
+  setTimeout(() => setShortcutPulse(null), 800);
+
+  if (action === "cancel") {
+    trackEvent("user_action", { action: "cancel" });
+    await invoke("cancel_recording").catch(() => {});
+    return;
+  }
+  if (action === "stop") {
+    await invoke("stop_recording").catch(() => {});
+    return;
+  }
+  if (!isStartAction(action)) {
+    return;
+  }
+
+  trackEvent("user_action", { action: `start_${action}` });
+  invoke<string>("start_recording", { mode: action })
+    .then((sessionId) => setLogSession(sessionId))
+    .catch((errStr: string) => log.warn(`录音启动失败: ${errStr}`));
+}
+
+function isStartAction(action: string): action is "dictate" | "translate" | "ai_assistant" {
+  return action === "dictate" || action === "translate" || action === "ai_assistant";
 }

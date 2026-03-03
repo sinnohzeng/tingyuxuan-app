@@ -19,6 +19,8 @@ export interface UseApiKeyReturn {
   saveKey: () => Promise<void>;
 }
 
+type KeyStatus = UseApiKeyReturn["keyStatus"];
+
 /** 生成掩码：sk-****xxxx（末 4 位可见），短 key 全掩码 */
 function maskApiKey(raw: string): string {
   if (raw.length <= 8) return "*".repeat(raw.length);
@@ -36,51 +38,93 @@ export function useApiKey(service: "llm"): UseApiKeyReturn {
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  // 挂载时检查 key 是否已配置
   useEffect(() => {
-    (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const existing = await invoke<string | null>("get_api_key", { service });
-        if (existing) {
-          setKeyStatus("configured");
-          setMaskedKey(maskApiKey(existing));
-        } else {
-          setKeyStatus("unconfigured");
-        }
-      } catch (e) {
-        log.error(`加载 ${service} API Key 状态失败:`, e);
-        setKeyStatus("unconfigured");
-      }
-    })();
+    void loadKeyStatus(service, setKeyStatus, setMaskedKey);
   }, [service]);
 
-  const saveKey = useCallback(async () => {
-    if (!keyValue.trim()) return;
+  const saveKey = useSaveKey(
+    service,
+    keyValue,
+    timerRef,
+    setMaskedKey,
+    setKeyStatus,
+    setKeyValue,
+    setIsEditing,
+  );
+  const { startEditing, cancelEditing } = useEditHandlers(setIsEditing, setKeyValue);
+
+  return { keyValue, maskedKey, keyStatus, isEditing, setKeyValue, startEditing, cancelEditing, saveKey };
+}
+
+async function loadKeyStatus(
+  service: "llm",
+  setKeyStatus: (status: KeyStatus) => void,
+  setMaskedKey: (masked: string) => void,
+) {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const existing = await invoke<string | null>("get_api_key", { service });
+    if (!existing) {
+      setKeyStatus("unconfigured");
+      return;
+    }
+    setKeyStatus("configured");
+    setMaskedKey(maskApiKey(existing));
+  } catch (e) {
+    log.error(`加载 ${service} API Key 状态失败:`, e);
+    setKeyStatus("unconfigured");
+  }
+}
+
+function handleSaveFailed(
+  service: "llm",
+  error: unknown,
+  timerRef: { current: ReturnType<typeof setTimeout> | undefined },
+  setKeyStatus: (status: KeyStatus) => void,
+) {
+  log.error(`保存 ${service} API Key 失败:`, error);
+  setKeyStatus("save_failed");
+  clearTimeout(timerRef.current);
+  timerRef.current = setTimeout(() => setKeyStatus("configured"), 3000);
+}
+
+function useSaveKey(
+  service: "llm",
+  keyValue: string,
+  timerRef: { current: ReturnType<typeof setTimeout> | undefined },
+  setMaskedKey: (masked: string) => void,
+  setKeyStatus: (status: KeyStatus) => void,
+  setKeyValue: (value: string) => void,
+  setIsEditing: (editing: boolean) => void,
+) {
+  return useCallback(async () => {
+    const trimmed = keyValue.trim();
+    if (!trimmed) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_api_key", { service, key: keyValue.trim() });
-      setMaskedKey(maskApiKey(keyValue.trim()));
+      await invoke("save_api_key", { service, key: trimmed });
+      setMaskedKey(maskApiKey(trimmed));
       setKeyStatus("configured");
       setKeyValue("");
       setIsEditing(false);
     } catch (e) {
-      log.error(`保存 ${service} API Key 失败:`, e);
-      setKeyStatus("save_failed");
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setKeyStatus("configured"), 3000);
+      handleSaveFailed(service, e, timerRef, setKeyStatus);
     }
-  }, [keyValue, service]);
+  }, [keyValue, service, setIsEditing, setKeyStatus, setKeyValue, setMaskedKey, timerRef]);
+}
 
+function useEditHandlers(
+  setIsEditing: (editing: boolean) => void,
+  setKeyValue: (value: string) => void,
+) {
+  const resetInput = useCallback(() => setKeyValue(""), [setKeyValue]);
   const startEditing = useCallback(() => {
     setIsEditing(true);
-    setKeyValue("");
-  }, []);
-
+    resetInput();
+  }, [setIsEditing, resetInput]);
   const cancelEditing = useCallback(() => {
     setIsEditing(false);
-    setKeyValue("");
-  }, []);
-
-  return { keyValue, maskedKey, keyStatus, isEditing, setKeyValue, startEditing, cancelEditing, saveKey };
+    resetInput();
+  }, [setIsEditing, resetInput]);
+  return { startEditing, cancelEditing };
 }

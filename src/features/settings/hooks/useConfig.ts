@@ -26,23 +26,14 @@ export function useConfig(): UseConfigReturn {
   const [saveStatus, setSaveStatus] = useState("");
   const setAppConfig = useAppStore((s) => s.setConfig);
   const settingsOpen = useUIStore((s) => s.settingsOpen);
-  const configRef = useRef(config);
-  configRef.current = config;
+  const configRef = useRef<AppConfig | null>(null);
 
-  // 挂载时加载配置
   useEffect(() => {
-    (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const cfg = await invoke<AppConfig>("get_config");
-        setConfig(cfg);
-        setAppConfig(cfg);
-      } catch (e) {
-        log.error("[useConfig] 加载配置失败:", e);
-        useUIStore.getState().showToast({ type: "error", title: "加载配置失败" });
-      }
-      setIsLoading(false);
-    })();
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    void loadConfig(setConfig, setAppConfig, setIsLoading);
   }, [setAppConfig]);
 
   const updateConfig = useCallback(
@@ -55,27 +46,50 @@ export function useConfig(): UseConfigReturn {
   const saveConfig = useCallback(async () => {
     const cfg = configRef.current;
     if (!cfg) return;
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("save_config", { config: cfg });
-      setAppConfig(cfg);
-      setSaveStatus("已保存");
-      setTimeout(() => setSaveStatus(""), 2000);
-    } catch (e) {
-      log.error("[useConfig] 保存配置失败:", e);
-      setSaveStatus("保存失败");
-      setTimeout(() => setSaveStatus(""), 2000);
-    }
+    await persistConfig(cfg, setAppConfig, setSaveStatus);
   }, [setAppConfig]);
 
-  // Dialog 关闭时自动保存
   const prevOpen = useRef(settingsOpen);
   useEffect(() => {
     if (prevOpen.current && !settingsOpen) {
-      saveConfig();
+      void saveConfig();
     }
     prevOpen.current = settingsOpen;
   }, [settingsOpen, saveConfig]);
 
   return { config, isLoading, saveStatus, updateConfig, saveConfig };
+}
+
+async function loadConfig(
+  setConfig: (cfg: AppConfig) => void,
+  setAppConfig: (cfg: AppConfig) => void,
+  setIsLoading: (loading: boolean) => void,
+) {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const cfg = await invoke<AppConfig>("get_config");
+    setConfig(cfg);
+    setAppConfig(cfg);
+  } catch (e) {
+    log.error("[useConfig] 加载配置失败:", e);
+    useUIStore.getState().showToast({ type: "error", title: "加载配置失败" });
+  }
+  setIsLoading(false);
+}
+
+async function persistConfig(
+  config: AppConfig,
+  setAppConfig: (cfg: AppConfig) => void,
+  setSaveStatus: (status: string) => void,
+) {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("save_config", { config });
+    setAppConfig(config);
+    setSaveStatus("已保存");
+  } catch (e) {
+    log.error("[useConfig] 保存配置失败:", e);
+    setSaveStatus("保存失败");
+  }
+  setTimeout(() => setSaveStatus(""), 2000);
 }

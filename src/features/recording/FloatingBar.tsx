@@ -20,6 +20,16 @@ const MODE_LABELS: Record<string, string> = {
 
 const MAX_RECORDING_SECONDS = 300;
 const COUNTDOWN_START_SECONDS = 240;
+const BAR_STYLE_CLASSES: Record<string, string> = {
+  starting: "bg-black/92 border border-white/15",
+  recording:
+    "bg-[#0d0d10]/95 border border-white/35 shadow-[0_0_0_1px_rgba(255,255,255,0.12),0_10px_22px_rgba(0,0,0,0.42)]",
+  thinking: "bg-black/90 border border-white/15",
+  done: "bg-black/90 border border-white/15",
+  cancelled: "bg-black/90 border border-white/15",
+  error: "bg-black/90 border border-red-500/40 animate-error-shake",
+  default: "bg-black/90 border border-white/10",
+};
 
 /** Format duration as M:SS */
 function formatDuration(seconds: number): string {
@@ -52,22 +62,87 @@ function barContainerClass(
 
 /** 根据状态计算浮动条的样式 */
 function barStyleClass(state: string): string {
-  switch (state) {
-    case "starting":
-      return "bg-black/92 border border-white/15";
-    case "recording":
-      return "bg-[#0d0d10]/95 border border-white/35 shadow-[0_0_0_1px_rgba(255,255,255,0.12),0_10px_22px_rgba(0,0,0,0.42)]";
-    case "thinking":
-      return "bg-black/90 border border-white/15";
-    case "done":
-      return "bg-black/90 border border-white/15";
-    case "cancelled":
-      return "bg-black/90 border border-white/15";
-    case "error":
-      return "bg-black/90 border border-red-500/40 animate-error-shake";
-    default:
-      return "bg-black/90 border border-white/10";
+  return BAR_STYLE_CLASSES[state] ?? BAR_STYLE_CLASSES.default;
+}
+
+type RecordingMode = "dictate" | "translate" | "ai_assistant" | "edit";
+type AppStoreSnapshot = ReturnType<typeof useAppStore.getState>;
+
+function normalizeMode(mode: string): RecordingMode {
+  return mode === "dictate" || mode === "translate" || mode === "ai_assistant" || mode === "edit"
+    ? mode
+    : "dictate";
+}
+
+function handlePipelineEvent(data: PipelineEvent, store: AppStoreSnapshot) {
+  if (data.type !== "VolumeUpdate") {
+    log.debug(`pipeline-event: ${data.type}`, data);
   }
+  switch (data.type) {
+    case "RecorderStarting":
+    case "RecordingStarted":
+      handleRecordingLifecycle(data, store);
+      return;
+    case "VolumeUpdate":
+      store.setVolumeLevels(data.levels);
+      return;
+    case "ThinkingStarted":
+    case "ProcessingStarted":
+      store.setRecordingState("thinking");
+      return;
+    case "ProcessingComplete":
+      handleProcessingComplete(data, store);
+      return;
+    case "Error":
+      handlePipelineError(data, store);
+      return;
+    case "NetworkStatusChanged":
+      store.setIsOnline(data.online);
+      return;
+    case "RecordingCancelled":
+      store.setRecordingState("cancelled");
+      return;
+    default:
+      return;
+  }
+}
+
+function handleRecordingLifecycle(
+  data: Extract<PipelineEvent, { type: "RecorderStarting" | "RecordingStarted" }>,
+  store: AppStoreSnapshot,
+) {
+  if (data.type === "RecordingStarted") {
+    setLogSession(data.session_id);
+    log.info(`session started: mode=${data.mode}`);
+    store.setSessionId(data.session_id);
+    store.setRecordingState("recording");
+  } else {
+    store.setRecordingState("starting");
+  }
+  store.setRecordingMode(normalizeMode(data.mode));
+}
+
+function handleProcessingComplete(
+  data: Extract<PipelineEvent, { type: "ProcessingComplete" }>,
+  store: AppStoreSnapshot,
+) {
+  log.info("thinking complete");
+  if (useAppStore.getState().recordingMode === "ai_assistant") {
+    store.setAiResult(data.processed_text);
+  }
+  store.setRecordingState("done");
+}
+
+function handlePipelineError(
+  data: Extract<PipelineEvent, { type: "Error" }>,
+  store: AppStoreSnapshot,
+) {
+  log.warn(`pipeline error: ${data.message}`, { action: data.user_action });
+  const knownActions: UserAction[] = ["Retry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
+  const action = knownActions.includes(data.user_action as UserAction)
+    ? (data.user_action as UserAction)
+    : "Retry";
+  store.setError(data.message, action);
 }
 
 export default function FloatingBar() {
@@ -204,63 +279,7 @@ export default function FloatingBar() {
 
         // Pipeline events from the Rust backend
         const u1 = await listen<PipelineEvent>("pipeline-event", (event) => {
-          const data = event.payload;
-          if (data.type !== "VolumeUpdate") {
-            log.debug(`pipeline-event: ${data.type}`, data);
-          }
-          switch (data.type) {
-            case "RecorderStarting":
-              store.setRecordingMode(
-                data.mode === "dictate" || data.mode === "translate" || data.mode === "ai_assistant" || data.mode === "edit"
-                  ? data.mode
-                  : "dictate",
-              );
-              store.setRecordingState("starting");
-              break;
-            case "RecordingStarted":
-              setLogSession(data.session_id);
-              log.info(`session started: mode=${data.mode}`);
-              store.setSessionId(data.session_id);
-              store.setRecordingMode(
-                data.mode === "dictate" || data.mode === "translate" || data.mode === "ai_assistant" || data.mode === "edit"
-                  ? data.mode
-                  : "dictate",
-              );
-              store.setRecordingState("recording");
-              break;
-            case "VolumeUpdate":
-              store.setVolumeLevels(data.levels);
-              break;
-            case "RecordingStopped":
-              // Don't change state yet; thinking starts next
-              break;
-            case "ThinkingStarted":
-            case "ProcessingStarted":
-              store.setRecordingState("thinking");
-              break;
-            case "ProcessingComplete":
-              log.info("thinking complete");
-              if (useAppStore.getState().recordingMode === "ai_assistant") {
-                store.setAiResult(data.processed_text);
-              }
-              store.setRecordingState("done");
-              break;
-            case "Error": {
-              log.warn(`pipeline error: ${data.message}`, { action: data.user_action });
-              const knownActions: UserAction[] = ["Retry", "CheckApiKey", "WaitAndRetry", "CheckMicrophone"];
-              const action = knownActions.includes(data.user_action as UserAction)
-                ? (data.user_action as UserAction)
-                : "Retry";
-              store.setError(data.message, action);
-              break;
-            }
-            case "NetworkStatusChanged":
-              store.setIsOnline(data.online);
-              break;
-            case "RecordingCancelled":
-              store.setRecordingState("cancelled");
-              break;
-          }
+          handlePipelineEvent(event.payload, store);
         });
         // 如果 cleanup 已在 await 期间执行，立即取消注册。
         if (cleaned) { u1(); return; }
