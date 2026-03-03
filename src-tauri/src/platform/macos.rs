@@ -647,6 +647,7 @@ pub fn shortcut_labels() -> super::ShortcutLabels {
 /// - Microphone: `AudioRecorder::probe_microphone()` (~1ms)
 ///
 /// 返回旧的 PermissionStatus（保持向后兼容）。
+#[allow(dead_code)]
 pub fn check_permissions_legacy() -> super::PermissionStatus {
     let accessibility = unsafe { ax::AXIsProcessTrusted() };
     let input_monitoring = unsafe { ax::CGPreflightListenEventAccess() };
