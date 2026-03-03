@@ -117,6 +117,7 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 - **快捷键默认值**：Linux/Windows: RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）；macOS: Fn（听写）、⌥T（翻译）、⌃Space（AI 助手）、Esc（取消）
 - **Mock 音频**：`TINGYUXUAN_MOCK_AUDIO=1` 环境变量启用录音 mock 模式
 - **localStorage 例外**：项目唯一使用 localStorage 的地方是 `onboarding_complete` 标记（引导状态是纯前端关注点，需同步判断避免首帧闪烁）
+- **计划文档目录**：所有开发计划统一存放在 `docs/plan/`，禁止使用 `docs/plans/`
 - **许可证**：Source-Available（代码公开仅供参考和学习），详见 LICENSE
 
 ## Tauri 命令清单
@@ -124,17 +125,20 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 | 命令 | 参数 | 返回值 | 用途 |
 |------|------|--------|------|
 | `start_recording` | `mode: String` | `String` | 开始录音，返回 session_id |
-| `stop_recording` | — | `String` | 停止录音，返回转写结果 |
+| `stop_recording` | — | `String` | 停止录音，返回处理状态 |
 | `cancel_recording` | — | `()` | 取消录音 |
 | `get_config` | — | `AppConfig` | 获取配置 |
 | `save_config` | `config: AppConfig` | `()` | 保存配置 |
 | `get_api_key` | `service: String` | `Option<String>` | 获取 API Key |
 | `save_api_key` | `service, key` | `()` | 保存 API Key |
 | `test_multimodal_connection` | — | `bool` | 测试多模态音频连接 |
+| `inject_text` | `text: String` | `()` | 注入文本到当前窗口 |
+| `get_recent_history` | `limit: u32` | `Vec<TranscriptRecord>` | 最近历史 |
 | `get_history_page` | `limit, offset` | `Vec<TranscriptRecord>` | 分页历史 |
 | `search_history` | `query, limit` | `Vec<TranscriptRecord>` | 搜索历史 |
 | `delete_history` | `id: String` | `()` | 删除记录 |
-| `clear_history` | — | `()` | 清空历史 |
+| `delete_history_batch` | `ids: Vec<String>` | `u64` | 批量删除记录 |
+| `clear_history` | — | `u64` | 清空历史，返回删除数 |
 | `get_dashboard_stats` | — | `AggregateStats` | 统计数据 |
 | `get_dictionary` | — | `Vec<String>` | 获取词典 |
 | `add_dictionary_word` | `word: String` | `()` | 添加词汇 |
