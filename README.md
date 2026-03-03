@@ -63,7 +63,7 @@ npx tauri build
 | 应用框架 | Tauri 2.10 |
 | 前端 | React 19 + TypeScript + Tailwind CSS 4 + Zustand 5 |
 | UI 组件库 | Fluent UI 2 (@fluentui/react-components) |
-| 测试 | 222 自动化测试（Rust + vitest + JNI + Android） |
+| 测试 | Rust + vitest + JNI + Android 单测，数量以 CI 最新结果为准 |
 
 ## 文档
 

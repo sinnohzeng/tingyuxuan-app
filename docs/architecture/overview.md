@@ -2,7 +2,7 @@
 
 ## 产品定位
 
-听语轩（TingYuXuan）是一款 AI 驱动的智能语音输入工具，核心管线：**语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入**。通过多模态大语言模型（如 Qwen3-Omni Flash、GPT-4o Audio）直接处理音频输入，单次 API 调用完成语音识别和文本处理，无需独立的 STT 服务。用户只需配置一个 LLM API Provider。
+听语轩（TingYuXuan）是一款 AI 驱动的智能语音输入工具，核心管线：**语音录制 → MP3 编码（失败回退 WAV）→ 多模态 LLM 一步识别+润色 → 系统级文本注入**。通过多模态大语言模型（如 Qwen3-Omni Flash、GPT-4o Audio）直接处理音频输入，单次 API 调用完成语音识别与文本处理。用户仅需配置 LLM API。
 
 ## 分层架构
 
@@ -25,7 +25,7 @@
 ### Rust Core (`crates/tingyuxuan-core/`)
 
 平台无关的核心引擎，不依赖 Tauri。包含：
-- **audio** — 录音器（cpal）+ AudioBuffer PCM 累积 + WAV 编码器（零依赖）
+- **audio** — 录音器（cpal）+ AudioBuffer PCM 累积 + MP3 编码（WAV 回退）
 - **llm** — LLMProvider trait + MultimodalProvider（音频+上下文 → 一步处理）+ 提示词系统
 - **pipeline** — Pipeline 单步编排（音频编码 → 多模态 LLM）、事件总线
 - **config** — 配置序列化（JSON）+ XDG 目录

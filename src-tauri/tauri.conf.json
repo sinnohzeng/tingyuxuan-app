@@ -54,7 +54,7 @@
       "icons/icon.ico"
     ],
     "shortDescription": "AI 驱动的智能语音输入工具",
-    "longDescription": "听语轩（TingYuXuan）将语音转为润色后的文字，支持可配置的 STT 和 LLM API。",
+    "longDescription": "听语轩（TingYuXuan）将语音转为润色后的文字，采用单步多模态处理，仅需配置 LLM API。",
     "linux": {
       "deb": {
         "depends": ["libasound2", "libwebkit2gtk-4.1-0"],

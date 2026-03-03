@@ -20,7 +20,7 @@
    - 不传递裸指针，避免 use-after-free / double-free
 
 2. **`tingyuxuan-core`**（Rust）：`default-features = false`（禁用 cpal/hound）
-   - 复用 STT、LLM、Pipeline 全部逻辑
+   - 复用多模态 LLM、Pipeline、配置与错误模型逻辑
    - Audio 录音由 Android `AudioRecord` API 完成（Kotlin 侧）
 
 3. **Android IME**（Kotlin + Compose）：
@@ -42,7 +42,7 @@ Kotlin (jlong handle) → Rust HashMap<u64, Arc<Pipeline>> → Pipeline
 ## 后果
 
 **正面**：
-- 最大化代码复用：STT/LLM/Pipeline 逻辑零重复
+- 最大化代码复用：多模态处理与 Pipeline 逻辑零重复
 - Handle table 消除了所有 JNI unsafe 内存管理风险
 - Android 原生 IME 体验优于 WebView 方案
 - `commitText()` 直接输入，无需剪贴板 hack
@@ -58,6 +58,6 @@ Kotlin (jlong handle) → Rust HashMap<u64, Arc<Pipeline>> → Pipeline
 | 方案 | 未选择原因 |
 |------|-----------|
 | WebView IME | Android WebView 无法作为 InputMethodService |
-| 纯 Kotlin 重写 | 大量重复代码，STT/LLM 逻辑需要双份维护 |
+| 纯 Kotlin 重写 | 大量重复代码，多模态处理与错误模型需要双份维护 |
 | Box::into_raw 指针传递 | use-after-free / double-free 风险高 |
 | UniFFI 自动绑定 | 增加构建复杂度，handle table 足够简单 |

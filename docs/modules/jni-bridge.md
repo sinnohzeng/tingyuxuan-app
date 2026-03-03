@@ -2,59 +2,103 @@
 
 ## 概述
 
-`tingyuxuan-jni` crate 提供 Rust ↔ Kotlin JNI 桥接，使 Android IME 能调用 `tingyuxuan-core` 引擎。
+`tingyuxuan-jni` crate 提供 Android Kotlin ↔ Rust 的 JNI 接口，桥接到 `tingyuxuan-core` 的单步多模态 Pipeline。
+
+**源文件:** `crates/tingyuxuan-jni/src/lib.rs`
+
+---
 
 ## 架构
 
 ```
-Kotlin (NativeCore.kt)
-  ↓ JNI call (jlong handle)
-Rust (tingyuxuan-jni)
+Kotlin IME
+  ↓ JNI (jlong handle)
+tingyuxuan-jni
   ↓ handle table lookup
-Arc<Pipeline> (tingyuxuan-core)
-  ↓ STT → LLM pipeline
+Arc<Pipeline>
+  ↓ startStreaming / sendAudioChunk / stopStreaming
 JSON result string
-  ↓ JNI return
-Kotlin (parse JSON)
+  ↓
+Kotlin 解析并更新 UI
 ```
 
-## JNI 导出函数
+关键点：
+- JNI 边界不传裸指针，使用 handle table 管理 `Arc<Pipeline>`。
+- 录音为分段 PCM 传输：先建会话，再持续送帧，最后停止并处理。
+- 所有结果统一返回 JSON，Kotlin 侧按 `success/error_code/message` 解析。
+
+---
+
+## JNI 导出方法
 
 | Java 方法 | Rust 函数 | 签名 |
 |-----------|-----------|------|
 | `NativeCore.initPipeline(configJson)` | `Java_com_tingyuxuan_core_NativeCore_initPipeline` | `(Ljava/lang/String;)J` |
-| `NativeCore.processAudio(handle, audioPath, mode, selectedText)` | `Java_com_tingyuxuan_core_NativeCore_processAudio` | `(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;` |
 | `NativeCore.destroyPipeline(handle)` | `Java_com_tingyuxuan_core_NativeCore_destroyPipeline` | `(J)V` |
+| `NativeCore.startStreaming(handle, mode, contextJson)` | `Java_com_tingyuxuan_core_NativeCore_startStreaming` | `(JLjava/lang/String;Ljava/lang/String;)Ljava/lang/String;` |
+| `NativeCore.sendAudioChunk(handle, pcmData)` | `Java_com_tingyuxuan_core_NativeCore_sendAudioChunk` | `(J[S)Z` |
+| `NativeCore.stopStreaming(handle)` | `Java_com_tingyuxuan_core_NativeCore_stopStreaming` | `(J)Ljava/lang/String;` |
+| `NativeCore.cancelProcessing(handle)` | `Java_com_tingyuxuan_core_NativeCore_cancelProcessing` | `(J)V` |
+| `NativeCore.validateConfig(configJson)` | `Java_com_tingyuxuan_core_NativeCore_validateConfig` | `(Ljava/lang/String;)Ljava/lang/String;` |
+| `NativeCore.testConnection(configJson, service)` | `Java_com_tingyuxuan_core_NativeCore_testConnection` | `(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;` |
+| `NativeCore.getVersion()` | `Java_com_tingyuxuan_core_NativeCore_getVersion` | `()Ljava/lang/String;` |
 
-## Handle Table
+兼容约束：JNI 方法名和签名保持稳定，Android 调用层可无破坏升级。
 
-详见 [ADR-0007](../architecture/adr/0007-android-native-ime.md)。
+---
 
-- **注册**：`register_handle(Arc<Pipeline>) → u64`
-- **查找**：`get_handle(u64) → Result<Arc<Pipeline>, String>`
-- **销毁**：`remove_handle(u64) → bool`
+## Handle Table 与会话表
 
-Handle ID 从 1 开始单调递增，0 表示无效。
+### Pipeline Handle Table
 
-## 构建
+- `register_handle(Arc<Pipeline>) -> u64`
+- `get_handle(u64) -> Result<Arc<Pipeline>, String>`
+- `remove_handle(u64) -> Result<bool, String>`
 
-```bash
-# 安装工具
-cargo install cargo-ndk
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+规则：
+- handle 从 1 开始递增，0 为无效值。
+- 销毁 handle 后由 Arc 引用计数自动释放资源。
 
-# 设置 Android NDK
-export ANDROID_NDK_HOME=/path/to/ndk
+### Recording Session Table
 
-# 构建
-cd crates/tingyuxuan-jni
-./build-android.sh
+JNI 层另有录音会话表（`handle_id -> RecordingSession`）：
+- `startStreaming` 创建 `AudioBuffer + ProcessingRequest + CancellationToken`
+- `sendAudioChunk` 追加 PCM 样本
+- `stopStreaming` `take` 会话并调用 `pipeline.process_audio()`
+
+---
+
+## 运行时与线程
+
+- 使用 `OnceLock<tokio::Runtime>` 复用全局 Runtime，避免频繁构建。
+- `stopStreaming` / `testConnection` 在 Runtime 中阻塞等待异步结果。
+- 取消操作通过 `CancellationToken` 传递到 Pipeline。
+
+---
+
+## 错误协议
+
+返回 JSON 统一结构：
+
+```json
+{
+  "success": false,
+  "error_code": "invalid_handle",
+  "message": "No active recording session for handle: 123",
+  "user_action": "dismiss"
+}
 ```
 
-输出的 `.so` 文件需要复制到 `android/app/src/main/jniLibs/<abi>/`。
+- 成功返回：`{"success": true, ...}`
+- 失败返回：`success=false` + `error_code/message/user_action`
+- Rust `StructuredError` 会映射为上述格式，便于 Kotlin 侧统一处理
 
-## 测试
+---
+
+## 构建与测试
 
 ```bash
 cargo test -p tingyuxuan-jni
 ```
+
+Android 交叉编译仍使用 `cargo-ndk` 输出 `.so` 到 `jniLibs/<abi>/`。

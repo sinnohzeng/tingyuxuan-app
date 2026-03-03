@@ -209,7 +209,7 @@ impl PipelineError {
 
 ## 测试覆盖
 
-共 **约 20 个** 单元测试：
+包含 orchestrator / retry / network 多组单元测试（数量以 CI 最新结果为准）：
 
 ### Orchestrator 测试（6 个）
 

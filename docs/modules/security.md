@@ -9,7 +9,7 @@
 - `src-tauri/tauri.conf.json` -- Tauri 应用配置（含 CSP）
 - `src-tauri/capabilities/default.json` -- Tauri 权限能力声明
 - `src-tauri/src/commands.rs` -- API Key 管理（keyring 集成）+ 输入验证
-- `src-tauri/src/text_injector.rs` -- 文本注入安全考量
+- `src-tauri/src/platform/` -- 文本注入安全考量（Linux/macOS/Windows 平台实现）
 - `crates/tingyuxuan-core/src/config.rs` -- 配置中的 key 引用机制
 
 ---
@@ -32,7 +32,7 @@
 - **图片限制**: 仅允许自身资源和 `data:` URI
 - **连接限制**: 仅允许自身和 Tauri IPC 通道（`ipc:` 和 `http://ipc.localhost`）
 
-> **注意**: 所有外部 API 调用（STT/LLM）都通过 Rust 后端的 `reqwest` 发起，不经过 WebView 的 `fetch`，因此 `connect-src` 策略不影响核心功能。
+> **注意**: 所有外部 API 调用都通过 Rust 后端的 `reqwest` 发起，不经过 WebView 的 `fetch`，因此 `connect-src` 策略不影响核心功能。
 
 ---
 
@@ -49,7 +49,7 @@ API Key 通过操作系统 keyring 安全存储，避免明文写入配置文件
 └─────────────┘                         └──────────────────┘
                                                │
                                         service: "tingyuxuan"
-                                        username: "stt" | "llm"
+                                        username: "llm"
 ```
 
 ### Keyring 配置
@@ -57,7 +57,6 @@ API Key 通过操作系统 keyring 安全存储，避免明文写入配置文件
 | 参数 | 值 |
 |------|---|
 | service | `"tingyuxuan"` |
-| username (STT) | `"stt"` |
 | username (LLM) | `"llm"` |
 
 ### Tauri Commands
@@ -100,13 +99,16 @@ API Key 通过操作系统 keyring 安全存储，避免明文写入配置文件
 // src-tauri/capabilities/default.json
 {
     "identifier": "default",
-    "windows": ["floating-bar", "settings"],
+    "windows": ["floating-bar", "main"],
     "permissions": [
         "core:default",
         "core:event:default",
         "core:window:default",
         "global-shortcut:default",
-        "shell:default"
+        "shell:default",
+        "dialog:default",
+        "sentry:default",
+        "opener:default"
     ]
 }
 ```
@@ -138,7 +140,7 @@ API Key 通过操作系统 keyring 安全存储，避免明文写入配置文件
 | 场景 | 验证措施 |
 |------|---------|
 | `inject_text(text)` | 长度限制 (50,000 字节) + null byte 检查 |
-| `save_api_key(service, key)` | service 白名单 (`stt`, `llm`) + key 长度限制 (512B) + null byte 检查 |
+| `save_api_key(service, key)` | service 白名单 (`llm`) + key 长度限制 (512B) + null byte 检查 |
 | `start_recording(mode)` | `parse_mode()` 将未知值 fallback 到 Dictate（安全默认值） |
 | `search_history(query, limit)` | 长度限制 (500 字节) + null byte 检查 |
 | `add_dictionary_word(word)` | trim + 非空检查 + 长度限制 (100 字节) + null byte 检查 |
@@ -151,7 +153,7 @@ const MAX_INJECT_TEXT_LEN: usize = 50_000;
 const MAX_API_KEY_LEN: usize = 512;
 const MAX_SEARCH_QUERY_LEN: usize = 500;
 const MAX_DICT_WORD_LEN: usize = 100;
-const VALID_KEY_SERVICES: &[&str] = &["stt", "llm"];
+const VALID_KEY_SERVICES: &[&str] = &["llm"];
 ```
 
 ### 辅助函数
@@ -211,7 +213,7 @@ const VALID_KEY_SERVICES: &[&str] = &["stt", "llm"];
 | 依赖 | 用途 | 安全特性 |
 |------|------|---------|
 | `rusqlite` (bundled feature) | SQLite 数据库 | 使用 bundled 特性编译自带 SQLite，避免依赖系统 SQLite 版本（可能过旧或有已知漏洞） |
-| `reqwest` | HTTP 客户端（STT/LLM API 调用） | 默认启用 TLS（rustls 或 native-tls），所有 API 调用通过 HTTPS |
+| `reqwest` | HTTP 客户端（多模态 LLM API 调用） | 默认启用 TLS（rustls 或 native-tls），所有 API 调用通过 HTTPS |
 | `keyring` | OS keyring 访问 | 使用操作系统原生 Secret Service（Linux: gnome-keyring/kwallet） |
 | `serde` / `serde_json` | 序列化 | 纯 Rust 实现，无 C 依赖，内存安全 |
 | `tauri` | 应用框架 | 提供进程隔离、IPC、capability 系统 |
