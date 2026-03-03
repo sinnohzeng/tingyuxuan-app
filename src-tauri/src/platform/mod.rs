@@ -88,11 +88,15 @@ fn poll_subprocess(child: &mut std::process::Child) -> Option<Option<Option<Stri
 
 #[cfg(target_os = "linux")]
 fn read_subprocess_output(child: &mut std::process::Child, success: bool) -> Option<String> {
+    use std::io::Read;
+
     if !success {
         return None;
     }
-    let output = child.wait_with_output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let mut buffer = String::new();
+    child.stdout.as_mut()?.read_to_string(&mut buffer).ok()?;
+    let text = buffer.trim().to_string();
     (!text.is_empty()).then_some(text)
 }
 

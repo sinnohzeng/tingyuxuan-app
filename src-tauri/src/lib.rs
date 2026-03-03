@@ -17,6 +17,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 type SessionPhaseLock = Arc<RwLock<state::SessionPhase>>;
+const SHORTCUT_DEBOUNCE_MS: u64 = 250;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,33 +37,19 @@ fn build_tauri_app(sentry_client: &sentry::ClientInitGuard) -> tauri::Builder<ta
         .plugin(tauri_plugin_opener::init())
         .setup(setup_app)
         .on_window_event(handle_main_close)
-        .invoke_handler(tauri::generate_handler![
-            commands::start_recording,
-            commands::stop_recording,
-            commands::cancel_recording,
-            commands::get_config,
-            commands::save_config,
-            commands::test_multimodal_connection,
-            commands::get_recent_history,
-            commands::save_api_key,
-            commands::get_api_key,
-            commands::inject_text,
-            commands::get_dictionary,
-            commands::add_dictionary_word,
-            commands::remove_dictionary_word,
-            commands::search_history,
-            commands::get_history_page,
-            commands::delete_history,
-            commands::delete_history_batch,
-            commands::clear_history,
-            commands::is_first_launch,
-            commands::get_dashboard_stats,
-            commands::check_platform_permissions,
-            commands::open_permission_settings,
-            commands::report_telemetry_event,
-            commands::list_input_devices,
-            commands::set_input_device
-        ])
+        .invoke_handler(app_invoke_handler())
+}
+
+#[rustfmt::skip]
+fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        commands::start_recording, commands::stop_recording, commands::cancel_recording, commands::get_config, commands::save_config,
+        commands::test_multimodal_connection, commands::get_recent_history, commands::save_api_key, commands::get_api_key, commands::inject_text,
+        commands::get_dictionary, commands::add_dictionary_word, commands::remove_dictionary_word, commands::search_history, commands::get_history_page,
+        commands::delete_history, commands::delete_history_batch, commands::clear_history, commands::is_first_launch, commands::get_dashboard_stats,
+        commands::check_platform_permissions, commands::open_permission_settings, commands::report_telemetry_event, commands::list_input_devices,
+        commands::set_input_device
+    ]
 }
 
 fn setup_app(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
@@ -426,7 +413,6 @@ async fn handle_mode_shortcut(
     action: &str,
 ) {
     use crate::state::SessionPhase;
-    const DEBOUNCE_MS: u64 = 250;
 
     if !matches!(action, "dictate" | "translate" | "ai_assistant") {
         return;
@@ -450,7 +436,7 @@ async fn handle_mode_shortcut(
         }
         SessionPhase::Recording { started_at } => {
             let elapsed = started_at.elapsed();
-            if elapsed < std::time::Duration::from_millis(DEBOUNCE_MS) {
+            if elapsed < std::time::Duration::from_millis(SHORTCUT_DEBOUNCE_MS) {
                 tracing::info!(
                     elapsed_ms = elapsed.as_millis(),
                     "Shortcut: debounce (too quick, ignoring)"

@@ -497,11 +497,11 @@ impl FnKeyMonitor {
 fn create_fn_event_tap(
     app: tauri::AppHandle,
     fn_flag_mask: u64,
-) -> Result<core_graphics::event::CGEventTap, PlatformError> {
+) -> Result<core_graphics::event::CGEventTap<'static>, PlatformError> {
     use core_graphics::event::{
         CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
     };
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
 
     let fn_pressed = std::sync::Arc::new(AtomicBool::new(false));
     let fn_pressed_clone = fn_pressed.clone();

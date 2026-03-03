@@ -228,10 +228,7 @@ async fn build_start_context(
     detector_state: &State<'_, DetectorState>,
     pipeline: Arc<Pipeline>,
 ) -> StartContext {
-    let session_id = uuid::Uuid::new_v4().to_string();
-    add_start_breadcrumb(&session_id, &mode);
-    let session_span =
-        tracing::info_span!("session", session_id = %session_id, mode = tracing::field::Empty);
+    let (session_id, session_span) = init_session_tracking(&mode);
     let context = detector_state.0.collect_context();
     let processing_mode = resolve_processing_mode(&mode, &context);
     let (target_language, user_dictionary) =
@@ -257,6 +254,14 @@ async fn build_start_context(
             session_span: session_span.clone(),
         },
     }
+}
+
+fn init_session_tracking(mode: &str) -> (String, tracing::Span) {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    add_start_breadcrumb(&session_id, mode);
+    let session_span =
+        tracing::info_span!("session", session_id = %session_id, mode = tracing::field::Empty);
+    (session_id, session_span)
 }
 
 fn add_start_breadcrumb(session_id: &str, mode: &str) {
