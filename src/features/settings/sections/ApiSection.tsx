@@ -22,7 +22,7 @@ export default function ApiSection() {
       </div>
 
       <ApiKeyField service="llm" label="DashScope API Key" />
-      <ConnectionTestButton command="test_llm_connection" label="测试连接" />
+      <ConnectionTestButton command="test_multimodal_connection" label="测试连接" />
     </div>
   );
 }

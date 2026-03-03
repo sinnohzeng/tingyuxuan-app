@@ -333,9 +333,7 @@ pub fn check_permissions() -> super::PermissionReport {
 pub fn open_permission_settings_for(_target: Option<&str>) {
     // 优先尝试 pavucontrol（PulseAudio 控制），回退到 GNOME 设置
     if Command::new("pavucontrol").spawn().is_err() {
-        let _ = Command::new("gnome-control-center")
-            .arg("sound")
-            .spawn();
+        let _ = Command::new("gnome-control-center").arg("sound").spawn();
     }
 }
 

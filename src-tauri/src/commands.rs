@@ -3,11 +3,11 @@ use std::sync::Arc;
 use tauri::State;
 use tracing::Instrument;
 
-use tingyuxuan_core::config::AppConfig;
+use tingyuxuan_core::config::{AppConfig, LLMProviderType};
 use tingyuxuan_core::error::{PipelineError, StructuredError, UserAction};
 use tingyuxuan_core::history::{AggregateStats, TranscriptRecord};
 use tingyuxuan_core::llm::multimodal::MultimodalProvider;
-use tingyuxuan_core::llm::provider::{LLMProvider, ProcessingMode};
+use tingyuxuan_core::llm::provider::ProcessingMode;
 use tingyuxuan_core::pipeline::events::PipelineEvent;
 use tingyuxuan_core::pipeline::{Pipeline, ProcessingRequest};
 
@@ -26,9 +26,13 @@ const MAX_API_KEY_LEN: usize = 512;
 const MAX_SEARCH_QUERY_LEN: usize = 500;
 const MAX_DICT_WORD_LEN: usize = 100;
 const VALID_KEY_SERVICES: &[&str] = &["llm"];
+const RUNTIME_LLM_MODEL: &str = "qwen3-omni-flash";
+const RUNTIME_DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 /// 音频最短时长阈值（毫秒）：低于此值视为无有效语音。
 const MIN_AUDIO_DURATION_MS: u64 = 300;
+/// MVP 录音时长上限（毫秒）：当前仅支持 <= 5 分钟。
+const MAX_AUDIO_DURATION_MS: u64 = 5 * 60 * 1000;
 
 /// Reject strings that contain null bytes — these can cause undefined behaviour
 /// when passed to C libraries or shell commands.
@@ -126,22 +130,43 @@ pub fn build_pipeline(
         None
     })?;
 
-    let base_url = config
-        .llm
-        .base_url
-        .clone()
-        .unwrap_or_else(|| config.llm_base_url());
+    let (base_url, model) = resolve_runtime_llm(config);
     let provider = Box::new(
-        MultimodalProvider::new(llm_key, base_url, config.llm.model.clone())
+        MultimodalProvider::new(llm_key, base_url, model.clone())
             .map_err(|e| tracing::error!(error = %e, "Failed to create LLM provider"))
             .ok()?,
     );
 
     tracing::info!(
-        llm_model = %config.llm.model,
+        configured_provider = ?config.llm.provider,
+        configured_model = %config.llm.model,
+        runtime_model = %model,
         "Pipeline built successfully"
     );
     Some(Arc::new(Pipeline::new(provider, event_tx.clone())))
+}
+
+fn resolve_runtime_llm(config: &AppConfig) -> (String, String) {
+    if !matches!(config.llm.provider, LLMProviderType::DashScope) {
+        tracing::warn!(
+            configured_provider = ?config.llm.provider,
+            "MVP runtime forces DashScope-compatible multimodal model"
+        );
+    }
+    let base_url = config
+        .llm
+        .base_url
+        .clone()
+        .unwrap_or_else(|| RUNTIME_DASHSCOPE_BASE_URL.to_string());
+    (base_url, RUNTIME_LLM_MODEL.to_string())
+}
+
+fn normalize_runtime_llm_config(config: &mut AppConfig) {
+    config.llm.provider = LLMProviderType::DashScope;
+    config.llm.model = RUNTIME_LLM_MODEL.to_string();
+    if config.llm.base_url.is_none() {
+        config.llm.base_url = Some(RUNTIME_DASHSCOPE_BASE_URL.to_string());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,12 +187,16 @@ pub async fn start_recording(
 ) -> Result<String, String> {
     // 获取 pipeline 引用并存入 session，防止 save_config 在录音期间重建 pipeline（TOCTOU）。
     let pipeline = pipeline_state.0.read().await.clone().ok_or_else(|| {
-        serde_json::to_string(&StructuredError {
+        let se = StructuredError {
             error_code: "not_configured".into(),
             message: "请先在设置中配置 LLM 的 API Key".into(),
             user_action: UserAction::CheckApiKey,
-        })
-        .unwrap()
+        };
+        let _ = event_bus.0.send(PipelineEvent::Error {
+            message: se.message.clone(),
+            user_action: se.user_action.clone(),
+        });
+        serde_json::to_string(&se).unwrap()
     })?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -213,20 +242,29 @@ pub async fn start_recording(
     let user_dictionary = config.user_dictionary.clone();
     drop(config);
 
-    // 1. 启动录音（PCM 采样累积在 recorder 内部的 buffer 中）。
+    // Determine the effective mode string for events/history.
+    let effective_mode = processing_mode.to_string();
+
+    // 1. 进入 recorder 启动过渡状态（微加载），随后正式开始录音。
+    let _ = event_bus.0.send(PipelineEvent::RecorderStarting {
+        mode: effective_mode.clone(),
+    });
+
+    // 2. 启动录音（PCM 采样累积在 recorder 内部的 buffer 中）。
     tracing::info!("start_recording: calling recorder.start()");
     if let Err(audio_err) = recorder_state.0.start().await {
         tracing::error!(%audio_err, "start_recording: recorder.start() FAILED");
         let se = StructuredError::from(&PipelineError::Audio(audio_err));
+        let _ = event_bus.0.send(PipelineEvent::Error {
+            message: se.message.clone(),
+            user_action: se.user_action.clone(),
+        });
         return Err(serde_json::to_string(&se).unwrap());
     }
     tracing::info!("start_recording: recorder started OK");
 
     // Serialize context for history storage.
     let context_json = serde_json::to_string(&context).ok();
-
-    // Determine the effective mode string for events/history.
-    let effective_mode = processing_mode.to_string();
 
     // 记录 effective mode
     session_span.record("mode", effective_mode.as_str());
@@ -288,11 +326,7 @@ pub async fn stop_recording(
     injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
     // 1. 停止录音 → 获取累积的 AudioBuffer。
-    let buffer = recorder_state
-        .0
-        .stop()
-        .await
-        .map_err(|e| e.to_string())?;
+    let buffer = recorder_state.0.stop().await.map_err(|e| e.to_string())?;
 
     // 2. Take the active session（包含录音开始时锁定的 pipeline 引用）。
     let session = session_state
@@ -325,6 +359,20 @@ pub async fn stop_recording(
         .0
         .send(PipelineEvent::RecordingStopped { duration_ms });
 
+    if buffer.duration_ms() > MAX_AUDIO_DURATION_MS {
+        tracing::warn!(
+            duration_ms = buffer.duration_ms(),
+            "Audio exceeds MVP max duration"
+        );
+        let _ = event_bus.0.send(PipelineEvent::Error {
+            message: "当前版本仅支持单次录音小于等于 5 分钟".to_string(),
+            user_action: tingyuxuan_core::error::UserAction::Retry,
+        });
+        let h = history_state.0.lock().await;
+        let _ = h.update_status(&session_id, "failed");
+        return Ok("too_long".to_string());
+    }
+
     // 3. 检查音频是否过短或为静音。
     if buffer.duration_ms() < MIN_AUDIO_DURATION_MS {
         tracing::warn!(duration_ms = buffer.duration_ms(), "Audio too short");
@@ -338,7 +386,11 @@ pub async fn stop_recording(
     }
 
     let rms = buffer.rms_level();
-    tracing::info!(rms, duration_ms = buffer.duration_ms(), "Audio buffer stats");
+    tracing::info!(
+        rms,
+        duration_ms = buffer.duration_ms(),
+        "Audio buffer stats"
+    );
     if rms < 200.0 {
         tracing::warn!(rms, "Audio appears to be silence, skipping LLM");
         let _ = event_bus.0.send(PipelineEvent::RecordingCancelled);
@@ -466,20 +518,20 @@ pub async fn inject_text(
 
 #[tauri::command]
 #[tracing::instrument(skip_all)]
-pub async fn test_llm_connection(config_state: State<'_, ConfigState>) -> Result<bool, String> {
+pub async fn test_multimodal_connection(
+    config_state: State<'_, ConfigState>,
+) -> Result<bool, String> {
     let config = config_state.0.read().await;
     let api_key = resolve_api_key("llm", &config.llm.api_key_ref)
         .ok_or_else(|| "No LLM API key configured".to_string())?;
 
-    let base_url = config
-        .llm
-        .base_url
-        .clone()
-        .unwrap_or_else(|| config.llm_base_url());
-    let provider = MultimodalProvider::new(api_key, base_url, config.llm.model.clone())
-        .map_err(|e| e.to_string())?;
+    let (base_url, model) = resolve_runtime_llm(&config);
+    let provider = MultimodalProvider::new(api_key, base_url, model).map_err(|e| e.to_string())?;
 
-    provider.test_connection().await.map_err(|e| e.to_string())
+    provider
+        .test_multimodal_audio_connection()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -502,11 +554,13 @@ pub async fn get_config(config_state: State<'_, ConfigState>) -> Result<AppConfi
 #[tauri::command]
 #[tracing::instrument(skip_all)]
 pub async fn save_config(
-    config: AppConfig,
+    mut config: AppConfig,
     config_state: State<'_, ConfigState>,
     pipeline_state: State<'_, PipelineState>,
     event_bus: State<'_, EventBus>,
 ) -> Result<(), String> {
+    normalize_runtime_llm_config(&mut config);
+
     // Persist to disk.
     config.save().map_err(|e| e.to_string())?;
 
@@ -708,8 +762,8 @@ pub async fn open_permission_settings(target: Option<String>) -> Result<(), Stri
 /// 枚举所有可用音频输入设备。
 #[tauri::command]
 #[tracing::instrument(skip_all)]
-pub async fn list_input_devices(
-) -> Result<Vec<tingyuxuan_core::audio::devices::AudioDeviceInfo>, String> {
+pub async fn list_input_devices()
+-> Result<Vec<tingyuxuan_core::audio::devices::AudioDeviceInfo>, String> {
     tingyuxuan_core::audio::devices::enumerate_input_devices().map_err(|e| e.to_string())
 }
 

@@ -32,9 +32,6 @@ enum RecorderCommand {
     Cancel {
         reply: oneshot::Sender<Result<(), AudioError>>,
     },
-    IsRecording {
-        reply: oneshot::Sender<bool>,
-    },
     /// 切换输入设备 — 非录音期间重建 AudioRecorder。
     SetDevice {
         device_id: Option<String>,
@@ -58,10 +55,7 @@ impl RecorderHandle {
     ///
     /// `device_id` 指定初始麦克风设备（`None` = 系统默认）。
     /// Volume updates are pushed to `event_tx` every ~33ms while recording.
-    pub fn spawn(
-        event_tx: broadcast::Sender<PipelineEvent>,
-        device_id: Option<String>,
-    ) -> Self {
+    pub fn spawn(event_tx: broadcast::Sender<PipelineEvent>, device_id: Option<String>) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<RecorderCommand>(32);
 
         std::thread::Builder::new()
@@ -114,20 +108,6 @@ impl RecorderHandle {
             .map_err(|_| AudioError::StreamError("Recorder actor is gone".into()))?;
         rx.await
             .map_err(|_| AudioError::StreamError("Recorder reply channel dropped".into()))?
-    }
-
-    /// Check whether the recorder is currently recording.
-    pub async fn is_recording(&self) -> bool {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .cmd_tx
-            .send(RecorderCommand::IsRecording { reply: tx })
-            .await
-            .is_err()
-        {
-            return false;
-        }
-        rx.await.unwrap_or(false)
     }
 
     /// 切换输入设备。非录音期间重建 AudioRecorder；录音中则忽略。
@@ -215,9 +195,6 @@ fn handle_command(
             let result = recorder.cancel();
             let _ = reply.send(result);
         }
-        RecorderCommand::IsRecording { reply } => {
-            let _ = reply.send(recorder.is_recording());
-        }
         RecorderCommand::SetDevice { device_id, reply } => {
             if recorder.is_recording() {
                 tracing::warn!("SetDevice ignored: recording in progress");
@@ -252,9 +229,6 @@ async fn drain_with_error(cmd_rx: &mut mpsc::Receiver<RecorderCommand>, error_ms
             }
             RecorderCommand::Cancel { reply } => {
                 let _ = reply.send(Err(err()));
-            }
-            RecorderCommand::IsRecording { reply } => {
-                let _ = reply.send(false);
             }
             RecorderCommand::SetDevice { reply, .. } => {
                 let _ = reply.send(());

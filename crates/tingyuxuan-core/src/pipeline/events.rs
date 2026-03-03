@@ -9,13 +9,17 @@ use crate::error::UserAction;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PipelineEvent {
+    /// Recorder is bootstrapping (permission/device/open-stream warmup).
+    RecorderStarting { mode: String },
     /// Recording has started for a new session.
     RecordingStarted { session_id: String, mode: String },
     /// Real-time microphone volume levels (for waveform visualization).
     VolumeUpdate { levels: Vec<f32> },
     /// Recording stopped; includes the total duration.
     RecordingStopped { duration_ms: u64 },
-    /// LLM processing has started (audio encoding + API call).
+    /// Thinking phase has started (audio encoding + API call).
+    ThinkingStarted,
+    /// Legacy alias kept for compatibility with old clients.
     ProcessingStarted,
     /// LLM processing completed successfully.
     ProcessingComplete { processed_text: String },

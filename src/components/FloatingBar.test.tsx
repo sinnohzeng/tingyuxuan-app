@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { useAppStore } from "../shared/stores/appStore";
 import FloatingBar from "../features/recording/FloatingBar";
+
+const mockInvoke = vi.fn(() => Promise.resolve());
 
 // Mock Tauri APIs — FloatingBar dynamically imports these
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(() => Promise.resolve()),
+  invoke: mockInvoke,
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -28,6 +30,8 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 describe("FloatingBar", () => {
   beforeEach(() => {
+    vi.useRealTimers();
+    mockInvoke.mockClear();
     useAppStore.getState().reset();
   });
 
@@ -45,11 +49,18 @@ describe("FloatingBar", () => {
     expect(screen.getByTitle("完成")).toBeInTheDocument();
   });
 
-  it("shows processing spinner", () => {
-    useAppStore.setState({ recordingState: "processing" });
+  it("shows starting indicator", () => {
+    useAppStore.setState({ recordingState: "starting" });
     render(<FloatingBar />);
 
-    expect(screen.getByText("处理中...")).toBeInTheDocument();
+    expect(screen.getByText("正在启动...")).toBeInTheDocument();
+  });
+
+  it("shows thinking spinner", () => {
+    useAppStore.setState({ recordingState: "thinking" });
+    render(<FloatingBar />);
+
+    expect(screen.getByText("思考中...")).toBeInTheDocument();
   });
 
   it("shows error state with error panel", () => {
@@ -81,5 +92,32 @@ describe("FloatingBar", () => {
     render(<FloatingBar />);
 
     expect(screen.getByText("翻译模式")).toBeInTheDocument();
+  });
+
+  it("shows 60s countdown popup at 4 minutes", async () => {
+    vi.useFakeTimers();
+    useAppStore.setState({ recordingState: "recording", recordingMode: "dictate" });
+    render(<FloatingBar />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(240_000);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("录音时长限制")).toBeInTheDocument();
+    expect(screen.getByText("倒计时 1:00")).toBeInTheDocument();
+  });
+
+  it("auto-stops recording at 5 minutes", async () => {
+    vi.useFakeTimers();
+    useAppStore.setState({ recordingState: "recording", recordingMode: "dictate" });
+    render(<FloatingBar />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+
+    expect(useAppStore.getState().recordingState).toBe("thinking");
   });
 });

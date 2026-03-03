@@ -33,6 +33,9 @@
 - [Phase 4: 生产加固](plan/phase-4-production.md)
 - [全链路可观测性增强](plan/observability-enhancement.md)
 - [Phase 6: 多模态一步管线重构](plan/phase-6-multimodal-pipeline.md)
+- [Phase 7: Windows 语音 MVP 修复与重构（当前执行 SSOT）](plan/phase-7-voice-mvp-remediation.md)
+- [Qwen3-ASR-Flash 传输与压缩决策（2026-03-03）](plan/2026-03-03-qwen3-asr-flash-transport-decision.md)
+- [MVP 整体验收报告（2026-03-03）](plan/2026-03-03-mvp-acceptance-report.md)
 
 ## 文档约定
 
@@ -41,3 +44,5 @@
 - 开发计划 → 计划文档（`docs/plan/`）
 - 用户文档 → 指南文档（`docs/guides/`）
 - 不在多处重复同一信息，而是互相引用
+- 当前执行计划唯一真值：`docs/plan/phase-7-voice-mvp-remediation.md`
+- 若历史 Phase 文档与当前执行计划冲突，以 Phase 7 为准（历史文档仅用于追溯）

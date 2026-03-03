@@ -2,7 +2,7 @@
 
 ## 模块职责
 
-Audio 模块负责麦克风音频采集、PCM 缓冲区累积、WAV 编码和录音文件缓存管理。录音器通过 cpal 库采集 16 kHz / 16-bit / 单声道 PCM 数据，累积到内存 `AudioBuffer` 中（而非流式写入文件），录音结束后由 `AudioBuffer` 编码为 WAV 格式，用于多模态 LLM 一步处理。同时提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
+Audio 模块负责麦克风音频采集、PCM 缓冲区累积、压缩编码和录音文件缓存管理。录音器通过 cpal 库采集 16 kHz / 16-bit / 单声道 PCM 数据，累积到内存 `AudioBuffer` 中（而非流式写入文件），录音结束后由 `AudioBuffer` 优先编码为 MP3（24 kbps），若编码失败自动回退 WAV，再交给多模态 LLM 一步处理。同时提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
 
 ---
 
@@ -19,7 +19,7 @@ pub struct AudioBuffer {
 }
 ```
 
-录音器不再通过 channel 流式传输 PCM 到文件，而是将采样数据累积到 `AudioBuffer` 中。录音结束后，由 `AudioBuffer::encode()` 一次性编码为 WAV 格式。
+录音器不再通过 channel 流式传输 PCM 到文件，而是将采样数据累积到 `AudioBuffer` 中。录音结束后，由 `AudioBuffer::encode()` 一次性编码为 MP3/WAV。
 
 ### EncodedAudio（编码子模块 `audio/encoder.rs`）
 
@@ -32,9 +32,11 @@ pub struct EncodedAudio {
 }
 ```
 
-`EncodedAudio` 是编码后的音频字节序列，支持 `to_base64()` 转为 base64 字符串（用于多模态 LLM API 请求体），以及 `format_str()` 返回格式标识（`"wav"`）。
+`EncodedAudio` 是编码后的音频字节序列，支持 `to_base64()` 转为 base64 字符串（用于多模态 LLM API 请求体），以及 `format_str()` 返回格式标识（`"wav"`/`"mp3"`）。
 
-**WAV 编码实现：** 零外部依赖，手动写入 44 字节 RIFF/WAVE 头 + raw PCM16 数据。
+**编码策略：**
+- **MP3（默认）**：`shine-rs` 纯 Rust 编码，24 kbps，显著降低上传体积
+- **WAV（回退）**：零外部依赖，手动写入 44 字节 RIFF/WAVE 头 + raw PCM16 数据
 
 **关键常量：**
 
@@ -190,7 +192,7 @@ pub enum AudioError {
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `to_base64()` | `fn to_base64(&self) -> String` | base64 编码（用于 API 请求体） |
-| `format_str()` | `fn format_str(&self) -> &'static str` | 返回格式标识（`"wav"`） |
+| `format_str()` | `fn format_str(&self) -> &'static str` | 返回格式标识（`"wav"` / `"mp3"`） |
 
 ### AudioRecorder
 
@@ -235,6 +237,7 @@ pub enum AudioError {
 
 - **设备探测阶段：** `new(device_id)` 在正常模式下通过 `resolve_input_device()` 查找指定设备（或默认设备），缺少设备时返回 `AudioError::NoInputDevice`
 - **录音状态守卫：** 重复调用 `start()` 返回 `AlreadyRecording`；在未录音时调用 `stop()` / `cancel()` 返回 `NotRecording`
+- **自动截止容错：** 达到 `MAX_RECORDING_SECONDS` 自动停录后，`stop()` 仍可取回缓冲区（避免边界时刻丢音频）
 - **cpal 流错误：** 通过 `AudioError::StreamError(String)` 包装，涵盖配置查询失败、流构建失败、播放失败等场景
 - **WAV 写入错误：** 通过 `AudioError::WavWriteError(String)` 包装 hound 库错误
 - **IO 错误：** 通过 `AudioError::IoError` 使用 `#[from]` 自动转换 `std::io::Error`
@@ -257,7 +260,7 @@ pub enum AudioError {
 | `test_mock_device_is_default` | Mock 模式返回的设备 is_default=true |
 | `test_audio_device_info_serialization` | AudioDeviceInfo JSON 序列化/反序列化往返一致 |
 
-### AudioBuffer / EncodedAudio 编码器测试（9 个）
+### AudioBuffer / EncodedAudio 编码器测试（11 个）
 
 | 测试名称 | 覆盖场景 |
 |----------|----------|
@@ -270,6 +273,8 @@ pub enum AudioError {
 | `test_wav_encoding_roundtrip` | PCM 数据编码后完整可还原 |
 | `test_base64_encoding` | base64 编码/解码往返一致 |
 | `test_duration_ms_preserved` | 编码后 duration_ms 一致 |
+| `test_mp3_encoding_header` | MP3 编码非空输出与格式标识 |
+| `test_mp3_smaller_than_wav_for_long_audio` | 长音频 MP3 体积小于 WAV |
 
 ### AudioRecorder 测试（10 个）
 
@@ -307,9 +312,10 @@ pub enum AudioError {
 
 ## 已知限制
 
-1. **仅支持 WAV 格式** -- 不支持 Opus 等压缩格式，WAV 文件体积较大（16 kHz 单声道约 32 KB/s）。base64 编码后体积约增长 33%
-2. **录音时长上限 300 秒** -- `MAX_RECORDING_SECONDS = 300`，超过后自动停止。该限制保护内存使用（约 9.6 MB PCM + 12.8 MB base64）
-3. **无 VAD / 静音检测** -- 不会自动跳过静音段，用户需手动控制录音起止
-4. **最近邻重采样** -- 当设备采样率非 16 kHz 时使用最近邻插值（nearest-neighbour），精度对语音识别足够但不适用于高保真场景
-5. **RMS 级别上限** -- 最多保留 200 个 RMS 级别，超出后从头部移除
-6. **无并发录音** -- 同一 `AudioRecorder` 实例同时只能有一个活跃录音会话
+1. **压缩依赖于 MP3 编码器支持的采样率/声道** -- 非常规输入配置可能触发自动回退 WAV
+2. **录音时长上限 300 秒** -- `MAX_RECORDING_SECONDS = 300`，超过后自动停止。该限制保护内存使用（约 9.6 MB PCM，WAV/base64 路径体积更大）
+3. **MVP 不支持 >5 分钟分流** -- 当前仅 `qwen3-asr-flash` 同步路径，不进入 `filetrans` 异步链路
+4. **无 VAD / 静音检测** -- 不会自动跳过静音段，用户需手动控制录音起止
+5. **最近邻重采样** -- 当设备采样率非 16 kHz 时使用最近邻插值（nearest-neighbour），精度对语音识别足够但不适用于高保真场景
+6. **RMS 级别上限** -- 最多保留 200 个 RMS 级别，超出后从头部移除
+7. **无并发录音** -- 同一 `AudioRecorder` 实例同时只能有一个活跃录音会话

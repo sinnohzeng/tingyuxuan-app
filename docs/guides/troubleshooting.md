@@ -84,8 +84,22 @@ dbus-send --session --print-reply \
 | Connection Error | 网络不可达 | 检查网络连接；录音会自动加入离线队列 |
 
 **使用「测试连接」功能**：在设置中点击 LLM 的测试连接按钮，快速诊断问题。
+> 该测试现在是**多模态音频探测**（非纯文本 ping），会真实验证音频输入能力。
 
-### 6. Windows：文本注入到部分应用无效
+### 6. 结果出现固定模板文案（例如“请开始录音”）
+
+**现象**：返回文本看似成功，但内容是模板化话术。
+
+**当前机制**：
+- 后端已启用质量闸门，会拦截占位模板并返回错误而非注入
+- 运行模型固定为多模态模型 `qwen3-omni-flash`，避免错误模型导致假阳性
+
+**建议排查**：
+1. 在设置中重新点击「测试连接」，确认多模态能力可用
+2. 检查网络代理/网关是否替换了上游模型
+3. 查看日志中是否出现 `placeholder transcript detected`
+
+### 7. Windows：文本注入到部分应用无效
 
 **症状**：文本注入在大多数应用正常工作，但在某些管理员权限运行的程序中无效。
 
@@ -95,7 +109,7 @@ dbus-send --session --print-reply \
 - 以管理员身份运行听语轩
 - 或避免在管理员权限的应用中使用文本注入
 
-### 7. Windows：WebView2 未安装
+### 8. Windows：WebView2 未安装
 
 **症状**：Windows 10 上启动应用后出现错误提示。
 
@@ -103,7 +117,7 @@ dbus-send --session --print-reply \
 - 下载安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 - Windows 11 自带 WebView2，无需安装
 
-### 8. 应用启动后白屏
+### 9. 应用启动后白屏
 
 **可能原因**：前端渲染崩溃。
 
@@ -114,7 +128,7 @@ dbus-send --session --print-reply \
   rm ~/.config/tingyuxuan/TingYuXuan/config.json
   ```
 
-### 9. ydotool 文本注入需要权限
+### 10. ydotool 文本注入需要权限
 
 如果使用 `ydotool` 作为备用输入工具：
 

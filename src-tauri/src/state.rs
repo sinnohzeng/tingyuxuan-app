@@ -55,16 +55,17 @@ pub struct TelemetryState(pub Box<dyn tingyuxuan_core::telemetry::TelemetryBacke
 
 /// 会话阶段追踪 — 后端唯一真值，防止快捷键在不当时刻触发。
 ///
-/// 状态机: Idle → Recording → Processing → Idle
-/// - Recording 前 800ms 内忽略 RAlt（防误触）
-/// - Processing 期间忽略所有 RAlt
+/// 状态机: Idle → Starting → Recording → Thinking → Idle
+/// - Recording 前 250ms 内忽略 RAlt（防误触）
+/// - Starting/Thinking 期间忽略重复触发
 pub struct SessionPhaseState(pub Arc<RwLock<SessionPhase>>);
 
 #[derive(Debug, Clone, Copy)]
 pub enum SessionPhase {
     Idle,
+    Starting { triggered_at: Instant },
     Recording { started_at: Instant },
-    Processing,
+    Thinking,
 }
 
 /// macOS Fn 键监听器状态 — 持有 FnKeyMonitor 使其在应用生命周期内存活。

@@ -164,10 +164,14 @@ impl AudioRecorder {
                 .inner
                 .lock()
                 .expect("RecorderInner: lock poisoned in stop()");
-            if !inner.is_recording {
+            if !(inner.is_recording || (inner.auto_stopped && !inner.buffer.is_empty())) {
                 return Err(AudioError::NotRecording);
             }
+            if inner.auto_stopped {
+                tracing::info!("Stopping recorder after max-duration auto-stop");
+            }
             inner.is_recording = false;
+            inner.auto_stopped = false;
             (std::mem::take(&mut inner.buffer), inner.sample_count)
         };
 
@@ -630,6 +634,24 @@ mod tests {
         let mut recorder = mock_recorder();
         let result = recorder.cancel();
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_stop_after_auto_stopped_returns_buffer() {
+        let mut recorder = mock_recorder();
+
+        {
+            let mut inner = recorder.inner.lock().unwrap();
+            inner.is_recording = false;
+            inner.auto_stopped = true;
+            inner.sample_count = 3;
+            inner.buffer = vec![1, 2, 3];
+        }
+
+        let buffer = recorder.stop().expect("stop should return buffered audio");
+        assert_eq!(buffer.len(), 3);
+        assert!(!recorder.was_auto_stopped());
     }
 
     #[test]

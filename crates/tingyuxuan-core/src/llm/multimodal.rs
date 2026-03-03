@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::api_key::ApiKey;
-use crate::audio::encoder::EncodedAudio;
+use crate::audio::encoder::{AudioBuffer, AudioFormat, EncodedAudio};
 use crate::error::LLMError;
 use crate::llm::prompts::build_multimodal_system_prompt;
 use crate::llm::provider::{LLMProvider, LLMResult, ProcessingInput};
@@ -41,6 +41,30 @@ impl MultimodalProvider {
 
     fn completions_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
+    }
+
+    /// 连接测试（真实多模态）：发送极短静音音频，验证端点具备音频输入能力。
+    pub async fn test_multimodal_audio_connection(&self) -> Result<bool, LLMError> {
+        let mut probe = AudioBuffer::new(16_000, 1);
+        probe.push_samples(&vec![0i16; 320]); // 20ms silence
+        let audio = probe
+            .encode(AudioFormat::Wav)
+            .map_err(|e| LLMError::InvalidResponse(format!("probe audio encoding failed: {e}")))?;
+
+        let (text, _tokens) = self
+            .send_multimodal_request(
+                "You are a connectivity probe. Reply with exactly: OK".to_string(),
+                &audio,
+            )
+            .await?;
+
+        if text.trim().is_empty() {
+            return Err(LLMError::InvalidResponse(
+                "multimodal probe returned empty text".to_string(),
+            ));
+        }
+
+        Ok(true)
     }
 
     /// 发送多模态请求并用 SSE 流式解析响应。
@@ -234,46 +258,7 @@ impl LLMProvider for MultimodalProvider {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, LLMError>> + Send + '_>>
     {
-        Box::pin(async move {
-            // 发送一个简短的文本请求来验证连接和认证。
-            let body = serde_json::json!({
-                "model": self.model,
-                "messages": [{"role": "user", "content": "Say hi."}],
-                "stream": false,
-                "max_tokens": 5,
-            });
-
-            let response = self
-                .client
-                .post(self.completions_url())
-                .bearer_auth(self.api_key.expose_secret())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| {
-                    if e.is_timeout() {
-                        LLMError::Timeout
-                    } else {
-                        LLMError::NetworkError(e.to_string())
-                    }
-                })?;
-
-            let status = response.status();
-            if !status.is_success() {
-                let status_code = status.as_u16() as u32;
-                let body_text = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| String::from("<failed to read body>"));
-                return Err(match status_code {
-                    401 => LLMError::AuthFailed,
-                    429 => LLMError::RateLimited,
-                    _ => LLMError::ServerError(status_code, body_text),
-                });
-            }
-
-            Ok(true)
-        })
+        Box::pin(async move { self.test_multimodal_audio_connection().await })
     }
 }
 
@@ -482,14 +467,16 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "choices": [{"message": {"role": "assistant", "content": "hi"}}]
-            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(sse_success_response())
+                    .append_header("content-type", "text/event-stream"),
+            )
             .mount(&server)
             .await;
 
         let provider = MultimodalProvider::new("key".into(), server.uri(), "m".into()).unwrap();
-        let result = provider.test_connection().await;
+        let result = provider.test_multimodal_audio_connection().await;
         assert!(result.is_ok());
         assert!(result.unwrap());
     }

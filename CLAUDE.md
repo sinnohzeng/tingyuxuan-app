@@ -4,7 +4,9 @@
 
 ## 项目概览
 
-听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → WAV 编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入。前端采用 feature-based 目录结构 + Fluent UI 2 组件库。
+听语轩（TingYuXuan）— AI 驱动的智能语音输入工具。核心管线：语音录制 → MP3（失败回退 WAV）编码 → 多模态 LLM 一步识别+润色 → 系统级文本注入。前端采用 feature-based 目录结构 + Fluent UI 2 组件库。
+
+当前执行计划（SSOT）：`docs/plan/phase-7-voice-mvp-remediation.md`
 
 ## 技术栈
 
@@ -106,6 +108,10 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 - **语言**：UI 和文档用中文，commit message 用中文，代码注释中文
 - **文档驱动 (DDD)**：文档是功能规格，代码实现文档描述
 - **唯一真值 (SSOT)**：每类信息只有一个权威来源，跨文档引用不重复
+- **DDD/SSOT 执行闸门（必遵守）**：
+  1. 每次功能改动必须同步更新对应唯一模块文档（`docs/modules/*`）
+  2. 每次里程碑推进必须同步更新当前执行计划（`docs/plan/phase-7-voice-mvp-remediation.md`）
+  3. `CLAUDE.md` 只记录稳定约束、执行入口与常用命令，不写易变实现细节
 - **胶水编程原则（Glue Code First）**：优先使用成熟开源库，不重复造轮子；缺什么依赖就装什么；数据收集（埋点、崩溃分析）用专业 SaaS 工具；自己的代码只负责编排和连接
 - **错误处理**：所有 hook/store catch 块用 `createLogger` 记录技术细节 + `uiStore.showToast()` 通知用户，禁止静默吞错或裸 `console.error`
 - **快捷键默认值**：Linux/Windows: RAlt（听写）、Shift+RAlt（翻译）、Alt+Space（AI 助手）、Esc（取消）；macOS: Fn（听写）、⌥T（翻译）、⌃Space（AI 助手）、Esc（取消）
@@ -117,14 +123,14 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 
 | 命令 | 参数 | 返回值 | 用途 |
 |------|------|--------|------|
-| `start_recording` | `mode: String` | `()` | 开始录音 |
+| `start_recording` | `mode: String` | `String` | 开始录音，返回 session_id |
 | `stop_recording` | — | `String` | 停止录音，返回转写结果 |
 | `cancel_recording` | — | `()` | 取消录音 |
 | `get_config` | — | `AppConfig` | 获取配置 |
 | `save_config` | `config: AppConfig` | `()` | 保存配置 |
 | `get_api_key` | `service: String` | `Option<String>` | 获取 API Key |
 | `save_api_key` | `service, key` | `()` | 保存 API Key |
-| `test_llm_connection` | — | `bool` | 测试 LLM 连接 |
+| `test_multimodal_connection` | — | `bool` | 测试多模态音频连接 |
 | `get_history_page` | `limit, offset` | `Vec<TranscriptRecord>` | 分页历史 |
 | `search_history` | `query, limit` | `Vec<TranscriptRecord>` | 搜索历史 |
 | `delete_history` | `id: String` | `()` | 删除记录 |

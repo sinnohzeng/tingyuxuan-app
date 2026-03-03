@@ -5,14 +5,15 @@ interface WaveformProps {
   isActive: boolean;
 }
 
-const BAR_COUNT = 30;
-const BAR_GAP = 2;
-const MIN_BAR_HEIGHT = 2;
-const LERP_FACTOR = 0.3;
+const BAR_COUNT = 18;
+const BAR_GAP = 4;
+const MIN_HALF_HEIGHT = 1.5;
+const LERP_FACTOR = 0.28;
+const LEVEL_GAIN = 2.2;
 
 export default function Waveform({ levels, isActive }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const prevHeightsRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
+  const prevHeightsRef = useRef<number[]>(new Array(BAR_COUNT).fill(MIN_HALF_HEIGHT));
   const sizeRef = useRef({ width: 0, height: 0 });
 
   // 监听尺寸变化，避免每次 levels 更新都调用 getBoundingClientRect()
@@ -52,48 +53,46 @@ export default function Waveform({ levels, isActive }: WaveformProps) {
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
 
-    const barWidth = (width - BAR_GAP * (BAR_COUNT - 1)) / BAR_COUNT;
-    const maxBarHeight = height - 4; // 2px padding top/bottom
+    const availableWidth = width - BAR_GAP * (BAR_COUNT - 1);
+    const barWidth = Math.max(2, availableWidth / BAR_COUNT);
+    const centerY = height / 2;
+    const maxHalfHeight = Math.max(4, height * 0.44);
 
     // Clear canvas
     ctx.clearRect(0, 0, width, height);
 
-    // Create gradient
-    const gradient = ctx.createLinearGradient(0, 0, width, 0);
-    if (isActive) {
-      gradient.addColorStop(0, "#3b82f6"); // blue-500
-      gradient.addColorStop(1, "#8b5cf6"); // violet-500
-    } else {
-      gradient.addColorStop(0, "#6b7280"); // gray-500
-      gradient.addColorStop(1, "#9ca3af"); // gray-400
-    }
+    // Middle guide line (Typeless-like center axis)
+    ctx.fillStyle = isActive ? "rgba(255,255,255,0.24)" : "rgba(148,163,184,0.24)";
+    ctx.fillRect(0, centerY - 0.5, width, 1);
 
-    // Map levels to bar heights with interpolation
+    // Draw mirrored bars around the center axis.
     const prevHeights = prevHeightsRef.current;
     for (let i = 0; i < BAR_COUNT; i++) {
-      // Sample from levels array, or use 0 if not enough data
       const levelIndex = Math.floor((i / BAR_COUNT) * Math.max(levels.length, 1));
       const targetLevel = levels[levelIndex] ?? 0;
-      const targetHeight = Math.max(
-        MIN_BAR_HEIGHT,
-        targetLevel * maxBarHeight
+      const amplified = Math.min(1, targetLevel * LEVEL_GAIN);
+      const targetHalfHeight = Math.max(
+        MIN_HALF_HEIGHT,
+        amplified * maxHalfHeight,
       );
 
-      // Lerp from previous height for smooth animation
-      const currentHeight =
-        prevHeights[i] + (targetHeight - prevHeights[i]) * LERP_FACTOR;
-      prevHeights[i] = currentHeight;
+      const currentHalfHeight =
+        prevHeights[i] + (targetHalfHeight - prevHeights[i]) * LERP_FACTOR;
+      prevHeights[i] = currentHalfHeight;
 
       const x = i * (barWidth + BAR_GAP);
-      const y = (height - currentHeight) / 2;
+      const topY = centerY - currentHalfHeight - 1;
+      const bottomY = centerY + 1;
+      ctx.fillStyle = isActive ? "#f8fafc" : "#94a3b8";
 
-      ctx.fillStyle = gradient;
       if (typeof ctx.roundRect === "function") {
         ctx.beginPath();
-        ctx.roundRect(x, y, barWidth, currentHeight, barWidth / 2);
+        ctx.roundRect(x, topY, barWidth, currentHalfHeight, barWidth / 2);
+        ctx.roundRect(x, bottomY, barWidth, currentHalfHeight, barWidth / 2);
         ctx.fill();
       } else {
-        ctx.fillRect(x, y, barWidth, currentHeight);
+        ctx.fillRect(x, topY, barWidth, currentHalfHeight);
+        ctx.fillRect(x, bottomY, barWidth, currentHalfHeight);
       }
     }
   }, [levels, isActive]);

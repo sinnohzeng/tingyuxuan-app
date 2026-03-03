@@ -9,6 +9,7 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_opener::OpenerExt;
 
 use crate::state::{ConfigState, RecorderState, TrayState};
 
@@ -20,8 +21,7 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let menu = build_menu(app)?;
 
-    let tray = TrayIconBuilder::new()
-        .id("main")
+    let tray = TrayIconBuilder::with_id("main")
         .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)
         .menu(&menu)
         .tooltip("TingYuXuan - 听语轩")
@@ -76,20 +76,23 @@ fn build_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, Box<dyn std::error::E
     let check_update = MenuItem::with_id(app, "check_update", "检查更新", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出听语轩", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[
-        &feedback,
-        &open_main,
-        &PredefinedMenuItem::separator(app)?,
-        &settings,
-        &mic_submenu,
-        &PredefinedMenuItem::separator(app)?,
-        &dictionary,
-        &PredefinedMenuItem::separator(app)?,
-        &version,
-        &check_update,
-        &PredefinedMenuItem::separator(app)?,
-        &quit,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &feedback,
+            &open_main,
+            &PredefinedMenuItem::separator(app)?,
+            &settings,
+            &mic_submenu,
+            &PredefinedMenuItem::separator(app)?,
+            &dictionary,
+            &PredefinedMenuItem::separator(app)?,
+            &version,
+            &check_update,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
     Ok(menu)
 }
 
@@ -105,7 +108,12 @@ fn build_mic_submenu(app: &AppHandle) -> Result<Submenu<tauri::Wry>, Box<dyn std
     // "系统默认"选项 — device_id=None 时勾选。
     let default_checked = selected_id.is_none();
     let default_item = CheckMenuItem::with_id(
-        app, "mic:default", "系统默认", true, default_checked, None::<&str>,
+        app,
+        "mic:default",
+        "系统默认",
+        true,
+        default_checked,
+        None::<&str>,
     )?;
     submenu.append(&default_item)?;
 
@@ -114,9 +122,8 @@ fn build_mic_submenu(app: &AppHandle) -> Result<Submenu<tauri::Wry>, Box<dyn std
         for dev in devices {
             let checked = selected_id.as_deref() == Some(&dev.id);
             let item_id = format!("mic:{}", dev.id);
-            let item = CheckMenuItem::with_id(
-                app, &item_id, &dev.name, true, checked, None::<&str>,
-            )?;
+            let item =
+                CheckMenuItem::with_id(app, &item_id, &dev.name, true, checked, None::<&str>)?;
             submenu.append(&item)?;
         }
     }

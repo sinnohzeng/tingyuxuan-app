@@ -54,10 +54,12 @@ pub enum SessionResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PipelineEvent {
+    RecorderStarting { mode: String },
     RecordingStarted { session_id: String, mode: String },
     VolumeUpdate { levels: Vec<f32> },
     RecordingStopped { duration_ms: u64 },
-    ProcessingStarted,                        // 音频编码 + LLM 开始
+    ThinkingStarted,                         // 音频编码 + LLM 开始
+    ProcessingStarted,                       // 兼容旧客户端的别名事件
     ProcessingComplete { processed_text: String },
     Error { message: String, user_action: UserAction },
     NetworkStatusChanged { online: bool },
@@ -150,15 +152,15 @@ process_audio(buffer, request, cancel_token)
   |
   +-- [检查取消] --> PipelineError::Cancelled
   |
-  +-- 编码音频: buffer.encode(Wav) --> EncodedAudio
+  +-- 编码音频: buffer.encode(Mp3) --失败--> buffer.encode(Wav)
   |
   +-- 构建 ProcessingInput { mode, audio, context, ... }
   |
-  +-- emit(ProcessingStarted)
+  +-- emit(ThinkingStarted)
   |
   +-- 调用 LLM (with retry + cancel)
   |     |
-  |     +-- 成功 --> emit(ProcessingComplete { processed_text })
+  |     +-- 成功 --> 质量闸门校验（空文本/模板占位词拦截） --> emit(ProcessingComplete)
   |     +-- 失败 --> emit(Error { message, user_action }) --> return Err(PipelineError::Llm)
   |
   +-- return Ok(processed_text)
@@ -166,6 +168,7 @@ process_audio(buffer, request, cancel_token)
 
 **关键设计：**
 - 单步处理：没有中间 STT 阶段，一次 API 调用完成识别+润色
+- 压缩优先：默认 MP3，编码失败回退 WAV，接口错误时再回退 WAV 重试一次
 - `AudioBuffer` 所有权转移到 `process_audio()`，处理后自动释放内存
 - CancellationToken 在处理开始前和 LLM 调用期间检查
 - 重试等待期间 sleep 可被 cancel 中断（`tokio::select!`）
@@ -206,7 +209,7 @@ impl PipelineError {
 
 ## 测试覆盖
 
-共 **约 18 个** 单元测试：
+共 **约 20 个** 单元测试：
 
 ### Orchestrator 测试（6 个）
 
@@ -215,7 +218,9 @@ impl PipelineError {
 | `test_process_audio_success` | AudioBuffer → LLM 全流程成功 |
 | `test_process_audio_llm_failure` | LLM 失败时发送 Error 事件 |
 | `test_cancellation_before_processing` | 处理开始前取消 → Cancelled |
-| `test_processing_events_emitted` | ProcessingStarted + ProcessingComplete 事件发射验证 |
+| `test_processing_events_emitted` | ThinkingStarted + ProcessingComplete 事件发射验证 |
+| `test_placeholder_transcript_rejected` | 模板占位文案被质量闸门拒绝并发出 Error |
+| `test_retry_with_wav_after_mp3_rejection` | MP3 不兼容时自动回退 WAV 再试 |
 | `test_translate_mode` | Translate 模式完整流程 |
 | `test_subscribe` | 订阅事件通道验证 |
 

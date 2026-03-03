@@ -1,8 +1,9 @@
 /** Recording state machine */
 export type RecordingState =
   | "idle"
+  | "starting"
   | "recording"
-  | "processing"
+  | "thinking"
   | "done"
   | "cancelled"
   | "error";
@@ -12,9 +13,12 @@ export type RecordingMode = "dictate" | "translate" | "ai_assistant" | "edit";
 
 /** Pipeline event from Rust backend */
 export type PipelineEvent =
+  | { type: "RecorderStarting"; mode: string }
   | { type: "RecordingStarted"; session_id: string; mode: string }
   | { type: "VolumeUpdate"; levels: number[] }
   | { type: "RecordingStopped"; duration_ms: number }
+  | { type: "ThinkingStarted" }
+  // Legacy alias kept for backward compatibility with old backends.
   | { type: "ProcessingStarted" }
   | { type: "ProcessingComplete"; processed_text: string }
   | {

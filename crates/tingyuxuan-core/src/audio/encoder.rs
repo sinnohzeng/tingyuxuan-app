@@ -1,4 +1,5 @@
 use base64::Engine;
+use shine_rs::{Mp3EncoderConfig, StereoMode, encode_pcm_to_mp3};
 
 use crate::error::AudioError;
 
@@ -7,6 +8,8 @@ use crate::error::AudioError;
 pub enum AudioFormat {
     /// PCM + RIFF/WAVE 头（44 字节头 + raw PCM16）。
     Wav,
+    /// MPEG Layer III（高压缩率，适合云端上传）。
+    Mp3,
 }
 
 /// 录音缓冲区：在录音过程中累积 PCM 采样。
@@ -73,6 +76,7 @@ impl AudioBuffer {
     pub fn encode(&self, format: AudioFormat) -> Result<EncodedAudio, AudioError> {
         match format {
             AudioFormat::Wav => self.encode_wav(),
+            AudioFormat::Mp3 => self.encode_mp3(),
         }
     }
 
@@ -125,6 +129,53 @@ impl AudioBuffer {
             duration_ms: self.duration_ms(),
         })
     }
+
+    /// MP3 编码：MPEG Layer III。
+    ///
+    /// 设计参数（语音输入场景）：
+    /// - 目标码率：24 kbps
+    /// - 声道模式：单声道用 Mono，双声道用 Joint Stereo
+    ///
+    /// 默认录音流是 16kHz 单声道，正好落在 MP3 支持范围内。
+    fn encode_mp3(&self) -> Result<EncodedAudio, AudioError> {
+        if self.samples.is_empty() {
+            return Err(AudioError::StreamError(
+                "音频为空，无法编码 MP3".to_string(),
+            ));
+        }
+        if self.channels == 0 || self.channels > 2 {
+            return Err(AudioError::StreamError(format!(
+                "当前仅支持 1/2 声道 MP3 编码，实际 channels={}",
+                self.channels
+            )));
+        }
+
+        let stereo_mode = if self.channels == 1 {
+            StereoMode::Mono
+        } else {
+            StereoMode::JointStereo
+        };
+        let config = Mp3EncoderConfig::new()
+            .sample_rate(self.sample_rate)
+            .bitrate(24)
+            .channels(self.channels as u8)
+            .stereo_mode(stereo_mode);
+
+        let data = encode_pcm_to_mp3(config, &self.samples)
+            .map_err(|e| AudioError::StreamError(format!("MP3 encode failed: {e}")))?;
+
+        if data.is_empty() {
+            return Err(AudioError::StreamError(
+                "MP3 编码完成但输出为空".to_string(),
+            ));
+        }
+
+        Ok(EncodedAudio {
+            data,
+            format: AudioFormat::Mp3,
+            duration_ms: self.duration_ms(),
+        })
+    }
 }
 
 /// 编码后的音频数据。
@@ -145,6 +196,7 @@ impl EncodedAudio {
     pub fn format_str(&self) -> &'static str {
         match self.format {
             AudioFormat::Wav => "wav",
+            AudioFormat::Mp3 => "mp3",
         }
     }
 }
@@ -253,5 +305,26 @@ mod tests {
 
         let encoded = buf.encode(AudioFormat::Wav).unwrap();
         assert_eq!(encoded.duration_ms, 3000);
+    }
+
+    #[test]
+    fn test_mp3_encoding_header() {
+        let mut buf = AudioBuffer::new(16_000, 1);
+        buf.push_samples(&vec![0i16; 16_000]); // 1 second
+
+        let encoded = buf.encode(AudioFormat::Mp3).unwrap();
+        assert_eq!(encoded.format, AudioFormat::Mp3);
+        assert_eq!(encoded.format_str(), "mp3");
+        assert!(!encoded.data.is_empty());
+    }
+
+    #[test]
+    fn test_mp3_smaller_than_wav_for_long_audio() {
+        let mut buf = AudioBuffer::new(16_000, 1);
+        buf.push_samples(&vec![0i16; 48_000]); // 3 seconds
+
+        let wav = buf.encode(AudioFormat::Wav).unwrap();
+        let mp3 = buf.encode(AudioFormat::Mp3).unwrap();
+        assert!(mp3.data.len() < wav.data.len());
     }
 }

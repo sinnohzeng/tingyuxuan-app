@@ -39,7 +39,7 @@ export default function ResultPanel({
       import("@tauri-apps/api/window")
         .then(({ getCurrentWindow, LogicalSize }) => {
           getCurrentWindow()
-            .setSize(new LogicalSize(420, 64))
+            .setSize(new LogicalSize(220, 56))
             .catch(() => {});
         })
         .catch(() => {});

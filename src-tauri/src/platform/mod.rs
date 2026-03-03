@@ -179,6 +179,7 @@ pub enum PermissionState {
 }
 
 /// 获取当前平台的快捷键显示标签。
+#[allow(dead_code)] // 预留给托盘/设置页展示快捷键文案
 pub fn shortcut_labels() -> ShortcutLabels {
     #[cfg(target_os = "macos")]
     {

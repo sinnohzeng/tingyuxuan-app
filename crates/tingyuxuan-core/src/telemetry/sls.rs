@@ -7,8 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::events::TelemetryEvent;
 use super::TelemetryBackend;
+use super::events::TelemetryEvent;
 
 /// SLS Web Tracking 传输后端。
 ///
@@ -41,13 +41,7 @@ impl SlsTransport {
         let flush_version = app_version.clone();
         let flush_platform = platform.clone();
         let handle = tokio::spawn(async move {
-            Self::flush_loop(
-                flush_buffer,
-                flush_endpoint,
-                flush_version,
-                flush_platform,
-            )
-            .await;
+            Self::flush_loop(flush_buffer, flush_endpoint, flush_version, flush_platform).await;
         });
 
         Self {
@@ -66,9 +60,8 @@ impl SlsTransport {
         app_version: String,
         platform: String,
     ) {
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(FLUSH_INTERVAL_SECS),
-        );
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
         loop {
             interval.tick().await;
             let should_flush = {

@@ -41,9 +41,10 @@ pub fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
         .map(|id| id.to_string());
 
     let mut devices = Vec::new();
-    for device in host.input_devices().map_err(|e| {
-        AudioError::StreamError(format!("无法枚举输入设备: {e}"))
-    })? {
+    for device in host
+        .input_devices()
+        .map_err(|e| AudioError::StreamError(format!("无法枚举输入设备: {e}")))?
+    {
         let id = match device.id() {
             Ok(id) => id.to_string(),
             Err(_) => continue, // 跳过无法获取 ID 的设备
@@ -53,7 +54,11 @@ pub fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
             .map(|d| d.to_string())
             .unwrap_or_else(|_| "Unknown Device".to_string());
         let is_default = default_id.as_deref() == Some(&id);
-        devices.push(AudioDeviceInfo { id, name, is_default });
+        devices.push(AudioDeviceInfo {
+            id,
+            name,
+            is_default,
+        });
     }
 
     Ok(devices)
@@ -63,21 +68,17 @@ pub fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
 ///
 /// - `device_id = None` → 返回系统默认输入设备
 /// - `device_id = Some(id)` → 尝试精确匹配；失败时 fallback 到默认设备 + warn 日志
-pub fn resolve_input_device(
-    device_id: Option<&str>,
-) -> Result<cpal::Device, AudioError> {
+pub fn resolve_input_device(device_id: Option<&str>) -> Result<cpal::Device, AudioError> {
     let host = cpal::default_host();
 
     let Some(target_id) = device_id else {
-        return host
-            .default_input_device()
-            .ok_or(AudioError::NoInputDevice);
+        return host.default_input_device().ok_or(AudioError::NoInputDevice);
     };
 
     // 尝试通过 DeviceId 精确查找。
-    let parsed_id: cpal::DeviceId = target_id.parse().map_err(|_| {
-        AudioError::StreamError(format!("无效的设备 ID: {target_id}"))
-    })?;
+    let parsed_id: cpal::DeviceId = target_id
+        .parse()
+        .map_err(|_| AudioError::StreamError(format!("无效的设备 ID: {target_id}")))?;
 
     if let Some(device) = host.device_by_id(&parsed_id) {
         return Ok(device);
@@ -88,8 +89,7 @@ pub fn resolve_input_device(
         device_id = target_id,
         "指定音频设备未找到，回退到系统默认设备"
     );
-    host.default_input_device()
-        .ok_or(AudioError::NoInputDevice)
+    host.default_input_device().ok_or(AudioError::NoInputDevice)
 }
 
 fn is_mock_mode() -> bool {

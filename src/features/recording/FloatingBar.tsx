@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { useAppStore } from "../../shared/stores/appStore";
 import type { PipelineEvent, UserAction } from "../../shared/lib/types";
 import { createLogger, setLogSession } from "../../shared/lib/logger";
@@ -18,10 +18,21 @@ const MODE_LABELS: Record<string, string> = {
   edit: "语音编辑",
 };
 
+const MAX_RECORDING_SECONDS = 300;
+const COUNTDOWN_START_SECONDS = 240;
+
 /** Format duration as M:SS */
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Format remaining seconds as M:SS for countdown. */
+function formatCountdown(seconds: number): string {
+  const safe = Math.max(0, seconds);
+  const m = Math.floor(safe / 60);
+  const s = Math.floor(safe % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
@@ -32,17 +43,21 @@ function barContainerClass(
   aiResult: string | null,
 ): string {
   if (state === "error") return "w-[320px] min-h-[56px]";
-  if (state === "done" && mode === "ai_assistant" && aiResult)
-    return "w-[340px] h-[320px] flex-col";
-  return "w-[320px] h-[48px]";
+  if (state === "done" && mode === "ai_assistant" && aiResult) {
+    return "w-[420px] h-[360px] flex-col";
+  }
+  if (state === "recording") return "w-[252px] h-[60px]";
+  return "w-[220px] h-[56px]";
 }
 
 /** 根据状态计算浮动条的样式 */
 function barStyleClass(state: string): string {
   switch (state) {
+    case "starting":
+      return "bg-black/92 border border-white/15";
     case "recording":
-      return "bg-black/90 border border-white/15 animate-recording-pulse";
-    case "processing":
+      return "bg-[#0d0d10]/95 border border-white/35 shadow-[0_0_0_1px_rgba(255,255,255,0.12),0_10px_22px_rgba(0,0,0,0.42)]";
+    case "thinking":
       return "bg-black/90 border border-white/15";
     case "done":
       return "bg-black/90 border border-white/15";
@@ -67,10 +82,31 @@ export default function FloatingBar() {
   const reset = useAppStore((s) => s.reset);
 
   const { playStartSound, playStopSound, playErrorSound } = useSoundEffect();
+  const [showLimitPopup, setShowLimitPopup] = useState(false);
 
   const durationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevStateRef = useRef(recordingState);
+  const limitPopupShownRef = useRef(false);
+  const autoStopTriggeredRef = useRef(false);
+
+  const handleAutoStopAtLimit = useCallback(async () => {
+    if (useAppStore.getState().recordingState !== "recording") {
+      return;
+    }
+    log.info(`recording limit reached (${MAX_RECORDING_SECONDS}s), auto-stopping`);
+    trackEvent("recording_limit_reached", {
+      limit_seconds: MAX_RECORDING_SECONDS,
+    });
+    setRecordingState("thinking");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_recording");
+    } catch (error) {
+      log.warn("auto stop invoke failed", { error });
+      useAppStore.getState().setError("录音已达到 5 分钟上限，请重试", "Retry");
+    }
+  }, [setRecordingState]);
 
   // 音效：状态变化时播放
   useEffect(() => {
@@ -93,21 +129,41 @@ export default function FloatingBar() {
     if (recordingState === "recording") {
       const store = useAppStore.getState();
       store.setRecordingDuration(0);
+      setShowLimitPopup(false);
+      limitPopupShownRef.current = false;
+      autoStopTriggeredRef.current = false;
       durationTimerRef.current = setInterval(() => {
-        useAppStore.setState((s) => ({
-          recordingDuration: s.recordingDuration + 1,
-        }));
+        const nextDuration = useAppStore.getState().recordingDuration + 1;
+        const clampedDuration = Math.min(nextDuration, MAX_RECORDING_SECONDS);
+        useAppStore.getState().setRecordingDuration(clampedDuration);
+
+        if (
+          clampedDuration >= COUNTDOWN_START_SECONDS &&
+          !limitPopupShownRef.current
+        ) {
+          limitPopupShownRef.current = true;
+          setShowLimitPopup(true);
+        }
+
+        if (
+          clampedDuration >= MAX_RECORDING_SECONDS &&
+          !autoStopTriggeredRef.current
+        ) {
+          autoStopTriggeredRef.current = true;
+          void handleAutoStopAtLimit();
+        }
       }, 1000);
     } else {
       if (durationTimerRef.current) {
         clearInterval(durationTimerRef.current);
         durationTimerRef.current = null;
       }
+      setShowLimitPopup(false);
     }
     return () => {
       if (durationTimerRef.current) clearInterval(durationTimerRef.current);
     };
-  }, [recordingState]);
+  }, [recordingState, handleAutoStopAtLimit]);
 
   // Auto-hide after done/cancelled (except AI assistant — it shows result panel).
   useEffect(() => {
@@ -153,23 +209,37 @@ export default function FloatingBar() {
             log.debug(`pipeline-event: ${data.type}`, data);
           }
           switch (data.type) {
+            case "RecorderStarting":
+              store.setRecordingMode(
+                data.mode === "dictate" || data.mode === "translate" || data.mode === "ai_assistant" || data.mode === "edit"
+                  ? data.mode
+                  : "dictate",
+              );
+              store.setRecordingState("starting");
+              break;
             case "RecordingStarted":
               setLogSession(data.session_id);
               log.info(`session started: mode=${data.mode}`);
               store.setSessionId(data.session_id);
+              store.setRecordingMode(
+                data.mode === "dictate" || data.mode === "translate" || data.mode === "ai_assistant" || data.mode === "edit"
+                  ? data.mode
+                  : "dictate",
+              );
               store.setRecordingState("recording");
               break;
             case "VolumeUpdate":
               store.setVolumeLevels(data.levels);
               break;
             case "RecordingStopped":
-              // Don't change state yet; processing is next
+              // Don't change state yet; thinking starts next
               break;
+            case "ThinkingStarted":
             case "ProcessingStarted":
-              store.setRecordingState("processing");
+              store.setRecordingState("thinking");
               break;
             case "ProcessingComplete":
-              log.info("processing complete");
+              log.info("thinking complete");
               if (useAppStore.getState().recordingMode === "ai_assistant") {
                 store.setAiResult(data.processed_text);
               }
@@ -212,6 +282,7 @@ export default function FloatingBar() {
   const handleCancel = useCallback(async () => {
     log.info("user action: cancel");
     trackEvent("user_action", { action: "cancel" });
+    setShowLimitPopup(false);
     setRecordingState("cancelled");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -224,7 +295,8 @@ export default function FloatingBar() {
   const handleConfirm = useCallback(async () => {
     log.info("user action: confirm");
     trackEvent("user_action", { action: "confirm" });
-    setRecordingState("processing");
+    setShowLimitPopup(false);
+    setRecordingState("thinking");
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("stop_recording");
@@ -268,11 +340,15 @@ export default function FloatingBar() {
     return null;
   }
 
+  const countdownSeconds = MAX_RECORDING_SECONDS - recordingDuration;
+  const showCountdown = recordingState === "recording" && recordingDuration >= COUNTDOWN_START_SECONDS;
+
   return (
     <div className="floating-bar-window h-screen w-screen flex items-center justify-center">
       <div
         className={`
-          flex items-center rounded-2xl
+          relative flex items-center
+          ${recordingState === "recording" ? "rounded-full" : "rounded-2xl"}
           backdrop-blur-md animate-bar-enter
           ${barStyleClass(recordingState)}
           ${barContainerClass(recordingState, recordingMode, aiResult)}
@@ -281,12 +357,41 @@ export default function FloatingBar() {
         {/* Recording state */}
         {recordingState === "recording" && (
           <>
+            {showLimitPopup && (
+              <div
+                className="absolute -top-20 left-1/2 -translate-x-1/2 w-[300px] rounded-2xl
+                           border border-amber-300/35 bg-black/88 shadow-[0_10px_30px_rgba(0,0,0,0.45)] px-3 py-2"
+                role="alert"
+                aria-live="polite"
+              >
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 w-5 h-5 rounded-full border border-amber-300/70 text-amber-200 text-[11px] flex items-center justify-center">
+                    !
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-[12px] text-amber-100 font-medium">录音时长限制</div>
+                    <div className="text-[11px] text-white/70">
+                      MVP 仅支持单次录音小于等于 5 分钟，剩余 {formatCountdown(countdownSeconds)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowLimitPopup(false)}
+                    className="text-white/50 hover:text-white/80 text-xs leading-none"
+                    aria-label="关闭时长提示"
+                    title="关闭提示"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Cancel button */}
             <button
               onClick={handleCancel}
-              className="flex-none w-10 h-10 flex items-center justify-center
-                         text-white/70 hover:text-red-300 hover:bg-red-500/20
-                         rounded-xl ml-2 transition-colors"
+              className="flex-none w-10 h-10 flex items-center justify-center rounded-full ml-2.5
+                         border border-white/25 bg-white/12 text-white/80
+                         hover:bg-white/20 hover:text-white transition-colors"
               title="取消 (Esc)"
               aria-label="取消录制"
             >
@@ -296,26 +401,31 @@ export default function FloatingBar() {
             </button>
 
             {/* Waveform + info */}
-            <div className="flex-1 flex flex-col items-center px-2">
-              <div className="w-full h-8">
+            <div className="flex-1 flex flex-col items-center px-2.5">
+              <div className="w-full h-9">
                 <Waveform levels={volumeLevels} isActive={true} />
               </div>
-              <div className="flex items-center gap-2 text-[10px] text-white/70">
-                <span className="flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-                  {MODE_LABELS[recordingMode] || recordingMode}
-                </span>
-                <span className="text-white/30">|</span>
+              <div className="flex items-center gap-2 text-[10px] text-white/70 mt-0.5">
+                <span>{MODE_LABELS[recordingMode] || recordingMode}</span>
+                <span className="text-white/25">•</span>
                 <span className="tabular-nums">{formatDuration(recordingDuration)}</span>
+                {showCountdown && (
+                  <>
+                    <span className="text-white/25">•</span>
+                    <span className="tabular-nums text-amber-200">
+                      倒计时 {formatCountdown(countdownSeconds)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
             {/* Confirm button */}
             <button
               onClick={handleConfirm}
-              className="flex-none w-10 h-10 flex items-center justify-center
-                         text-white/70 hover:text-green-300 hover:bg-green-500/20
-                         rounded-xl mr-2 transition-colors"
+              className="flex-none w-10 h-10 flex items-center justify-center rounded-full mr-2.5
+                         border border-white/25 bg-white text-black
+                         hover:bg-white/90 transition-colors"
               title="完成"
               aria-label="停止录制"
             >
@@ -326,12 +436,20 @@ export default function FloatingBar() {
           </>
         )}
 
-        {/* Processing state — 脉冲进度条 */}
-        {recordingState === "processing" && (
+        {/* Starting state */}
+        {recordingState === "starting" && (
+          <div className="flex-1 flex items-center justify-center gap-3 px-4">
+            <div className="w-4 h-4 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+            <span className="text-white/85 text-sm">正在启动...</span>
+          </div>
+        )}
+
+        {/* Thinking state */}
+        {recordingState === "thinking" && (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4">
             <div className="flex items-center gap-3">
               <div className="w-5 h-5 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
-              <span className="text-white/90 text-sm">处理中...</span>
+              <span className="text-white/90 text-sm">思考中...</span>
             </div>
             <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
               <div className="h-full w-1/3 bg-white/40 rounded-full animate-progress-pulse" />
@@ -368,10 +486,10 @@ export default function FloatingBar() {
         {/* Cancelled state */}
         {recordingState === "cancelled" && (
           <div className="flex-1 flex items-center justify-center gap-2 px-4">
-            <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-            <span className="text-white/80 text-sm">已取消</span>
+            <span className="w-5 h-5 rounded-full border border-blue-400 text-blue-300 text-xs font-semibold flex items-center justify-center">
+              i
+            </span>
+            <span className="text-white text-sm font-medium">转录已取消</span>
           </div>
         )}
 

@@ -606,10 +606,7 @@ mod tests {
         config.audio.input_device_id = Some("usb-mic-001".to_string());
         let json = serde_json::to_string(&config).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            parsed.audio.input_device_id.as_deref(),
-            Some("usb-mic-001")
-        );
+        assert_eq!(parsed.audio.input_device_id.as_deref(), Some("usb-mic-001"));
     }
 
     #[test]

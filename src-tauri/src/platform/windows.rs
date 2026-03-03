@@ -494,8 +494,8 @@ impl RAltKeyMonitor {
     ) {
         use windows::Win32::System::Threading::GetCurrentThreadId;
         use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, PeekMessageW, SetWindowsHookExW, TranslateMessage,
-            UnhookWindowsHookEx, WH_KEYBOARD_LL, PM_NOREMOVE, WM_APP,
+            DispatchMessageW, GetMessageW, PM_NOREMOVE, PeekMessageW, SetWindowsHookExW,
+            TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
         };
 
         let thread_id = unsafe { GetCurrentThreadId() };
@@ -526,8 +526,7 @@ impl RAltKeyMonitor {
                 None
             }
         };
-        let hook =
-            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
         let hook = match hook {
             Ok(h) => {
                 eprintln!("[HOOK_INIT] SetWindowsHookExW succeeded, hook={:?}", h.0);
@@ -630,12 +629,7 @@ fn process_ralt_event(
             // 检测 Shift 状态并发送自定义消息到消息循环（零 I/O）
             let shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
             let _ = unsafe {
-                PostThreadMessageW(
-                    ctx.thread_id,
-                    WM_APP + 1,
-                    WPARAM(shift as usize),
-                    LPARAM(0),
-                )
+                PostThreadMessageW(ctx.thread_id, WM_APP + 1, WPARAM(shift as usize), LPARAM(0))
             };
             return true;
         }
@@ -846,7 +840,25 @@ mod tests {
     #[cfg(target_os = "windows")]
     mod windows_tests {
         use super::*;
+        use std::time::Duration;
         use windows::Win32::UI::Input::KeyboardAndMouse::VK_RMENU;
+
+        fn assert_clipboard_roundtrip_eventually(text: &str) {
+            // Clipboard on CI/desktop can be contended by other processes.
+            // Retry briefly to avoid flakiness from transient empty reads.
+            for _ in 0..20 {
+                if clipboard_write(text).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    if let Ok(Some(read)) = clipboard_read()
+                        && read == text
+                    {
+                        return;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            panic!("clipboard roundtrip did not converge to expected text");
+        }
 
         #[test]
         fn test_vk_rmenu_value() {
@@ -882,18 +894,12 @@ mod tests {
 
         #[test]
         fn test_clipboard_roundtrip_ascii() {
-            let text = "Hello, clipboard!";
-            clipboard_write(text).expect("write failed");
-            let read = clipboard_read().expect("read failed");
-            assert_eq!(read, Some(text.to_string()));
+            assert_clipboard_roundtrip_eventually("Hello, clipboard!");
         }
 
         #[test]
         fn test_clipboard_roundtrip_cjk() {
-            let text = "你好，剪贴板！";
-            clipboard_write(text).expect("write failed");
-            let read = clipboard_read().expect("read failed");
-            assert_eq!(read, Some(text.to_string()));
+            assert_clipboard_roundtrip_eventually("你好，剪贴板！");
         }
     }
 }

@@ -48,16 +48,17 @@ fn build_dictate_system(context: &InputContext, dictionary: &[String]) -> String
     let tone_hint = format_tone_hint(context);
 
     format!(
-        "你是一个智能语音输入助手。请听取用户的语音录音，将其转换为清晰、规范的书面文字。\n\n\
-         规则：\n\
-         1. 去除所有填充词（嗯、啊、那个、um、uh、like、you know 等）\n\
-         2. 如果用户在说话中途改口或修正，只保留最终意图的表达\n\
-         3. 去除不必要的重复词句\n\
-         4. 自动补充合适的标点符号\n\
-         5. 保持用户原本的表达意图和核心内容，不要添加额外信息\n\
-         6. 如果用户说了「第一」「第二」或「首先」「其次」等顺序词，自动生成有序列表\n\
-         7. 如果用户使用并列结构（如「有以下几点」），自动生成无序列表\n\
-         8. 只输出整理后的文本，不要附加解释或说明\n\
+        "你是「听语轩」语音输入引擎。你的任务是先识别音频，再输出可直接粘贴的书面文本。\n\n\
+         硬性规则（必须全部满足）：\n\
+         1. 只输出最终正文，不要加任何解释、前缀、后缀或免责声明\n\
+         2. 严禁输出模板句或系统话术，例如「请开始录音」「我需要将语音内容转换为书面文字」\n\
+         3. 去除口头填充词（嗯、啊、那个、um、uh、you know 等）和无意义重复\n\
+         4. 用户中途改口时，只保留最终意图，不保留自我纠正痕迹\n\
+         5. 补全合理标点，使文本自然、可读、可直接发送\n\
+         6. 不编造信息，不补充未说出的事实\n\
+         7. 出现「第一/第二/首先/其次」等顺序词时，自动整理成有序列表\n\
+         8. 出现「有以下几点/包括」等并列提示时，自动整理成无序列表\n\
+         9. 专有名词优先采用用户词典写法\n\
          {dictionary_hint}\n\
          {context_block}\n\
          {tone_hint}"
@@ -72,11 +73,12 @@ fn build_translate_system(target_language: Option<&str>) -> String {
     let target = target_language.unwrap_or("en");
 
     format!(
-        "你是一个专业翻译助手。请听取用户的语音录音，将其翻译为{target}。\n\n\
-         规则：\n\
-         1. 先理解语音内容（忽略填充词、重复），再翻译\n\
-         2. 保持原文的语气和风格\n\
-         3. 只输出翻译后的文本，不要附加解释"
+        "你是专业口语转写翻译引擎。先准确识别音频，再将内容翻译为 {target}。\n\n\
+         硬性规则：\n\
+         1. 只输出翻译后的最终文本，不要解释翻译策略\n\
+         2. 去除填充词和重复后再翻译，保留原始语义和语气\n\
+         3. 若原文有列表结构，译文保持对应结构\n\
+         4. 严禁输出模板句（例如「请开始录音」）"
     )
 }
 
@@ -88,11 +90,11 @@ fn build_ai_assistant_system(context: &InputContext) -> String {
     let context_block = format_rich_context(context);
 
     format!(
-        "你是一个智能助手。用户通过语音录音发送了一个请求，请理解其意图并给出简洁、实用的回复。\n\n\
-         规则：\n\
-         1. 直接理解用户语音的核心意图（录音可能包含填充词和重复）\n\
-         2. 给出直接、可操作的回答\n\
-         3. 回复应简洁，适合直接插入到用户正在编辑的文档中\n\
+        "你是高效 AI 助手。用户通过语音提出请求，请直接给出可执行答案。\n\n\
+         硬性规则：\n\
+         1. 先理解语音中的真实意图，忽略填充词和重复\n\
+         2. 回答要简洁、具体、可操作，默认以可直接粘贴文本输出\n\
+         3. 严禁输出模板句（例如「请开始录音」）\n\
          {context_block}"
     )
 }
@@ -105,11 +107,11 @@ fn build_edit_system(context: &InputContext) -> String {
     let selected = context.selected_text.as_deref().unwrap_or("");
 
     format!(
-        "你是一个文本编辑助手。用户选中了一段文本，并通过语音录音给出了修改指令。\n\n\
-         规则：\n\
-         1. 理解用户语音中的修改指令（可能包含填充词）\n\
-         2. 对选中的文本执行相应修改\n\
-         3. 只输出修改后的文本，不要附加解释\n\n\
+        "你是文本编辑助手。用户选中了一段文本，并通过语音给出修改指令。\n\n\
+         硬性规则：\n\
+         1. 仅根据语音指令修改选中文本，不扩写无关内容\n\
+         2. 只输出修改后的最终文本，不要解释过程\n\
+         3. 严禁输出模板句（例如「请开始录音」）\n\n\
          选中的文本：\n{selected}"
     )
 }
@@ -294,9 +296,9 @@ mod tests {
     fn test_dictate_prompt_basic() {
         let ctx = InputContext::default();
         let system = build_multimodal_system_prompt(&ProcessingMode::Dictate, &ctx, &[], None);
-        assert!(system.contains("智能语音输入助手"));
-        assert!(system.contains("语音录音"));
-        assert!(system.contains("去除所有填充词"));
+        assert!(system.contains("语音输入引擎"));
+        assert!(system.contains("硬性规则"));
+        assert!(system.contains("填充词"));
     }
 
     #[test]
@@ -341,8 +343,8 @@ mod tests {
     fn test_ai_assistant_prompt() {
         let ctx = InputContext::default();
         let system = build_multimodal_system_prompt(&ProcessingMode::AiAssistant, &ctx, &[], None);
-        assert!(system.contains("智能助手"));
-        assert!(system.contains("语音录音"));
+        assert!(system.contains("AI 助手"));
+        assert!(system.contains("可执行答案"));
     }
 
     #[test]
@@ -354,7 +356,7 @@ mod tests {
         let system = build_multimodal_system_prompt(&ProcessingMode::Edit, &ctx, &[], None);
         assert!(system.contains("文本编辑助手"));
         assert!(system.contains("你好世界"));
-        assert!(system.contains("语音录音"));
+        assert!(system.contains("语音"));
     }
 
     #[test]

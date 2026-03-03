@@ -2,7 +2,7 @@
 
 ## 模块职责
 
-LLM 模块负责将编码后的音频数据和上下文信息通过多模态大语言模型一步完成语音识别与文本处理，包括听写清理、翻译、AI 助手和文本编辑四种模式。通过 `LLMProvider` trait 抽象支持多种后端，使用 OpenAI 兼容的 Chat Completions API（含多模态扩展）。核心实现 `MultimodalProvider` 发送音频 base64 + 上下文 system prompt，通过 SSE 流式响应解析获取最终文本。
+LLM 模块负责将编码后的音频数据和上下文信息通过多模态大语言模型一步完成语音识别与文本处理，包括听写清理、翻译、AI 助手和文本编辑四种模式。通过 `LLMProvider` trait 抽象支持多种后端，使用 OpenAI 兼容的 Chat Completions API（含多模态扩展）。核心实现 `MultimodalProvider` 发送音频 base64 + 上下文 system prompt，通过 SSE 流式响应解析获取最终文本。连接测试已升级为**真实音频多模态探测**（非纯文本 ping）。
 
 ---
 
@@ -46,7 +46,7 @@ pub enum ProcessingMode {
 /// 多模态处理输入 — 包含编码后的音频和上下文。
 pub struct ProcessingInput {
     pub mode: ProcessingMode,
-    pub audio: EncodedAudio,         // WAV base64 编码音频
+    pub audio: EncodedAudio,         // MP3/WAV base64 编码音频
     pub context: InputContext,        // 统一上下文模型
     pub target_language: Option<String>,
     pub user_dictionary: Vec<String>,
@@ -111,13 +111,14 @@ pub enum LLMError {
 |------|------|------|
 | `name()` | `fn name(&self) -> &str` | 返回 provider 名称（`"Multimodal"`） |
 | `process()` | `fn process(&self, input: &ProcessingInput) -> Future<Result<LLMResult, LLMError>>` | 将音频+上下文发送给多模态 LLM，SSE 流式解析返回处理后的文本 |
-| `test_connection()` | `fn test_connection(&self) -> Future<Result<bool, LLMError>>` | 发送简短文本请求验证连接和认证 |
+| `test_connection()` | `fn test_connection(&self) -> Future<Result<bool, LLMError>>` | 发送短音频多模态请求验证连接、认证与音频能力 |
 
 ### MultimodalProvider
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `new()` | `fn new(api_key: String, base_url: String, model: String) -> Result<Self, LLMError>` | 创建实例。timeout 60s，连接池 4 idle/host |
+| `test_multimodal_audio_connection()` | `async fn test_multimodal_audio_connection(&self) -> Result<bool, LLMError>` | 发送 20ms 静音音频探测模型真实多模态能力 |
 
 ### Prompt 系统（`prompts.rs`）
 
@@ -125,7 +126,7 @@ pub enum LLMError {
 |------|------|------|
 | `build_multimodal_system_prompt()` | `fn build_multimodal_system_prompt(mode, context, dictionary, target_language) -> String` | 构建多模态 system prompt（指导 LLM 如何处理音频输入） |
 | `format_dictionary_hint()` | `fn format_dictionary_hint(words: &[String]) -> String` | 将用户词典格式化为提示文本 |
-| `format_context_hint()` | `fn format_context_hint(app_name: Option<&str>) -> String` | 将活跃应用名格式化为上下文提示 |
+| `format_rich_context()` | `fn format_rich_context(ctx: &InputContext) -> String` | 将应用/窗口/URL/选中文本等上下文格式化为结构化提示 |
 
 ### 语气检测映射
 
@@ -206,7 +207,7 @@ impl LLMError {
 
 ## 测试覆盖
 
-共 **约 25 个** 单元测试：
+共 **约 27 个** 单元测试：
 
 ### 多模态 Provider 测试（`multimodal.rs`，7 个 wiremock 集成测试）
 
@@ -217,7 +218,7 @@ impl LLMError {
 | `process_rate_limited` | 429 响应映射为 `RateLimited` |
 | `process_server_error` | 500 响应映射为 `ServerError` |
 | `process_empty_sse_response` | 空 SSE 流返回 `InvalidResponse` |
-| `test_connection_success` | 连接测试成功验证 |
+| `test_connection_success` | 多模态音频连接测试成功验证 |
 | `test_request_body_contains_audio` | 请求体包含音频数据验证 |
 
 ### Prompt 测试（`prompts.rs`）
