@@ -123,60 +123,14 @@ fn build_edit_system(context: &InputContext) -> String {
 /// 将所有非空字段组装为结构化上下文块，完全透传原值
 pub fn format_rich_context(ctx: &InputContext) -> String {
     let mut parts = Vec::new();
-
-    if let Some(ref name) = ctx.app_name
-        && !name.is_empty()
-    {
-        parts.push(format!("当前应用：{name}"));
-    }
-    if let Some(ref title) = ctx.window_title
-        && !title.is_empty()
-    {
-        parts.push(format!("窗口标题：{title}"));
-    }
-    if let Some(ref url) = ctx.browser_url
-        && !url.is_empty()
-    {
-        parts.push(format!("浏览器URL：{url}"));
-    }
-    if let Some(ref ft) = ctx.input_field_type {
-        parts.push(format!("输入框类型：{ft}"));
-    }
-    if let Some(ref hint) = ctx.input_hint
-        && !hint.is_empty()
-    {
-        parts.push(format!("输入提示：{hint}"));
-    }
-    if let Some(ref surrounding) = ctx.surrounding_text
-        && !surrounding.is_empty()
-    {
-        let truncated = if surrounding.len() > 500 {
-            format!("{}...", truncate_utf8(surrounding, 500))
-        } else {
-            surrounding.clone()
-        };
-        parts.push(format!("周围文本：{truncated}"));
-    }
-    if let Some(ref clip) = ctx.clipboard_text
-        && !clip.is_empty()
-    {
-        let truncated = if clip.len() > 200 {
-            format!("{}...", truncate_utf8(clip, 200))
-        } else {
-            clip.clone()
-        };
-        parts.push(format!("剪贴板：{truncated}"));
-    }
-    if let Some(ref screen) = ctx.screen_text
-        && !screen.is_empty()
-    {
-        let truncated = if screen.len() > 500 {
-            format!("{}...", truncate_utf8(screen, 500))
-        } else {
-            screen.clone()
-        };
-        parts.push(format!("屏幕文本：{truncated}"));
-    }
+    push_string_field(&mut parts, "当前应用", ctx.app_name.as_deref());
+    push_string_field(&mut parts, "窗口标题", ctx.window_title.as_deref());
+    push_string_field(&mut parts, "浏览器URL", ctx.browser_url.as_deref());
+    push_display_field(&mut parts, "输入框类型", ctx.input_field_type.as_ref());
+    push_string_field(&mut parts, "输入提示", ctx.input_hint.as_deref());
+    push_truncated_field(&mut parts, "周围文本", ctx.surrounding_text.as_deref(), 500);
+    push_truncated_field(&mut parts, "剪贴板", ctx.clipboard_text.as_deref(), 200);
+    push_truncated_field(&mut parts, "屏幕文本", ctx.screen_text.as_deref(), 500);
 
     if parts.is_empty() {
         return String::new();
@@ -187,67 +141,13 @@ pub fn format_rich_context(ctx: &InputContext) -> String {
 
 /// 综合判断语气
 pub fn detect_tone(ctx: &InputContext) -> Tone {
-    // 优先使用 input_field_type（Android 提供精确信息）
-    if let Some(ref ft) = ctx.input_field_type {
-        match ft {
-            InputFieldType::Email => return Tone::Formal,
-            InputFieldType::Chat => return Tone::Casual,
-            InputFieldType::Code => return Tone::Technical,
-            _ => {}
-        }
+    if let Some(tone) = tone_from_input_field(ctx.input_field_type.as_ref()) {
+        return tone;
     }
-
-    // 回退到应用名称和 URL 推断
-    let sources: Vec<&str> = [
-        ctx.app_name.as_deref(),
-        ctx.window_title.as_deref(),
-        ctx.browser_url.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    for source in &sources {
-        let lower = source.to_lowercase();
-        if contains_any(
-            &lower,
-            &[
-                "slack", "discord", "telegram", "wechat", "微信", "dingtalk", "钉钉", "teams",
-            ],
-        ) {
-            return Tone::Casual;
-        }
-        if contains_any(&lower, &["mail", "outlook", "thunderbird", "邮", "foxmail"]) {
-            return Tone::Formal;
-        }
-        if contains_any(
-            &lower,
-            &[
-                "code",
-                "intellij",
-                "vim",
-                "neovim",
-                "terminal",
-                "iterm",
-                "wezterm",
-                "alacritty",
-                "emacs",
-                "github.com",
-                "gitlab.com",
-                "stackoverflow.com",
-            ],
-        ) {
-            return Tone::Technical;
-        }
-        if contains_any(
-            &lower,
-            &["notion", "obsidian", "logseq", "typora", "bear", "joplin"],
-        ) {
-            return Tone::Structured;
-        }
-    }
-
-    Tone::Neutral // 默认：未知应用不注入特定格式提示
+    collect_tone_sources(ctx)
+        .into_iter()
+        .find_map(|source| classify_source_tone(&source.to_lowercase()))
+        .unwrap_or(Tone::Neutral)
 }
 
 /// Build a tone-specific hint for the LLM system prompt.
@@ -282,6 +182,85 @@ pub fn format_dictionary_hint(words: &[String]) -> String {
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
+}
+
+fn push_string_field(parts: &mut Vec<String>, label: &str, value: Option<&str>) {
+    if let Some(v) = value.filter(|s| !s.is_empty()) {
+        parts.push(format!("{label}：{v}"));
+    }
+}
+
+fn push_display_field<T: std::fmt::Display>(parts: &mut Vec<String>, label: &str, value: Option<&T>) {
+    if let Some(v) = value {
+        parts.push(format!("{label}：{v}"));
+    }
+}
+
+fn push_truncated_field(parts: &mut Vec<String>, label: &str, value: Option<&str>, limit: usize) {
+    if let Some(v) = value.filter(|s| !s.is_empty()) {
+        parts.push(format!("{label}：{}", truncate_with_ellipsis(v, limit)));
+    }
+}
+
+fn truncate_with_ellipsis(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    format!("{}...", truncate_utf8(value, limit))
+}
+
+fn tone_from_input_field(field_type: Option<&InputFieldType>) -> Option<Tone> {
+    match field_type {
+        Some(InputFieldType::Email) => Some(Tone::Formal),
+        Some(InputFieldType::Chat) => Some(Tone::Casual),
+        Some(InputFieldType::Code) => Some(Tone::Technical),
+        _ => None,
+    }
+}
+
+fn collect_tone_sources(ctx: &InputContext) -> Vec<&str> {
+    [ctx.app_name.as_deref(), ctx.window_title.as_deref(), ctx.browser_url.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+fn classify_source_tone(lower: &str) -> Option<Tone> {
+    [
+        (
+            Tone::Casual,
+            &[
+                "slack", "discord", "telegram", "wechat", "微信", "dingtalk", "钉钉", "teams",
+            ][..],
+        ),
+        (
+            Tone::Formal,
+            &["mail", "outlook", "thunderbird", "邮", "foxmail"][..],
+        ),
+        (
+            Tone::Technical,
+            &[
+                "code",
+                "intellij",
+                "vim",
+                "neovim",
+                "terminal",
+                "iterm",
+                "wezterm",
+                "alacritty",
+                "emacs",
+                "github.com",
+                "gitlab.com",
+                "stackoverflow.com",
+            ][..],
+        ),
+        (
+            Tone::Structured,
+            &["notion", "obsidian", "logseq", "typora", "bear", "joplin"][..],
+        ),
+    ]
+    .into_iter()
+    .find_map(|(tone, keywords)| contains_any(lower, keywords).then_some(tone))
 }
 
 // ---------------------------------------------------------------------------

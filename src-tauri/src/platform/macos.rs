@@ -89,44 +89,11 @@ mod ax {
     pub fn ax_get_string_attr(element: AXUIElementRef, attr_name: &str) -> Option<String> {
         use core_foundation::base::TCFType;
         use core_foundation::string::CFString;
-
-        if element.is_null() {
-            return None;
-        }
-
-        let attr_cf = CFString::new(attr_name);
-        let mut value: CFTypeRef = std::ptr::null();
-
-        let err = unsafe {
-            AXUIElementCopyAttributeValue(
-                element,
-                attr_cf.as_concrete_TypeRef() as CFStringRef,
-                &mut value,
-            )
+        let owned = read_ax_attr(element, attr_name)?;
+        let cf_str: CFString = unsafe {
+            TCFType::wrap_under_get_rule(owned.0 as core_foundation::string::CFStringRef)
         };
-
-        if err != AX_ERROR_SUCCESS || value.is_null() {
-            return None;
-        }
-
-        let _owned = OwnedCFRef(value as *mut c_void);
-
-        // 验证返回值是 CFString 类型
-        let type_id = unsafe { CFGetTypeID(value) };
-        let string_type_id = unsafe { CFStringGetTypeID() };
-        if type_id != string_type_id {
-            return None;
-        }
-
-        // 安全地转换为 CFString（不增加引用计数，OwnedCFRef 负责释放）
-        let cf_str: CFString =
-            unsafe { TCFType::wrap_under_get_rule(value as core_foundation::string::CFStringRef) };
-        let result = cf_str.to_string();
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
+        non_empty_string(cf_str.to_string())
     }
 
     /// 从 AXUIElement 读取子元素引用属性（返回 AXUIElementRef）。
@@ -154,6 +121,41 @@ mod ax {
         }
 
         Some(OwnedCFRef(value as *mut c_void))
+    }
+
+    fn read_ax_attr(element: AXUIElementRef, attr_name: &str) -> Option<OwnedCFRef> {
+        use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
+
+        if element.is_null() {
+            return None;
+        }
+        let attr_cf = CFString::new(attr_name);
+        let mut value: CFTypeRef = std::ptr::null();
+        let err = unsafe {
+            AXUIElementCopyAttributeValue(
+                element,
+                attr_cf.as_concrete_TypeRef() as CFStringRef,
+                &mut value,
+            )
+        };
+        if err != AX_ERROR_SUCCESS || value.is_null() {
+            return None;
+        }
+        if !is_cf_string(value) {
+            return None;
+        }
+        Some(OwnedCFRef(value as *mut c_void))
+    }
+
+    fn is_cf_string(value: CFTypeRef) -> bool {
+        let type_id = unsafe { CFGetTypeID(value) };
+        let string_type_id = unsafe { CFStringGetTypeID() };
+        type_id == string_type_id
+    }
+
+    fn non_empty_string(value: String) -> Option<String> {
+        (!value.is_empty()).then_some(value)
     }
 }
 
@@ -481,86 +483,113 @@ impl FnKeyMonitor {
         >,
         tx: &std::sync::mpsc::SyncSender<Result<(), PlatformError>>,
     ) -> Result<(), PlatformError> {
-        use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
-        use core_graphics::event::{
-            CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
-        };
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use core_foundation::runloop::CFRunLoop;
 
-        let fn_pressed = std::sync::Arc::new(AtomicBool::new(false));
-        let fn_pressed_clone = fn_pressed.clone();
-        let fn_flag_mask = Self::FN_FLAG_MASK;
-
-        let tap = CGEventTap::new(
-            CGEventTapLocation::HID,
-            CGEventTapPlacement::HeadInsertEventTap,
-            CGEventTapOptions::ListenOnly,
-            vec![CGEventType::FlagsChanged],
-            move |_proxy, event_type, event| {
-                // 系统可能因超时或安全模式禁用 tap，记录日志。
-                // CGEventType 未实现 PartialEq，需通过 u32 比较。
-                // kCGEventTapDisabledByTimeout = 0xFFFFFFFE
-                // kCGEventTapDisabledByUserInput = 0xFFFFFFFF
-                let event_type_raw = event_type as u32;
-                if event_type_raw == 0xFFFFFFFE || event_type_raw == 0xFFFFFFFF {
-                    tracing::warn!(
-                        "CGEventTap disabled by system (type=0x{:X}), will auto-recover",
-                        event_type_raw
-                    );
-                    return None;
-                }
-
-                let flags = event.get_flags().bits();
-                let fn_now = (flags & fn_flag_mask) != 0;
-                let fn_was = fn_pressed_clone.load(Ordering::Relaxed);
-
-                if fn_now && !fn_was {
-                    fn_pressed_clone.store(true, Ordering::Relaxed);
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        crate::handle_shortcut_action(&handle, "dictate").await;
-                    });
-                } else if !fn_now && fn_was {
-                    fn_pressed_clone.store(false, Ordering::Relaxed);
-                }
-
-                None
-            },
-        )
-        .map_err(|_| {
-            PlatformError::InjectionFailed(
-                "Failed to create CGEventTap for Fn key. \
-                 Ensure Input Monitoring permission is granted."
-                    .into(),
-            )
-        })?;
-
-        let run_loop_source = tap.mach_port.create_runloop_source(0).map_err(|_| {
-            PlatformError::InjectionFailed(
-                "Failed to create run loop source for Fn key monitor".into(),
-            )
-        })?;
-
+        let tap = create_fn_event_tap(app, Self::FN_FLAG_MASK)?;
+        let run_loop_source = create_run_loop_source(&tap)?;
         let run_loop = CFRunLoop::get_current();
-
-        // 存储 RunLoop 引用供 Drop 使用
-        {
-            let mut holder = run_loop_holder.lock().unwrap();
-            *holder = Some(run_loop.clone());
-        }
-
-        run_loop.add_source(&run_loop_source, unsafe { kCFRunLoopCommonModes });
-        tap.enable();
-        tracing::info!("FnKeyMonitor started on dedicated thread");
-
-        // 通知调用者：初始化成功
-        let _ = tx.send(Ok(()));
-
-        CFRunLoop::run_current();
-        tracing::info!("FnKeyMonitor stopped");
-
+        store_run_loop(&run_loop_holder, &run_loop);
+        start_fn_monitor_loop(&run_loop, &run_loop_source, &tap, tx);
         Ok(())
     }
+}
+
+fn create_fn_event_tap(
+    app: tauri::AppHandle,
+    fn_flag_mask: u64,
+) -> Result<core_graphics::event::CGEventTap, PlatformError> {
+    use core_graphics::event::{
+        CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let fn_pressed = std::sync::Arc::new(AtomicBool::new(false));
+    let fn_pressed_clone = fn_pressed.clone();
+    CGEventTap::new(
+        CGEventTapLocation::HID,
+        CGEventTapPlacement::HeadInsertEventTap,
+        CGEventTapOptions::ListenOnly,
+        vec![CGEventType::FlagsChanged],
+        move |_proxy, event_type, event| {
+            if is_tap_disabled_event(event_type as u32) {
+                return None;
+            }
+            handle_fn_flags_change(&app, &fn_pressed_clone, event.get_flags().bits(), fn_flag_mask);
+            None
+        },
+    )
+    .map_err(|_| {
+        PlatformError::InjectionFailed(
+            "Failed to create CGEventTap for Fn key. Ensure Input Monitoring permission is granted."
+                .into(),
+        )
+    })
+}
+
+fn is_tap_disabled_event(event_type_raw: u32) -> bool {
+    if event_type_raw == 0xFFFFFFFE || event_type_raw == 0xFFFFFFFF {
+        tracing::warn!(
+            "CGEventTap disabled by system (type=0x{:X}), will auto-recover",
+            event_type_raw
+        );
+        return true;
+    }
+    false
+}
+
+fn handle_fn_flags_change(
+    app: &tauri::AppHandle,
+    fn_pressed: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    flags: u64,
+    fn_flag_mask: u64,
+) {
+    use std::sync::atomic::Ordering;
+
+    let fn_now = (flags & fn_flag_mask) != 0;
+    let fn_was = fn_pressed.load(Ordering::Relaxed);
+    if fn_now && !fn_was {
+        fn_pressed.store(true, Ordering::Relaxed);
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::handle_shortcut_action(&handle, "dictate").await;
+        });
+        return;
+    }
+    if !fn_now && fn_was {
+        fn_pressed.store(false, Ordering::Relaxed);
+    }
+}
+
+fn create_run_loop_source(
+    tap: &core_graphics::event::CGEventTap,
+) -> Result<core_foundation::runloop::CFRunLoopSource, PlatformError> {
+    tap.mach_port.create_runloop_source(0).map_err(|_| {
+        PlatformError::InjectionFailed("Failed to create run loop source for Fn key monitor".into())
+    })
+}
+
+fn store_run_loop(
+    run_loop_holder: &std::sync::Arc<std::sync::Mutex<Option<core_foundation::runloop::CFRunLoop>>>,
+    run_loop: &core_foundation::runloop::CFRunLoop,
+) {
+    let mut holder = run_loop_holder.lock().unwrap();
+    *holder = Some(run_loop.clone());
+}
+
+fn start_fn_monitor_loop(
+    run_loop: &core_foundation::runloop::CFRunLoop,
+    run_loop_source: &core_foundation::runloop::CFRunLoopSource,
+    tap: &core_graphics::event::CGEventTap,
+    tx: &std::sync::mpsc::SyncSender<Result<(), PlatformError>>,
+) {
+    use core_foundation::runloop::{CFRunLoop, kCFRunLoopCommonModes};
+
+    run_loop.add_source(run_loop_source, unsafe { kCFRunLoopCommonModes });
+    tap.enable();
+    tracing::info!("FnKeyMonitor started on dedicated thread");
+    let _ = tx.send(Ok(()));
+    CFRunLoop::run_current();
+    tracing::info!("FnKeyMonitor stopped");
 }
 
 impl Drop for FnKeyMonitor {

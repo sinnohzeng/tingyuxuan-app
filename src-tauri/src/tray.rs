@@ -159,29 +159,44 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
 
 /// 处理麦克风选择：更新 config + recorder + 重建菜单。
 async fn handle_mic_selection(app: &AppHandle, menu_id: &str) {
-    let device_id = match menu_id.strip_prefix("mic:") {
-        Some("default") => None,
-        Some(id) => Some(id.to_string()),
-        None => return,
+    let Some(device_id) = parse_mic_menu_id(menu_id) else {
+        return;
     };
+    if persist_selected_mic(app, device_id.clone()).await.is_err() {
+        return;
+    }
+    notify_recorder_device(app, device_id).await;
+    let _ = rebuild_tray_menu(app);
+    tracing::info!(menu_id, "麦克风设备已切换");
+}
 
-    // 更新配置并通知 recorder actor。
+fn parse_mic_menu_id(menu_id: &str) -> Option<Option<String>> {
+    match menu_id.strip_prefix("mic:") {
+        Some("default") => Some(None),
+        Some(id) => Some(Some(id.to_string())),
+        None => None,
+    }
+}
+
+async fn persist_selected_mic(
+    app: &AppHandle,
+    device_id: Option<String>,
+) -> Result<(), ()> {
     if let Some(config_state) = app.try_state::<ConfigState>() {
         let mut config = config_state.0.write().await;
-        config.audio.input_device_id = device_id.clone();
+        config.audio.input_device_id = device_id;
         if let Err(e) = config.save() {
             tracing::error!("保存麦克风设置失败: {e}");
-            return;
+            return Err(());
         }
     }
+    Ok(())
+}
 
+async fn notify_recorder_device(app: &AppHandle, device_id: Option<String>) {
     if let Some(recorder_state) = app.try_state::<RecorderState>() {
         recorder_state.0.set_device(device_id).await;
     }
-
-    // 重建菜单以更新勾选状态。
-    let _ = rebuild_tray_menu(app);
-    tracing::info!(menu_id, "麦克风设备已切换");
 }
 
 /// 使用 tauri-plugin-opener 打开 URL。

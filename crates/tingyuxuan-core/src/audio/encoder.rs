@@ -138,6 +138,20 @@ impl AudioBuffer {
     ///
     /// 默认录音流是 16kHz 单声道，正好落在 MP3 支持范围内。
     fn encode_mp3(&self) -> Result<EncodedAudio, AudioError> {
+        self.validate_mp3_input()?;
+        let config = self.build_mp3_config();
+        let data =
+            encode_pcm_to_mp3(config, &self.samples).map_err(mp3_encode_error)?;
+        ensure_mp3_output(&data)?;
+
+        Ok(EncodedAudio {
+            data,
+            format: AudioFormat::Mp3,
+            duration_ms: self.duration_ms(),
+        })
+    }
+
+    fn validate_mp3_input(&self) -> Result<(), AudioError> {
         if self.samples.is_empty() {
             return Err(AudioError::StreamError(
                 "音频为空，无法编码 MP3".to_string(),
@@ -149,33 +163,37 @@ impl AudioBuffer {
                 self.channels
             )));
         }
+        Ok(())
+    }
 
-        let stereo_mode = if self.channels == 1 {
-            StereoMode::Mono
-        } else {
-            StereoMode::JointStereo
-        };
-        let config = Mp3EncoderConfig::new()
+    fn build_mp3_config(&self) -> Mp3EncoderConfig {
+        Mp3EncoderConfig::new()
             .sample_rate(self.sample_rate)
             .bitrate(24)
             .channels(self.channels as u8)
-            .stereo_mode(stereo_mode);
-
-        let data = encode_pcm_to_mp3(config, &self.samples)
-            .map_err(|e| AudioError::StreamError(format!("MP3 encode failed: {e}")))?;
-
-        if data.is_empty() {
-            return Err(AudioError::StreamError(
-                "MP3 编码完成但输出为空".to_string(),
-            ));
-        }
-
-        Ok(EncodedAudio {
-            data,
-            format: AudioFormat::Mp3,
-            duration_ms: self.duration_ms(),
-        })
+            .stereo_mode(select_stereo_mode(self.channels))
     }
+}
+
+fn select_stereo_mode(channels: u16) -> StereoMode {
+    if channels == 1 {
+        StereoMode::Mono
+    } else {
+        StereoMode::JointStereo
+    }
+}
+
+fn mp3_encode_error(err: impl std::fmt::Display) -> AudioError {
+    AudioError::StreamError(format!("MP3 encode failed: {err}"))
+}
+
+fn ensure_mp3_output(data: &[u8]) -> Result<(), AudioError> {
+    if data.is_empty() {
+        return Err(AudioError::StreamError(
+            "MP3 编码完成但输出为空".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// 编码后的音频数据。

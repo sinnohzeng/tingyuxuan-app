@@ -85,53 +85,68 @@ impl SlsTransport {
             let mut guard = buffer.lock().unwrap();
             std::mem::take(&mut *guard)
         };
-
         if events.is_empty() {
             return;
         }
-
-        let payload = serde_json::json!({
-            "__topic__": "app_event",
-            "__source__": platform,
-            "app_version": app_version,
-            "data": events,
-        });
-
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-        {
-            Ok(c) => c,
+        let payload = build_sls_payload(platform, app_version, &events);
+        let client = match build_http_client() {
+            Ok(client) => client,
             Err(e) => {
                 tracing::warn!("SLS flush: HTTP client build failed: {e}");
-                // 放回事件（尽力而为）
-                let mut guard = buffer.lock().unwrap();
-                guard.extend(events);
+                restore_events(buffer, events);
                 return;
             }
         };
+        log_flush_result(post_payload(&client, endpoint, &payload).await, events.len());
+    }
+}
 
-        match client
-            .post(endpoint)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                tracing::debug!(count = events.len(), "SLS flush OK");
-            }
-            Ok(resp) => {
-                tracing::warn!(
-                    status = resp.status().as_u16(),
-                    count = events.len(),
-                    "SLS flush: non-200 response"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(%e, count = events.len(), "SLS flush failed");
-            }
-        }
+fn build_sls_payload(
+    platform: &str,
+    app_version: &str,
+    events: &[TelemetryEvent],
+) -> serde_json::Value {
+    serde_json::json!({
+        "__topic__": "app_event",
+        "__source__": platform,
+        "app_version": app_version,
+        "data": events,
+    })
+}
+
+fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+}
+
+fn restore_events(buffer: &Arc<Mutex<Vec<TelemetryEvent>>>, events: Vec<TelemetryEvent>) {
+    let mut guard = buffer.lock().unwrap();
+    guard.extend(events);
+}
+
+async fn post_payload(
+    client: &reqwest::Client,
+    endpoint: &str,
+    payload: &serde_json::Value,
+) -> Result<reqwest::Response, reqwest::Error> {
+    client
+        .post(endpoint)
+        .header("Content-Type", "application/json")
+        .json(payload)
+        .send()
+        .await
+}
+
+fn log_flush_result(result: Result<reqwest::Response, reqwest::Error>, count: usize) {
+    match result {
+        Ok(resp) if resp.status().is_success() => tracing::debug!(count, "SLS flush OK"),
+        Ok(resp) => tracing::warn!(
+            status = resp.status().as_u16(),
+            count,
+            "SLS flush: non-200 response"
+        ),
+        Err(e) => tracing::warn!(%e, count, "SLS flush failed"),
     }
 }
 

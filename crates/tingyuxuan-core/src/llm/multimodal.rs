@@ -2,6 +2,7 @@ use futures_util::StreamExt as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio_util::bytes::Bytes;
 
 use crate::api_key::ApiKey;
 use crate::audio::encoder::{AudioBuffer, AudioFormat, EncodedAudio};
@@ -74,65 +75,9 @@ impl MultimodalProvider {
         system_prompt: String,
         audio: &EncodedAudio,
     ) -> Result<(String, Option<u32>), LLMError> {
-        let body = MultimodalRequest {
-            model: self.model.clone(),
-            modalities: vec!["text"],
-            messages: vec![
-                Message {
-                    role: "system",
-                    content: MessageContent::Text(system_prompt),
-                },
-                Message {
-                    role: "user",
-                    content: MessageContent::Parts(vec![ContentPart::InputAudio {
-                        input_audio: AudioPayload {
-                            data: audio.to_base64(),
-                            format: audio.format_str().to_string(),
-                        },
-                    }]),
-                },
-            ],
-            temperature: 0.3,
-            stream: true,
-            stream_options: StreamOptions {
-                include_usage: true,
-            },
-        };
-
-        let response = self
-            .client
-            .post(self.completions_url())
-            .bearer_auth(self.api_key.expose_secret())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    tracing::warn!("LLM request timed out");
-                    LLMError::Timeout
-                } else {
-                    tracing::error!(error = %e, "LLM network error");
-                    LLMError::NetworkError(e.to_string())
-                }
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let status_code = status.as_u16() as u32;
-            let body_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| String::from("<failed to read body>"));
-
-            tracing::warn!(status = status_code, "LLM API error response");
-            return Err(match status_code {
-                401 => LLMError::AuthFailed,
-                429 => LLMError::RateLimited,
-                _ => LLMError::ServerError(status_code, body_text),
-            });
-        }
-
-        // SSE 流式解析：逐行读取，拼接 delta.content。
+        let body = build_multimodal_body(&self.model, system_prompt, audio);
+        let response = self.send_http_request(&body).await?;
+        let response = Self::ensure_success_response(response).await?;
         self.parse_sse_response(response).await
     }
 
@@ -151,61 +96,47 @@ impl MultimodalProvider {
         let sse_start = std::time::Instant::now();
         let mut ttfb_logged = false;
 
-        loop {
-            let maybe_chunk = tokio::time::timeout(CHUNK_READ_TIMEOUT, stream.next()).await;
-            let chunk_result = match maybe_chunk {
-                Err(_elapsed) => {
-                    tracing::warn!("SSE chunk read timed out");
-                    return Err(LLMError::Timeout);
-                }
-                Ok(None) => break, // 流结束
-                Ok(Some(r)) => r,
-            };
-
-            let bytes = chunk_result.map_err(|e| LLMError::InvalidResponse(e.to_string()))?;
-            let text = String::from_utf8_lossy(&bytes);
-            line_buf.push_str(&text);
-
-            // 逐行解析已缓冲的数据。
-            while let Some(newline_pos) = line_buf.find('\n') {
-                let line: String = line_buf.drain(..=newline_pos).collect();
-                let line = line.trim();
-                if line.is_empty() || line.starts_with(':') {
-                    continue;
-                }
-
-                let Some(data) = line.strip_prefix("data: ") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    // 消费 [DONE]，提前返回。
-                    return Self::finish_sse(result_text, tokens_used);
-                }
-
-                if let Ok(chunk) = serde_json::from_str::<SSEChunk>(data) {
-                    if let Some(choice) = chunk.choices.first()
-                        && let Some(ref delta) = choice.delta
-                        && let Some(ref content) = delta.content
-                    {
-                        // 首个 content chunk 到达时记录 TTFB
-                        if !ttfb_logged && !content.is_empty() {
-                            tracing::info!(
-                                ttfb_ms = sse_start.elapsed().as_millis() as u64,
-                                "LLM TTFB"
-                            );
-                            ttfb_logged = true;
-                        }
-                        result_text.push_str(content);
-                    }
-                    if let Some(usage) = chunk.usage {
-                        tokens_used = Some(usage.total_tokens);
-                    }
-                }
+        while let Some(chunk_text) = next_sse_chunk(&mut stream).await? {
+            line_buf.push_str(&chunk_text);
+            if process_sse_lines(
+                &mut line_buf,
+                &mut result_text,
+                &mut tokens_used,
+                &mut ttfb_logged,
+                sse_start,
+            )? {
+                return Self::finish_sse(result_text, tokens_used);
             }
         }
 
         Self::finish_sse(result_text, tokens_used)
+    }
+
+    async fn send_http_request(
+        &self,
+        body: &MultimodalRequest,
+    ) -> Result<reqwest::Response, LLMError> {
+        self.client
+            .post(self.completions_url())
+            .bearer_auth(self.api_key.expose_secret())
+            .json(body)
+            .send()
+            .await
+            .map_err(map_network_error)
+    }
+
+    async fn ensure_success_response(response: reqwest::Response) -> Result<reqwest::Response, LLMError> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let status_code = status.as_u16() as u32;
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<failed to read body>"));
+        tracing::warn!(status = status_code, "LLM API error response");
+        Err(map_status_error(status_code, body_text))
     }
 
     /// SSE 解析完成后的统一校验和日志。
@@ -222,6 +153,135 @@ impl MultimodalProvider {
             tracing::debug!(tokens, "LLM response received (streamed)");
         }
         Ok((result_text, tokens_used))
+    }
+}
+
+fn build_multimodal_body(
+    model: &str,
+    system_prompt: String,
+    audio: &EncodedAudio,
+) -> MultimodalRequest {
+    MultimodalRequest {
+        model: model.to_string(),
+        modalities: vec!["text"],
+        messages: vec![
+            Message {
+                role: "system",
+                content: MessageContent::Text(system_prompt),
+            },
+            Message {
+                role: "user",
+                content: MessageContent::Parts(vec![ContentPart::InputAudio {
+                    input_audio: AudioPayload {
+                        data: audio.to_base64(),
+                        format: audio.format_str().to_string(),
+                    },
+                }]),
+            },
+        ],
+        temperature: 0.3,
+        stream: true,
+        stream_options: StreamOptions {
+            include_usage: true,
+        },
+    }
+}
+
+fn map_network_error(error: reqwest::Error) -> LLMError {
+    if error.is_timeout() {
+        tracing::warn!("LLM request timed out");
+        return LLMError::Timeout;
+    }
+    tracing::error!(error = %error, "LLM network error");
+    LLMError::NetworkError(error.to_string())
+}
+
+fn map_status_error(status_code: u32, body_text: String) -> LLMError {
+    match status_code {
+        401 => LLMError::AuthFailed,
+        429 => LLMError::RateLimited,
+        _ => LLMError::ServerError(status_code, body_text),
+    }
+}
+
+async fn next_sse_chunk(
+    stream: &mut (impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Unpin),
+) -> Result<Option<String>, LLMError> {
+    match tokio::time::timeout(CHUNK_READ_TIMEOUT, stream.next()).await {
+        Err(_) => {
+            tracing::warn!("SSE chunk read timed out");
+            Err(LLMError::Timeout)
+        }
+        Ok(None) => Ok(None),
+        Ok(Some(result)) => result
+            .map(|bytes| Some(String::from_utf8_lossy(&bytes).to_string()))
+            .map_err(|e| LLMError::InvalidResponse(e.to_string())),
+    }
+}
+
+fn process_sse_lines(
+    line_buf: &mut String,
+    result_text: &mut String,
+    tokens_used: &mut Option<u32>,
+    ttfb_logged: &mut bool,
+    sse_start: std::time::Instant,
+) -> Result<bool, LLMError> {
+    while let Some(newline_pos) = line_buf.find('\n') {
+        let line: String = line_buf.drain(..=newline_pos).collect();
+        if let Some(done) = process_sse_line(line.trim(), result_text, tokens_used, ttfb_logged, sse_start)? {
+            return Ok(done);
+        }
+    }
+    Ok(false)
+}
+
+fn process_sse_line(
+    line: &str,
+    result_text: &mut String,
+    tokens_used: &mut Option<u32>,
+    ttfb_logged: &mut bool,
+    sse_start: std::time::Instant,
+) -> Result<Option<bool>, LLMError> {
+    let Some(data) = normalize_sse_data_line(line) else {
+        return Ok(None);
+    };
+    if data == "[DONE]" {
+        return Ok(Some(true));
+    }
+    if let Ok(chunk) = serde_json::from_str::<SSEChunk>(data) {
+        append_delta_content(&chunk, result_text, ttfb_logged, sse_start);
+        if let Some(usage) = chunk.usage {
+            *tokens_used = Some(usage.total_tokens);
+        }
+    }
+    Ok(None)
+}
+
+fn normalize_sse_data_line(line: &str) -> Option<&str> {
+    if line.is_empty() || line.starts_with(':') {
+        return None;
+    }
+    line.strip_prefix("data: ").map(str::trim)
+}
+
+fn append_delta_content(
+    chunk: &SSEChunk,
+    result_text: &mut String,
+    ttfb_logged: &mut bool,
+    sse_start: std::time::Instant,
+) {
+    if let Some(choice) = chunk.choices.first()
+        && let Some(ref delta) = choice.delta
+        && let Some(ref content) = delta.content
+    {
+        if !*ttfb_logged && !content.is_empty() {
+            tracing::info!(
+                ttfb_ms = sse_start.elapsed().as_millis() as u64,
+                "LLM TTFB"
+            );
+            *ttfb_logged = true;
+        }
+        result_text.push_str(content);
     }
 }
 

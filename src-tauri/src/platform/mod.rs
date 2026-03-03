@@ -54,35 +54,53 @@ pub(crate) fn run_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> Option<String> {
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = spawn_subprocess(cmd)?;
 
     let start = std::time::Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    let output = child.wait_with_output().ok()?;
-                    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    return if text.is_empty() { None } else { Some(text) };
-                }
-                return None;
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::warn!("Subprocess timed out after {:?}", timeout);
-                    return None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(_) => return None,
+        if let Some(done) = poll_subprocess(&mut child)? {
+            return done;
         }
+        if start.elapsed() > timeout {
+            kill_subprocess(&mut child, timeout);
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_subprocess(cmd: &mut std::process::Command) -> Option<std::process::Child> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+}
+
+#[cfg(target_os = "linux")]
+fn poll_subprocess(child: &mut std::process::Child) -> Option<Option<Option<String>>> {
+    match child.try_wait() {
+        Ok(Some(status)) => Some(Some(read_subprocess_output(child, status.success()))),
+        Ok(None) => Some(None),
+        Err(_) => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_subprocess_output(child: &mut std::process::Child, success: bool) -> Option<String> {
+    if !success {
+        return None;
+    }
+    let output = child.wait_with_output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(target_os = "linux")]
+fn kill_subprocess(child: &mut std::process::Child, timeout: std::time::Duration) {
+    let _ = child.kill();
+    let _ = child.wait();
+    tracing::warn!("Subprocess timed out after {:?}", timeout);
 }
 
 /// 剪贴板恢复延迟 — 等待目标应用处理粘贴后再恢复原始剪贴板内容。

@@ -493,96 +493,114 @@ impl RAltKeyMonitor {
         tx: &std::sync::mpsc::SyncSender<Result<u32, super::PlatformError>>,
     ) {
         use windows::Win32::System::Threading::GetCurrentThreadId;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, GetMessageW, PM_NOREMOVE, PeekMessageW, SetWindowsHookExW,
-            TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
-        };
+        use windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
         let thread_id = unsafe { GetCurrentThreadId() };
-
-        // 设置 thread_local 上下文 — 只含状态，不含 AppHandle
-        HOOK_CTX.with(|ctx| {
-            *ctx.borrow_mut() = Some(HookContext {
-                thread_id,
-                ralt_down: false,
-                last_lctrl_time: 0,
-            });
-        });
-
-        // 初始化线程消息队列 — PeekMessage 确保队列在 hook 安装前已创建。
-        let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
-        let _ = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE) };
-
-        // 安装低级键盘钩子
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        let hmod = unsafe { GetModuleHandleW(None) };
-        let hinstance = match &hmod {
-            Ok(h) => {
-                eprintln!("[HOOK_INIT] hmod={:?}, installing WH_KEYBOARD_LL...", h.0);
-                Some(windows::Win32::Foundation::HINSTANCE(h.0))
-            }
-            Err(e) => {
-                eprintln!("[HOOK_INIT] GetModuleHandleW failed: {e}, using null");
-                None
-            }
+        init_hook_context(thread_id);
+        let mut msg = init_message_queue();
+        let Some(hook) = install_keyboard_hook(tx) else {
+            return;
         };
-        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
-        let hook = match hook {
-            Ok(h) => {
-                eprintln!("[HOOK_INIT] SetWindowsHookExW succeeded, hook={:?}", h.0);
-                h
-            }
-            Err(e) => {
-                eprintln!("[HOOK_INIT] SetWindowsHookExW FAILED: {e}");
-                let _ = tx.send(Err(super::PlatformError::InjectionFailed(format!(
-                    "SetWindowsHookExW failed: {e}"
-                ))));
-                return;
-            }
-        };
-
-        tracing::info!(thread_id, "RAltKeyMonitor started on dedicated thread");
-        eprintln!("[HOOK_INIT] thread_id={thread_id}, entering message loop...");
-        let _ = tx.send(Ok(thread_id));
-
-        // 自定义消息：hook_proc 检测到 RAlt 后发送此消息到本线程。
-        // wParam: shift_held (0 或 1)
-        let wm_ralt_action = WM_APP + 1;
-
-        // 消息循环：处理 LL hook 事件 + 自定义 RAlt 分发消息。
-        loop {
-            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
-            if !ret.as_bool() {
-                break; // WM_QUIT 或错误
-            }
-
-            // 处理 hook_proc 发来的 RAlt 快捷键消息（此处做 I/O 安全，不在 hook 回调中）
-            if msg.message == wm_ralt_action {
-                let shift_held = msg.wParam.0 != 0;
-                let action = if shift_held { "translate" } else { "dictate" };
-                tracing::info!(action, "RAlt shortcut dispatched");
-
-                let handle = app.clone();
-                let mode = action.to_string();
-                tauri::async_runtime::spawn(async move {
-                    crate::handle_shortcut_action(&handle, &mode).await;
-                });
-                continue;
-            }
-
-            unsafe {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
-
-        // 清理
-        let _ = unsafe { UnhookWindowsHookEx(hook) };
-        HOOK_CTX.with(|ctx| {
-            *ctx.borrow_mut() = None;
-        });
+        notify_monitor_started(thread_id, tx);
+        run_windows_message_loop(&app, &mut msg, WM_APP + 1);
+        cleanup_keyboard_hook(hook);
         tracing::info!("RAltKeyMonitor stopped");
     }
+}
+
+#[cfg(target_os = "windows")]
+fn init_hook_context(thread_id: u32) {
+    HOOK_CTX.with(|ctx| {
+        *ctx.borrow_mut() = Some(HookContext {
+            thread_id,
+            ralt_down: false,
+            last_lctrl_time: 0,
+        });
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn init_message_queue() -> windows::Win32::UI::WindowsAndMessaging::MSG {
+    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_NOREMOVE, PeekMessageW};
+
+    let mut msg = MSG::default();
+    let _ = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE) };
+    msg
+}
+
+#[cfg(target_os = "windows")]
+fn install_keyboard_hook(
+    tx: &std::sync::mpsc::SyncSender<Result<u32, super::PlatformError>>,
+) -> Option<windows::Win32::UI::WindowsAndMessaging::HHOOK> {
+    use windows::Win32::Foundation::HINSTANCE;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD_LL};
+
+    let hinstance = unsafe { GetModuleHandleW(None) }.ok().map(|h| HINSTANCE(h.0));
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
+    match hook {
+        Ok(h) => Some(h),
+        Err(e) => {
+            let _ = tx.send(Err(super::PlatformError::InjectionFailed(format!(
+                "SetWindowsHookExW failed: {e}"
+            ))));
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn notify_monitor_started(
+    thread_id: u32,
+    tx: &std::sync::mpsc::SyncSender<Result<u32, super::PlatformError>>,
+) {
+    tracing::info!(thread_id, "RAltKeyMonitor started on dedicated thread");
+    let _ = tx.send(Ok(thread_id));
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_message_loop(
+    app: &tauri::AppHandle,
+    msg: &mut windows::Win32::UI::WindowsAndMessaging::MSG,
+    wm_ralt_action: u32,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage};
+
+    loop {
+        let ret = unsafe { GetMessageW(msg, None, 0, 0) };
+        if !ret.as_bool() {
+            break;
+        }
+        if msg.message == wm_ralt_action {
+            dispatch_ralt_action(app, msg.wParam.0 != 0);
+            continue;
+        }
+        unsafe {
+            let _ = TranslateMessage(msg);
+            DispatchMessageW(msg);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_ralt_action(app: &tauri::AppHandle, shift_held: bool) {
+    let action = if shift_held { "translate" } else { "dictate" };
+    tracing::info!(action, "RAlt shortcut dispatched");
+    let handle = app.clone();
+    let mode = action.to_string();
+    tauri::async_runtime::spawn(async move {
+        crate::handle_shortcut_action(&handle, &mode).await;
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_keyboard_hook(hook: windows::Win32::UI::WindowsAndMessaging::HHOOK) {
+    use windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx;
+
+    let _ = unsafe { UnhookWindowsHookEx(hook) };
+    HOOK_CTX.with(|ctx| {
+        *ctx.borrow_mut() = None;
+    });
 }
 
 #[cfg(target_os = "windows")]

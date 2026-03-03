@@ -14,20 +14,25 @@ pub enum DisplayServer {
 }
 
 pub fn detect_display_server() -> DisplayServer {
-    if let Ok(session_type) = std::env::var("XDG_SESSION_TYPE") {
-        match session_type.to_lowercase().as_str() {
-            "x11" => return DisplayServer::X11,
-            "wayland" => return DisplayServer::Wayland,
-            _ => {}
-        }
+    detect_from_session_type()
+        .or_else(detect_from_display_vars)
+        .unwrap_or(DisplayServer::Unknown)
+}
+
+fn detect_from_session_type() -> Option<DisplayServer> {
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok()?;
+    match session_type.to_lowercase().as_str() {
+        "x11" => Some(DisplayServer::X11),
+        "wayland" => Some(DisplayServer::Wayland),
+        _ => None,
     }
+}
+
+fn detect_from_display_vars() -> Option<DisplayServer> {
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
-        return DisplayServer::Wayland;
+        return Some(DisplayServer::Wayland);
     }
-    if std::env::var("DISPLAY").is_ok() {
-        return DisplayServer::X11;
-    }
-    DisplayServer::Unknown
+    std::env::var("DISPLAY").ok().map(|_| DisplayServer::X11)
 }
 
 // ---------------------------------------------------------------------------
@@ -145,59 +150,50 @@ impl LinuxTextInjector {
 impl TextInjector for LinuxTextInjector {
     fn inject_text(&self, text: &str) -> Result<(), PlatformError> {
         let _span = tracing::info_span!("inject_text", platform = "linux").entered();
-
         let text = super::sanitize_for_typing(text);
-        let use_clipboard = text.len() > 200;
+        if text.len() > 200 {
+            return self.inject_clipboard_mode(&text);
+        }
+        self.inject_direct_mode(&text)
+    }
+}
 
+impl LinuxTextInjector {
+    fn inject_clipboard_mode(&self, text: &str) -> Result<(), PlatformError> {
         match self.display {
-            DisplayServer::X11 => {
-                if use_clipboard {
-                    inject_via_clipboard(
-                        &text,
-                        clipboard_read_x11,
-                        clipboard_write_x11,
-                        simulate_paste_x11,
-                    )
-                } else {
-                    Command::new("xdotool")
-                        .args(["type", "--clearmodifiers", "--", &text])
-                        .output()
-                        .map_err(|e| {
-                            PlatformError::InjectionFailed(format!("xdotool type failed: {e}"))
-                        })?;
-                    Ok(())
-                }
-            }
-            DisplayServer::Wayland => {
-                if use_clipboard {
-                    inject_via_clipboard(
-                        &text,
-                        clipboard_read_wayland,
-                        clipboard_write_wayland,
-                        simulate_paste_wayland,
-                    )
-                } else {
-                    Command::new("wtype")
-                        .args(["--", &text])
-                        .output()
-                        .map_err(|e| {
-                            PlatformError::InjectionFailed(format!("wtype failed: {e}"))
-                        })?;
-                    Ok(())
-                }
-            }
-            DisplayServer::Unknown => {
-                // ydotool as universal fallback.
-                Command::new("ydotool")
-                    .args(["type", "--", &text])
-                    .output()
-                    .map_err(|e| {
-                        PlatformError::InjectionFailed(format!("ydotool type failed: {e}"))
-                    })?;
-                Ok(())
-            }
+            DisplayServer::X11 => inject_via_clipboard(
+                text,
+                clipboard_read_x11,
+                clipboard_write_x11,
+                simulate_paste_x11,
+            ),
+            DisplayServer::Wayland => inject_via_clipboard(
+                text,
+                clipboard_read_wayland,
+                clipboard_write_wayland,
+                simulate_paste_wayland,
+            ),
+            DisplayServer::Unknown => type_with_tool("ydotool", &["type", "--", text], "ydotool"),
         }
     }
+
+    fn inject_direct_mode(&self, text: &str) -> Result<(), PlatformError> {
+        match self.display {
+            DisplayServer::X11 => {
+                type_with_tool("xdotool", &["type", "--clearmodifiers", "--", text], "xdotool")
+            }
+            DisplayServer::Wayland => type_with_tool("wtype", &["--", text], "wtype"),
+            DisplayServer::Unknown => type_with_tool("ydotool", &["type", "--", text], "ydotool"),
+        }
+    }
+}
+
+fn type_with_tool(cmd: &str, args: &[&str], tool: &str) -> Result<(), PlatformError> {
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| PlatformError::InjectionFailed(format!("{tool} type failed: {e}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

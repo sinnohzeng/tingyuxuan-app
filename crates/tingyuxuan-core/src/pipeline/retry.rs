@@ -41,53 +41,61 @@ where
     let mut delay_ms = policy.initial_delay_ms;
 
     for attempt in 0..=policy.max_retries {
-        match operation().await {
-            Ok(value) => {
-                if attempt > 0 {
-                    tracing::info!(attempt = attempt + 1, "Operation succeeded after retry");
-                }
-                return Ok(value);
-            }
-            Err(err) => {
-                // 不可重试的确定性错误（401 认证失败等）直接返回。
-                if !err.is_retryable() {
-                    return Err(err);
-                }
-
-                // If this was the last allowed attempt, propagate the error.
-                if attempt == policy.max_retries {
-                    return Err(err);
-                }
-
-                // Check cancellation before sleeping.
-                if cancel_token.is_cancelled() {
-                    return Err(err);
-                }
-
-                tracing::warn!(
-                    attempt = attempt + 1,
-                    max = policy.max_retries,
-                    delay_ms = delay_ms,
-                    error = ?err,
-                    "operation failed, retrying after delay"
-                );
-
-                // Sleep is interruptible by cancellation.
-                tokio::select! {
-                    _ = sleep(Duration::from_millis(delay_ms)) => {}
-                    _ = cancel_token.cancelled() => {
-                        // Cancelled during retry delay — return last error.
-                        return Err(err);
-                    }
-                }
-
-                delay_ms = (delay_ms as f64 * policy.backoff_factor) as u64;
-            }
+        let err = match operation().await {
+            Ok(value) => return on_retry_success(value, attempt),
+            Err(err) => err,
+        };
+        if !should_retry(&err, attempt, policy, cancel_token) {
+            return Err(err);
         }
+        log_retry(attempt, policy.max_retries, delay_ms, &err);
+        if wait_retry_delay(delay_ms, cancel_token).await {
+            return Err(err);
+        }
+        delay_ms = next_delay(delay_ms, policy.backoff_factor);
     }
 
-    // Unreachable: the loop always returns on the last iteration.
     unreachable!()
+}
+
+fn on_retry_success<T, E>(value: T, attempt: u32) -> Result<T, E> {
+    if attempt > 0 {
+        tracing::info!(attempt = attempt + 1, "Operation succeeded after retry");
+    }
+    Ok(value)
+}
+
+fn should_retry<E: Retryable>(
+    err: &E,
+    attempt: u32,
+    policy: &RetryPolicy,
+    cancel_token: &CancellationToken,
+) -> bool {
+    if !err.is_retryable() || attempt == policy.max_retries || cancel_token.is_cancelled() {
+        return false;
+    }
+    true
+}
+
+fn log_retry<E: std::fmt::Debug>(attempt: u32, max_retries: u32, delay_ms: u64, err: &E) {
+    tracing::warn!(
+        attempt = attempt + 1,
+        max = max_retries,
+        delay_ms,
+        error = ?err,
+        "operation failed, retrying after delay"
+    );
+}
+
+async fn wait_retry_delay(delay_ms: u64, cancel_token: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = sleep(Duration::from_millis(delay_ms)) => false,
+        _ = cancel_token.cancelled() => true,
+    }
+}
+
+fn next_delay(delay_ms: u64, backoff_factor: f64) -> u64 {
+    (delay_ms as f64 * backoff_factor) as u64
 }
 
 #[cfg(test)]

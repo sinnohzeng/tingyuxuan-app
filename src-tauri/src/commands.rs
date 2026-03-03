@@ -185,8 +185,30 @@ pub async fn start_recording(
     pipeline_state: State<'_, PipelineState>,
     detector_state: State<'_, DetectorState>,
 ) -> Result<String, String> {
-    // 获取 pipeline 引用并存入 session，防止 save_config 在录音期间重建 pipeline（TOCTOU）。
-    let pipeline = pipeline_state.0.read().await.clone().ok_or_else(|| {
+    let pipeline = require_active_pipeline(&pipeline_state, &event_bus).await?;
+    let start_ctx = build_start_context(mode, &config_state, &detector_state, pipeline).await;
+
+    emit_recorder_starting(&event_bus, &start_ctx.effective_mode);
+    start_recorder(&recorder_state, &event_bus).await?;
+    create_recording_history(&history_state, &start_ctx).await;
+    *session_state.0.lock().await = Some(start_ctx.session);
+    emit_recording_started(&event_bus, &start_ctx.session_id, &start_ctx.effective_mode);
+
+    Ok(start_ctx.session_id)
+}
+
+struct StartContext {
+    session_id: String,
+    effective_mode: String,
+    session: ActiveSession,
+    context_json: Option<String>,
+}
+
+async fn require_active_pipeline(
+    pipeline_state: &State<'_, PipelineState>,
+    event_bus: &State<'_, EventBus>,
+) -> Result<Arc<Pipeline>, String> {
+    pipeline_state.0.read().await.clone().ok_or_else(|| {
         let se = StructuredError {
             error_code: "not_configured".into(),
             message: "请先在设置中配置 LLM 的 API Key".into(),
@@ -197,60 +219,89 @@ pub async fn start_recording(
             user_action: se.user_action.clone(),
         });
         serde_json::to_string(&se).unwrap()
-    })?;
+    })
+}
 
+async fn build_start_context(
+    mode: String,
+    config_state: &State<'_, ConfigState>,
+    detector_state: &State<'_, DetectorState>,
+    pipeline: Arc<Pipeline>,
+) -> StartContext {
     let session_id = uuid::Uuid::new_v4().to_string();
+    add_start_breadcrumb(&session_id, &mode);
+    let session_span = tracing::info_span!("session", session_id = %session_id, mode = tracing::field::Empty);
+    let context = detector_state.0.collect_context();
+    let processing_mode = resolve_processing_mode(&mode, &context);
+    let (target_language, user_dictionary) =
+        load_language_and_dictionary(config_state, &processing_mode).await;
+    let effective_mode = processing_mode.to_string();
+    session_span.record("mode", effective_mode.as_str());
 
-    // Sentry breadcrumb: 录音开始
+    StartContext {
+        session_id: session_id.clone(),
+        effective_mode: effective_mode.clone(),
+        context_json: serde_json::to_string(&context).ok(),
+        session: ActiveSession {
+            session_id,
+            config: ProcessingRequest {
+                mode: processing_mode,
+                context,
+                target_language,
+                user_dictionary,
+            },
+            pipeline,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            started_at: std::time::Instant::now(),
+            session_span: session_span.clone(),
+        },
+    }
+}
+
+fn add_start_breadcrumb(session_id: &str, mode: &str) {
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some("recording".into()),
         message: Some(format!("start: mode={mode}")),
         level: sentry::Level::Info,
         data: {
-            let mut m = sentry::protocol::Map::new();
-            m.insert("session_id".into(), session_id.clone().into());
-            m
+            let mut map = sentry::protocol::Map::new();
+            map.insert("session_id".into(), session_id.to_string().into());
+            map
         },
         ..Default::default()
     });
+}
 
-    let session_span = tracing::info_span!("session",
-        session_id = %session_id,
-        mode = tracing::field::Empty,
-    );
-
-    let mut processing_mode = mode
-        .parse::<ProcessingMode>()
-        .unwrap_or(ProcessingMode::Dictate);
-
-    // 采集当前输入上下文（整体 ~200ms 超时，各项独立容错）
-    let context = detector_state.0.collect_context();
-
-    // Auto-switch to Edit mode when user has selected text and pressed Dictate.
-    if context.selected_text.is_some() && matches!(processing_mode, ProcessingMode::Dictate) {
-        processing_mode = ProcessingMode::Edit;
+fn resolve_processing_mode(mode: &str, context: &tingyuxuan_core::context::InputContext) -> ProcessingMode {
+    let parsed = mode.parse::<ProcessingMode>().unwrap_or(ProcessingMode::Dictate);
+    if context.selected_text.is_some() && matches!(parsed, ProcessingMode::Dictate) {
         tracing::info!("Auto-switched to Edit mode (selected text detected)");
+        return ProcessingMode::Edit;
     }
+    parsed
+}
 
-    // Read config for translate target language.
+async fn load_language_and_dictionary(
+    config_state: &State<'_, ConfigState>,
+    processing_mode: &ProcessingMode,
+) -> (Option<String>, Vec<String>) {
     let config = config_state.0.read().await;
-    let target_language = if matches!(processing_mode, ProcessingMode::Translate) {
-        Some(config.language.translation_target.clone())
-    } else {
-        None
-    };
-    let user_dictionary = config.user_dictionary.clone();
-    drop(config);
+    let target_language = matches!(processing_mode, ProcessingMode::Translate)
+        .then(|| config.language.translation_target.clone());
+    let dictionary = config.user_dictionary.clone();
+    (target_language, dictionary)
+}
 
-    // Determine the effective mode string for events/history.
-    let effective_mode = processing_mode.to_string();
-
-    // 1. 进入 recorder 启动过渡状态（微加载），随后正式开始录音。
+fn emit_recorder_starting(event_bus: &State<'_, EventBus>, mode: &str) {
     let _ = event_bus.0.send(PipelineEvent::RecorderStarting {
-        mode: effective_mode.clone(),
+        mode: mode.to_string(),
     });
+}
 
-    // 2. 启动录音（PCM 采样累积在 recorder 内部的 buffer 中）。
+async fn start_recorder(
+    recorder_state: &State<'_, RecorderState>,
+    event_bus: &State<'_, EventBus>,
+) -> Result<(), String> {
     tracing::info!("start_recording: calling recorder.start()");
     if let Err(audio_err) = recorder_state.0.start().await {
         tracing::error!(%audio_err, "start_recording: recorder.start() FAILED");
@@ -262,56 +313,33 @@ pub async fn start_recording(
         return Err(serde_json::to_string(&se).unwrap());
     }
     tracing::info!("start_recording: recorder started OK");
+    Ok(())
+}
 
-    // Serialize context for history storage.
-    let context_json = serde_json::to_string(&context).ok();
-
-    // 记录 effective mode
-    session_span.record("mode", effective_mode.as_str());
-
-    // Store active session（pipeline 在此锁定，stop_recording 直接使用）。
-    let session = ActiveSession {
-        session_id: session_id.clone(),
-        config: ProcessingRequest {
-            mode: processing_mode,
-            context: context.clone(),
-            target_language,
-            user_dictionary,
-        },
-        pipeline,
-        cancel_token: tokio_util::sync::CancellationToken::new(),
-        started_at: std::time::Instant::now(),
-        session_span: session_span.clone(),
+async fn create_recording_history(history_state: &State<'_, HistoryState>, start_ctx: &StartContext) {
+    let history = history_state.0.lock().await;
+    let record = TranscriptRecord {
+        id: start_ctx.session_id.clone(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        mode: start_ctx.effective_mode.clone(),
+        raw_text: None,
+        processed_text: None,
+        status: "recording".to_string(),
+        context_json: start_ctx.context_json.clone(),
+        duration_ms: None,
+        language: None,
+        error_message: None,
     };
-    *session_state.0.lock().await = Some(session);
+    let _ = history.save_transcript(&record);
+}
 
-    // Emit recording started event.
+fn emit_recording_started(event_bus: &State<'_, EventBus>, session_id: &str, mode: &str) {
     tracing::info!("start_recording: emitting RecordingStarted event");
     let send_result = event_bus.0.send(PipelineEvent::RecordingStarted {
-        session_id: session_id.clone(),
-        mode: effective_mode.clone(),
+        session_id: session_id.to_string(),
+        mode: mode.to_string(),
     });
     tracing::info!(?send_result, "start_recording: RecordingStarted sent");
-
-    // Create a history record with status "recording".
-    {
-        let history = history_state.0.lock().await;
-        let record = TranscriptRecord {
-            id: session_id.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            mode: effective_mode.clone(),
-            raw_text: None,
-            processed_text: None,
-            status: "recording".to_string(),
-            context_json,
-            duration_ms: None,
-            language: None,
-            error_message: None,
-        };
-        let _ = history.save_transcript(&record);
-    }
-
-    Ok(session_id)
 }
 
 #[tauri::command]
@@ -325,129 +353,225 @@ pub async fn stop_recording(
     _config_state: State<'_, ConfigState>,
     injector_state: State<'_, InjectorState>,
 ) -> Result<String, String> {
-    // 1. 停止录音 → 获取累积的 AudioBuffer。
     let buffer = recorder_state.0.stop().await.map_err(|e| e.to_string())?;
+    let session = take_active_session(&session_state).await?;
+    let stop_ctx = StopContext::from_session(session);
 
-    // 2. Take the active session（包含录音开始时锁定的 pipeline 引用）。
-    let session = session_state
+    add_stop_breadcrumb(&stop_ctx.session_id, stop_ctx.duration_ms);
+    let _ = event_bus.0.send(PipelineEvent::RecordingStopped {
+        duration_ms: stop_ctx.duration_ms,
+    });
+    if let Some(status) = validate_buffer(&buffer, &event_bus, &history_state, &stop_ctx.session_id).await {
+        return Ok(status);
+    }
+
+    spawn_processing_task(buffer, stop_ctx, &injector_state, &event_bus, &history_state);
+    Ok("processing".to_string())
+}
+
+struct StopContext {
+    session_id: String,
+    duration_ms: u64,
+    session_span: tracing::Span,
+    pipeline: Arc<Pipeline>,
+    request: ProcessingRequest,
+    cancel_token: tokio_util::sync::CancellationToken,
+    is_ai_assistant: bool,
+}
+
+impl StopContext {
+    fn from_session(session: ActiveSession) -> Self {
+        let duration_ms = session.started_at.elapsed().as_millis() as u64;
+        let is_ai_assistant = matches!(session.config.mode, ProcessingMode::AiAssistant);
+        Self {
+            session_id: session.session_id,
+            duration_ms,
+            session_span: session.session_span,
+            pipeline: session.pipeline,
+            request: session.config,
+            cancel_token: session.cancel_token,
+            is_ai_assistant,
+        }
+    }
+}
+
+async fn take_active_session(session_state: &State<'_, SessionState>) -> Result<ActiveSession, String> {
+    session_state
         .0
         .lock()
         .await
         .take()
-        .ok_or_else(|| "No active recording session".to_string())?;
+        .ok_or_else(|| "No active recording session".to_string())
+}
 
-    let session_id = session.session_id.clone();
-    let duration_ms = session.started_at.elapsed().as_millis() as u64;
-    let session_span = session.session_span.clone();
-
-    // Sentry breadcrumb: 录音停止
+fn add_stop_breadcrumb(session_id: &str, duration_ms: u64) {
     sentry::add_breadcrumb(sentry::Breadcrumb {
         category: Some("recording".into()),
         message: Some(format!("stop: duration={duration_ms}ms")),
         level: sentry::Level::Info,
         data: {
-            let mut m = sentry::protocol::Map::new();
-            m.insert("session_id".into(), session_id.clone().into());
-            m.insert("duration_ms".into(), duration_ms.into());
-            m
+            let mut map = sentry::protocol::Map::new();
+            map.insert("session_id".into(), session_id.to_string().into());
+            map.insert("duration_ms".into(), duration_ms.into());
+            map
         },
         ..Default::default()
     });
+}
 
-    // Emit recording stopped event.
-    let _ = event_bus
-        .0
-        .send(PipelineEvent::RecordingStopped { duration_ms });
-
-    if buffer.duration_ms() > MAX_AUDIO_DURATION_MS {
-        tracing::warn!(
-            duration_ms = buffer.duration_ms(),
-            "Audio exceeds MVP max duration"
-        );
-        let _ = event_bus.0.send(PipelineEvent::Error {
-            message: "当前版本仅支持单次录音小于等于 5 分钟".to_string(),
-            user_action: tingyuxuan_core::error::UserAction::Retry,
-        });
-        let h = history_state.0.lock().await;
-        let _ = h.update_status(&session_id, "failed");
-        return Ok("too_long".to_string());
+async fn validate_buffer(
+    buffer: &tingyuxuan_core::audio::encoder::AudioBuffer,
+    event_bus: &State<'_, EventBus>,
+    history_state: &State<'_, HistoryState>,
+    session_id: &str,
+) -> Option<String> {
+    if let Some(status) = reject_too_long(buffer, event_bus, history_state, session_id).await {
+        return Some(status);
     }
-
-    // 3. 检查音频是否过短或为静音。
-    if buffer.duration_ms() < MIN_AUDIO_DURATION_MS {
-        tracing::warn!(duration_ms = buffer.duration_ms(), "Audio too short");
-        let _ = event_bus.0.send(PipelineEvent::Error {
-            message: "录音时间过短，请重试".to_string(),
-            user_action: tingyuxuan_core::error::UserAction::Retry,
-        });
-        let h = history_state.0.lock().await;
-        let _ = h.update_status(&session_id, "failed");
-        return Ok("empty".to_string());
+    if let Some(status) = reject_too_short(buffer, event_bus, history_state, session_id).await {
+        return Some(status);
     }
+    reject_silence(buffer, event_bus, history_state, session_id).await
+}
 
+async fn reject_too_long(
+    buffer: &tingyuxuan_core::audio::encoder::AudioBuffer,
+    event_bus: &State<'_, EventBus>,
+    history_state: &State<'_, HistoryState>,
+    session_id: &str,
+) -> Option<String> {
+    if buffer.duration_ms() <= MAX_AUDIO_DURATION_MS {
+        return None;
+    }
+    tracing::warn!(duration_ms = buffer.duration_ms(), "Audio exceeds MVP max duration");
+    let _ = event_bus.0.send(PipelineEvent::Error {
+        message: "当前版本仅支持单次录音小于等于 5 分钟".to_string(),
+        user_action: tingyuxuan_core::error::UserAction::Retry,
+    });
+    update_history_status(history_state, session_id, "failed").await;
+    Some("too_long".to_string())
+}
+
+async fn reject_too_short(
+    buffer: &tingyuxuan_core::audio::encoder::AudioBuffer,
+    event_bus: &State<'_, EventBus>,
+    history_state: &State<'_, HistoryState>,
+    session_id: &str,
+) -> Option<String> {
+    if buffer.duration_ms() >= MIN_AUDIO_DURATION_MS {
+        return None;
+    }
+    tracing::warn!(duration_ms = buffer.duration_ms(), "Audio too short");
+    let _ = event_bus.0.send(PipelineEvent::Error {
+        message: "录音时间过短，请重试".to_string(),
+        user_action: tingyuxuan_core::error::UserAction::Retry,
+    });
+    update_history_status(history_state, session_id, "failed").await;
+    Some("empty".to_string())
+}
+
+async fn reject_silence(
+    buffer: &tingyuxuan_core::audio::encoder::AudioBuffer,
+    event_bus: &State<'_, EventBus>,
+    history_state: &State<'_, HistoryState>,
+    session_id: &str,
+) -> Option<String> {
     let rms = buffer.rms_level();
-    tracing::info!(
-        rms,
-        duration_ms = buffer.duration_ms(),
-        "Audio buffer stats"
-    );
-    if rms < 200.0 {
-        tracing::warn!(rms, "Audio appears to be silence, skipping LLM");
-        let _ = event_bus.0.send(PipelineEvent::RecordingCancelled);
-        let h = history_state.0.lock().await;
-        let _ = h.update_status(&session_id, "cancelled");
-        return Ok("silence".to_string());
+    tracing::info!(rms, duration_ms = buffer.duration_ms(), "Audio buffer stats");
+    if rms >= 200.0 {
+        return None;
     }
+    tracing::warn!(rms, "Audio appears to be silence, skipping LLM");
+    let _ = event_bus.0.send(PipelineEvent::RecordingCancelled);
+    update_history_status(history_state, session_id, "cancelled").await;
+    Some("silence".to_string())
+}
 
-    // 4. 使用 session 中锁定的 pipeline 引用（无 TOCTOU 风险）。
-    let pipeline = session.pipeline;
+async fn update_history_status(
+    history_state: &State<'_, HistoryState>,
+    session_id: &str,
+    status: &str,
+) {
+    let history = history_state.0.lock().await;
+    let _ = history.update_status(session_id, status);
+}
 
-    // Remember the mode for deciding whether to auto-inject.
-    let is_ai_assistant = matches!(session.config.mode, ProcessingMode::AiAssistant);
-    let request = session.config;
-    let cancel_token = session.cancel_token;
-
+fn spawn_processing_task(
+    buffer: tingyuxuan_core::audio::encoder::AudioBuffer,
+    stop_ctx: StopContext,
+    injector_state: &State<'_, InjectorState>,
+    event_bus: &State<'_, EventBus>,
+    history_state: &State<'_, HistoryState>,
+) {
     let injector = injector_state.0.clone();
-    let event_tx = event_bus.0.clone();
     let history = history_state.0.clone();
+    let event_tx = event_bus.0.clone();
 
-    // 5. 异步处理：编码音频 → 调用多模态 LLM → 注入文本。
     tokio::spawn(
         async move {
-            match pipeline.process_audio(buffer, &request, cancel_token).await {
-                Ok(processed_text) => {
-                    if is_ai_assistant {
-                        tracing::info!("AI assistant result ready (no auto-inject)");
-                    } else {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                        if let Err(e) = injector.inject_text(&processed_text) {
-                            tracing::error!("Text injection failed: {}", e);
-                        }
-                    }
-
-                    let h = history.lock().await;
-                    let _ = h.update_processed(&session_id, "", &processed_text);
-                }
-                Err(tingyuxuan_core::error::PipelineError::Cancelled) => {
-                    tracing::info!("Session was cancelled");
-                    let h = history.lock().await;
-                    let _ = h.update_status(&session_id, "cancelled");
-                }
-                Err(error) => {
-                    tracing::error!("Pipeline processing failed: {error}");
-                    let se = StructuredError::from(&error);
-                    let _ = event_tx.send(PipelineEvent::Error {
-                        message: se.message,
-                        user_action: se.user_action,
-                    });
-                    let h = history.lock().await;
-                    let _ = h.update_status(&session_id, "failed");
-                }
-            }
+            let result = stop_ctx
+                .pipeline
+                .process_audio(buffer, &stop_ctx.request, stop_ctx.cancel_token)
+                .await;
+            handle_pipeline_result(
+                result,
+                stop_ctx.is_ai_assistant,
+                &stop_ctx.session_id,
+                &injector,
+                &event_tx,
+                &history,
+            )
+            .await;
         }
-        .instrument(session_span),
+        .instrument(stop_ctx.session_span),
     );
-    Ok("processing".to_string())
+}
+
+async fn handle_pipeline_result(
+    result: Result<String, PipelineError>,
+    is_ai_assistant: bool,
+    session_id: &str,
+    injector: &Arc<crate::platform::PlatformInjector>,
+    event_tx: &tokio::sync::broadcast::Sender<PipelineEvent>,
+    history: &Arc<tokio::sync::Mutex<tingyuxuan_core::history::HistoryManager>>,
+) {
+    match result {
+        Ok(processed_text) => {
+            maybe_inject_processed_text(is_ai_assistant, injector, &processed_text).await;
+            let h = history.lock().await;
+            let _ = h.update_processed(session_id, "", &processed_text);
+        }
+        Err(PipelineError::Cancelled) => {
+            tracing::info!("Session was cancelled");
+            let h = history.lock().await;
+            let _ = h.update_status(session_id, "cancelled");
+        }
+        Err(error) => {
+            tracing::error!("Pipeline processing failed: {error}");
+            let se = StructuredError::from(&error);
+            let _ = event_tx.send(PipelineEvent::Error {
+                message: se.message,
+                user_action: se.user_action,
+            });
+            let h = history.lock().await;
+            let _ = h.update_status(session_id, "failed");
+        }
+    }
+}
+
+async fn maybe_inject_processed_text(
+    is_ai_assistant: bool,
+    injector: &Arc<crate::platform::PlatformInjector>,
+    processed_text: &str,
+) {
+    if is_ai_assistant {
+        tracing::info!("AI assistant result ready (no auto-inject)");
+        return;
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    if let Err(e) = injector.inject_text(processed_text) {
+        tracing::error!("Text injection failed: {e}");
+    }
 }
 
 #[tauri::command]
@@ -457,34 +581,35 @@ pub async fn cancel_recording(
     history_state: State<'_, HistoryState>,
     recorder_state: State<'_, RecorderState>,
 ) -> Result<(), String> {
-    // Cancel the recording via the actor (discards buffer).
     let _ = recorder_state.0.cancel().await;
-
-    let session = session_state.0.lock().await.take();
-    if let Some(session) = session {
-        // Cancel any in-progress LLM operations.
-        session.cancel_token.cancel();
-
-        // Sentry breadcrumb: 录音取消
-        sentry::add_breadcrumb(sentry::Breadcrumb {
-            category: Some("recording".into()),
-            message: Some("cancel".into()),
-            level: sentry::Level::Info,
-            data: {
-                let mut m = sentry::protocol::Map::new();
-                m.insert("session_id".into(), session.session_id.clone().into());
-                m
-            },
-            ..Default::default()
-        });
-
-        // Update history.
-        let history = history_state.0.lock().await;
-        let _ = history.update_status(&session.session_id, "cancelled");
-
-        tracing::info!("Recording cancelled: session={}", session.session_id);
+    if let Some(session) = session_state.0.lock().await.take() {
+        handle_session_cancelled(session, &history_state).await;
     }
     Ok(())
+}
+
+async fn handle_session_cancelled(
+    session: ActiveSession,
+    history_state: &State<'_, HistoryState>,
+) {
+    session.cancel_token.cancel();
+    add_cancel_breadcrumb(&session.session_id);
+    update_history_status(history_state, &session.session_id, "cancelled").await;
+    tracing::info!("Recording cancelled: session={}", session.session_id);
+}
+
+fn add_cancel_breadcrumb(session_id: &str) {
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("recording".into()),
+        message: Some("cancel".into()),
+        level: sentry::Level::Info,
+        data: {
+            let mut map = sentry::protocol::Map::new();
+            map.insert("session_id".into(), session_id.to_string().into());
+            map
+        },
+        ..Default::default()
+    });
 }
 
 // ---------------------------------------------------------------------------

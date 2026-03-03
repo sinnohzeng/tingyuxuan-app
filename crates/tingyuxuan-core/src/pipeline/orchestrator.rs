@@ -7,7 +7,7 @@ use tracing::Instrument;
 use crate::audio::encoder::{AudioBuffer, AudioFormat};
 use crate::context::InputContext;
 use crate::error::{LLMError, PipelineError};
-use crate::llm::provider::{LLMProvider, ProcessingInput, ProcessingMode};
+use crate::llm::provider::{LLMProvider, LLMResult, ProcessingInput, ProcessingMode};
 use crate::pipeline::events::PipelineEvent;
 use crate::pipeline::retry::{RetryPolicy, execute_with_retry};
 
@@ -77,124 +77,165 @@ impl Pipeline {
         request: &ProcessingRequest,
         cancel_token: CancellationToken,
     ) -> Result<String, PipelineError> {
-        let span = tracing::info_span!("pipeline",
-            mode = %request.mode,
-            audio_samples = buffer.len(),
-        );
-
+        let span = tracing::info_span!("pipeline", mode = %request.mode, audio_samples = buffer.len());
         async {
-            if cancel_token.is_cancelled() {
-                return Err(PipelineError::Cancelled);
-            }
-
-            // 1. 编码音频（优先 MP3，高压缩；失败回退 WAV）。
-            let encode_start = Instant::now();
-            let raw_pcm_bytes = buffer.len().saturating_mul(2);
-            let encoded = {
-                let _encode_span = tracing::info_span!("audio_encode").entered();
-                let result = match buffer.encode(AudioFormat::Mp3) {
-                    Ok(mp3) => mp3,
-                    Err(mp3_err) => {
-                        tracing::warn!(%mp3_err, "MP3 encode failed, falling back to WAV");
-                        buffer
-                            .encode(AudioFormat::Wav)
-                            .map_err(PipelineError::Audio)?
-                    }
-                };
-                let encode_ms = encode_start.elapsed().as_millis() as u64;
-                let compression_ratio = if raw_pcm_bytes == 0 {
-                    1.0_f64
-                } else {
-                    result.data.len() as f64 / raw_pcm_bytes as f64
-                };
-                tracing::info!(
-                    encode_ms,
-                    duration_ms = result.duration_ms,
-                    encoded_bytes = result.data.len(),
-                    format = result.format_str(),
-                    raw_pcm_bytes,
-                    compression_ratio,
-                    "Audio encoded"
-                );
-                result
-            };
-            let primary_was_mp3 = matches!(encoded.format, AudioFormat::Mp3);
-
-            // 2. 构建处理输入。
-            let input = ProcessingInput {
-                mode: request.mode.clone(),
-                audio: encoded,
-                context: request.context.clone(),
-                target_language: request.target_language.clone(),
-                user_dictionary: request.user_dictionary.clone(),
-            };
-
-            // 3. 发送处理开始事件。
+            ensure_not_cancelled(&cancel_token)?;
+            let primary = self.build_primary_input(&buffer, request)?;
             self.emit(PipelineEvent::ThinkingStarted);
-
-            // 4. 调用 LLM（带重试、取消支持和计时；MP3 不兼容时自动回退 WAV）。
-            let llm_start = Instant::now();
-            let mut llm_result = match self.invoke_llm(&input, &cancel_token).await {
-                Ok(r) => r,
-                Err(PipelineError::Llm(llm_err))
-                    if primary_was_mp3 && should_retry_with_wav(&llm_err) =>
-                {
-                    tracing::warn!(
-                        %llm_err,
-                        "Server rejected MP3 input, retrying once with WAV"
-                    );
-                    let fallback_audio = buffer
-                        .encode(AudioFormat::Wav)
-                        .map_err(PipelineError::Audio)?;
-                    let fallback_input = ProcessingInput {
-                        mode: request.mode.clone(),
-                        audio: fallback_audio,
-                        context: request.context.clone(),
-                        target_language: request.target_language.clone(),
-                        user_dictionary: request.user_dictionary.clone(),
-                    };
-                    match self.invoke_llm(&fallback_input, &cancel_token).await {
-                        Ok(r) => r,
-                        Err(error) => {
-                            let llm_ms = llm_start.elapsed().as_millis() as u64;
-                            tracing::error!(llm_ms, %error, "LLM failed (after WAV fallback)");
-                            if !matches!(error, PipelineError::Cancelled) {
-                                self.emit_error_from_pipeline_error(&error);
-                            }
-                            return Err(error);
-                        }
-                    }
-                }
-                Err(error) => {
-                    let llm_ms = llm_start.elapsed().as_millis() as u64;
-                    tracing::error!(llm_ms, %error, "LLM failed");
-                    if !matches!(error, PipelineError::Cancelled) {
-                        self.emit_error_from_pipeline_error(&error);
-                    }
-                    return Err(error);
-                }
-            };
-            let llm_ms = llm_start.elapsed().as_millis() as u64;
-            tracing::info!(llm_ms, tokens = ?llm_result.tokens_used, "LLM complete");
-
-            // 5. 发送处理完成事件。
-            let processed = llm_result.processed_text.trim().to_string();
-            if let Err(invalid) = validate_transcript_quality(&processed) {
-                let error = PipelineError::Llm(invalid);
-                tracing::warn!(%error, "Transcript failed quality gate");
-                self.emit_error_from_pipeline_error(&error);
-                return Err(error);
-            }
-            llm_result.processed_text = processed.clone();
-            self.emit(PipelineEvent::ProcessingComplete {
-                processed_text: processed.clone(),
-            });
-
-            Ok(processed)
+            let result = self
+                .execute_llm_with_fallback(&buffer, request, &cancel_token, primary)
+                .await?;
+            self.finalize_result(result)
         }
         .instrument(span)
         .await
     }
+
+    fn build_primary_input(
+        &self,
+        buffer: &AudioBuffer,
+        request: &ProcessingRequest,
+    ) -> Result<PreparedInput, PipelineError> {
+        let encoded = encode_audio_with_fallback(buffer)?;
+        let primary_was_mp3 = matches!(encoded.format, AudioFormat::Mp3);
+        Ok(PreparedInput {
+            primary_was_mp3,
+            input: build_processing_input(request, encoded),
+        })
+    }
+
+    async fn execute_llm_with_fallback(
+        &self,
+        buffer: &AudioBuffer,
+        request: &ProcessingRequest,
+        cancel_token: &CancellationToken,
+        primary: PreparedInput,
+    ) -> Result<LLMResult, PipelineError> {
+        let llm_start = Instant::now();
+        let result = self
+            .invoke_with_optional_wav_retry(buffer, request, cancel_token, primary)
+            .await;
+        handle_llm_invocation_outcome(self, result, llm_start)
+    }
+
+    async fn invoke_with_optional_wav_retry(
+        &self,
+        buffer: &AudioBuffer,
+        request: &ProcessingRequest,
+        cancel_token: &CancellationToken,
+        primary: PreparedInput,
+    ) -> Result<LLMResult, PipelineError> {
+        match self.invoke_llm(&primary.input, cancel_token).await {
+            Ok(result) => Ok(result),
+            Err(PipelineError::Llm(llm_err))
+                if primary.primary_was_mp3 && should_retry_with_wav(&llm_err) =>
+            {
+                tracing::warn!(%llm_err, "Server rejected MP3 input, retrying once with WAV");
+                let fallback_audio = buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?;
+                let fallback_input = build_processing_input(request, fallback_audio);
+                self.invoke_llm(&fallback_input, cancel_token).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn finalize_result(&self, mut llm_result: LLMResult) -> Result<String, PipelineError> {
+        let processed = llm_result.processed_text.trim().to_string();
+        if let Err(invalid) = validate_transcript_quality(&processed) {
+            let error = PipelineError::Llm(invalid);
+            tracing::warn!(%error, "Transcript failed quality gate");
+            self.emit_error_from_pipeline_error(&error);
+            return Err(error);
+        }
+        llm_result.processed_text = processed.clone();
+        self.emit(PipelineEvent::ProcessingComplete {
+            processed_text: processed.clone(),
+        });
+        Ok(processed)
+    }
+}
+
+struct PreparedInput {
+    input: ProcessingInput,
+    primary_was_mp3: bool,
+}
+
+fn ensure_not_cancelled(cancel_token: &CancellationToken) -> Result<(), PipelineError> {
+    if cancel_token.is_cancelled() {
+        return Err(PipelineError::Cancelled);
+    }
+    Ok(())
+}
+
+fn encode_audio_with_fallback(
+    buffer: &AudioBuffer,
+) -> Result<crate::audio::encoder::EncodedAudio, PipelineError> {
+    let encode_start = Instant::now();
+    let raw_pcm_bytes = buffer.len().saturating_mul(2);
+    let _encode_span = tracing::info_span!("audio_encode").entered();
+    let encoded = match buffer.encode(AudioFormat::Mp3) {
+        Ok(mp3) => mp3,
+        Err(mp3_err) => {
+            tracing::warn!(%mp3_err, "MP3 encode failed, falling back to WAV");
+            buffer.encode(AudioFormat::Wav).map_err(PipelineError::Audio)?
+        }
+    };
+    log_audio_encoding_metrics(&encoded, encode_start, raw_pcm_bytes);
+    Ok(encoded)
+}
+
+fn log_audio_encoding_metrics(
+    encoded: &crate::audio::encoder::EncodedAudio,
+    encode_start: Instant,
+    raw_pcm_bytes: usize,
+) {
+    let encode_ms = encode_start.elapsed().as_millis() as u64;
+    let compression_ratio = if raw_pcm_bytes == 0 {
+        1.0_f64
+    } else {
+        encoded.data.len() as f64 / raw_pcm_bytes as f64
+    };
+    tracing::info!(
+        encode_ms,
+        duration_ms = encoded.duration_ms,
+        encoded_bytes = encoded.data.len(),
+        format = encoded.format_str(),
+        raw_pcm_bytes,
+        compression_ratio,
+        "Audio encoded"
+    );
+}
+
+fn build_processing_input(
+    request: &ProcessingRequest,
+    audio: crate::audio::encoder::EncodedAudio,
+) -> ProcessingInput {
+    ProcessingInput {
+        mode: request.mode.clone(),
+        audio,
+        context: request.context.clone(),
+        target_language: request.target_language.clone(),
+        user_dictionary: request.user_dictionary.clone(),
+    }
+}
+
+fn handle_llm_invocation_outcome(
+    pipeline: &Pipeline,
+    result: Result<LLMResult, PipelineError>,
+    llm_start: Instant,
+) -> Result<LLMResult, PipelineError> {
+    let llm_ms = llm_start.elapsed().as_millis() as u64;
+    if let Ok(ref success) = result {
+        tracing::info!(llm_ms, tokens = ?success.tokens_used, "LLM complete");
+        return result;
+    }
+    if let Err(ref error) = result {
+        tracing::error!(llm_ms, %error, "LLM failed");
+        if !matches!(error, PipelineError::Cancelled) {
+            pipeline.emit_error_from_pipeline_error(error);
+        }
+    }
+    result
 }
 
 fn should_retry_with_wav(error: &LLMError) -> bool {
@@ -228,27 +269,30 @@ fn validate_transcript_quality(text: &str) -> Result<(), LLMError> {
         ));
     }
 
-    // 防止“模板化占位文案”被当成真实转写结果。
-    let compact = trimmed
-        .chars()
-        .filter(|c| !c.is_whitespace() && !matches!(*c, '，' | '。' | ',' | '.'))
-        .collect::<String>();
-    let compact_lower = compact.to_lowercase();
-    let placeholders = [
-        "我需要将语音内容转换为书面文字请开始录音",
-        "请开始录音",
-        "请说话",
-        "开始录音",
-        "i need to convert speech to text",
-    ];
-
-    if placeholders.iter().any(|p| compact_lower.contains(p)) {
+    if has_placeholder_transcript(trimmed) {
         return Err(LLMError::InvalidResponse(
             "placeholder transcript detected".to_string(),
         ));
     }
 
     Ok(())
+}
+
+fn has_placeholder_transcript(text: &str) -> bool {
+    let compact = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(*c, '，' | '。' | ',' | '.'))
+        .collect::<String>()
+        .to_lowercase();
+    [
+        "我需要将语音内容转换为书面文字请开始录音",
+        "请开始录音",
+        "请说话",
+        "开始录音",
+        "i need to convert speech to text",
+    ]
+    .iter()
+    .any(|placeholder| compact.contains(placeholder))
 }
 
 #[cfg(test)]

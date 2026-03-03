@@ -91,30 +91,35 @@ impl HistoryManager {
     /// 将旧的 app_context 列数据迁移到 context_json 列。
     /// 旧数据格式为纯应用名称字符串，迁移为 `{"app_name": "..."}` JSON。
     fn migrate_app_context(&self) {
-        // 检查旧列是否存在
-        let has_old_column = self
-            .conn
-            .prepare("SELECT app_context FROM transcripts LIMIT 0")
-            .is_ok();
-        if !has_old_column {
+        if !self.has_column("app_context") {
             return;
         }
-        // 检查新列是否存在
-        let has_new_column = self
-            .conn
-            .prepare("SELECT context_json FROM transcripts LIMIT 0")
-            .is_ok();
-        if !has_new_column {
-            // 添加新列
-            if let Err(e) = self
-                .conn
-                .execute_batch("ALTER TABLE transcripts ADD COLUMN context_json TEXT;")
-            {
-                tracing::warn!("Failed to add context_json column: {e}");
-                return;
-            }
+        if !self.ensure_context_json_column() {
+            return;
         }
-        // 迁移非空 app_context 数据到 context_json（仅当 context_json 为空时）
+        self.migrate_context_rows();
+    }
+
+    fn has_column(&self, column: &str) -> bool {
+        let sql = format!("SELECT {column} FROM transcripts LIMIT 0");
+        self.conn.prepare(&sql).is_ok()
+    }
+
+    fn ensure_context_json_column(&self) -> bool {
+        if self.has_column("context_json") {
+            return true;
+        }
+        if let Err(e) = self
+            .conn
+            .execute_batch("ALTER TABLE transcripts ADD COLUMN context_json TEXT;")
+        {
+            tracing::warn!("Failed to add context_json column: {e}");
+            return false;
+        }
+        true
+    }
+
+    fn migrate_context_rows(&self) {
         if let Err(e) = self.conn.execute(
             "UPDATE transcripts SET context_json = json_object('app_name', app_context) \
              WHERE app_context IS NOT NULL AND app_context != '' AND context_json IS NULL",

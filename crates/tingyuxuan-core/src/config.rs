@@ -244,32 +244,42 @@ impl AppConfig {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let contents = std::fs::read_to_string(&path)?;
-        let mut config: Self = serde_json::from_str(&contents)?;
-
-        if config.config_version < CURRENT_CONFIG_VERSION {
-            // Back up the old config before migrating.
-            let backup_path = path.with_extension(format!("v{}.json.bak", config.config_version));
-            let _ = std::fs::copy(&path, &backup_path);
-            tracing::info!(
-                "Config migration: v{} → v{} (backup at {})",
-                config.config_version,
-                CURRENT_CONFIG_VERSION,
-                backup_path.display()
-            );
-
-            // Apply incremental migrations.
-            if config.config_version < 1 {
-                Self::migrate_v0_to_v1(&mut config);
-            }
-            if config.config_version < 2 {
-                Self::migrate_v1_to_v2(&mut config);
-            }
-
-            config.save()?;
+        let mut config = Self::read_config(&path)?;
+        if Self::needs_migration(config.config_version) {
+            Self::migrate_and_save(&path, &mut config)?;
         }
-
         Ok(config)
+    }
+
+    fn read_config(path: &std::path::Path) -> Result<Self, ConfigError> {
+        let contents = std::fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&contents)?)
+    }
+
+    fn needs_migration(config_version: u32) -> bool {
+        config_version < CURRENT_CONFIG_VERSION
+    }
+
+    fn migrate_and_save(path: &std::path::Path, config: &mut Self) -> Result<(), ConfigError> {
+        let backup_path = path.with_extension(format!("v{}.json.bak", config.config_version));
+        let _ = std::fs::copy(path, &backup_path);
+        tracing::info!(
+            "Config migration: v{} → v{} (backup at {})",
+            config.config_version,
+            CURRENT_CONFIG_VERSION,
+            backup_path.display()
+        );
+        Self::apply_migrations(config);
+        config.save()
+    }
+
+    fn apply_migrations(config: &mut Self) {
+        if config.config_version < 1 {
+            Self::migrate_v0_to_v1(config);
+        }
+        if config.config_version < 2 {
+            Self::migrate_v1_to_v2(config);
+        }
     }
 
     /// Migrate from v0 (no version field) to v1.

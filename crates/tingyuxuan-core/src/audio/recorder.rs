@@ -247,19 +247,10 @@ impl AudioRecorder {
     /// Starts recording from the configured input device using cpal.
     fn start_real_stream(&mut self) -> Result<(), AudioError> {
         let device = devices::resolve_input_device(self.device_id.as_deref())?;
-
-        // 优先使用设备默认配置（WASAPI 最可靠的路径），fallback 到手动选择
-        let config = match device.default_input_config() {
-            Ok(c) if Self::format_priority(c.sample_format()) > 0 => c,
-            _ => {
-                let supported = device.supported_input_configs().map_err(|e| {
-                    AudioError::StreamError(format!("Failed to query input configs: {}", e))
-                })?;
-                Self::select_input_config(supported)?
-            }
-        };
+        let config = Self::resolve_stream_config(&device)?;
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
+        let inner = Arc::clone(&self.inner);
 
         #[allow(deprecated)] // cpal 0.17.3 deprecated name() in favor of description()
         let device_name = device.name().unwrap_or_else(|_| "unknown".into());
@@ -271,70 +262,16 @@ impl AudioRecorder {
             "Audio device selected"
         );
 
-        let inner = Arc::clone(&self.inner);
         let channels = stream_config.channels as usize;
         let device_sample_rate = stream_config.sample_rate;
-
-        let err_callback = |err: cpal::StreamError| {
-            tracing::error!("cpal stream error: {}", err);
-        };
-
-        let stream = match sample_format {
-            cpal::SampleFormat::I16 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        Self::process_input_i16(data, channels, device_sample_rate, &inner);
-                    },
-                    err_callback,
-                    None,
-                )
-                .map_err(|e| {
-                    AudioError::StreamError(format!("Failed to build i16 input stream: {}", e))
-                })?,
-            cpal::SampleFormat::F32 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        Self::process_input_f32(data, channels, device_sample_rate, &inner);
-                    },
-                    err_callback,
-                    None,
-                )
-                .map_err(|e| {
-                    AudioError::StreamError(format!("Failed to build f32 input stream: {}", e))
-                })?,
-            cpal::SampleFormat::U16 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        Self::process_input_u16(data, channels, device_sample_rate, &inner);
-                    },
-                    err_callback,
-                    None,
-                )
-                .map_err(|e| {
-                    AudioError::StreamError(format!("Failed to build u16 input stream: {}", e))
-                })?,
-            cpal::SampleFormat::U8 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[u8], _: &cpal::InputCallbackInfo| {
-                        Self::process_input_u8(data, channels, device_sample_rate, &inner);
-                    },
-                    err_callback,
-                    None,
-                )
-                .map_err(|e| {
-                    AudioError::StreamError(format!("Failed to build u8 input stream: {}", e))
-                })?,
-            _ => {
-                return Err(AudioError::StreamError(format!(
-                    "Unsupported sample format: {:?}",
-                    sample_format
-                )));
-            }
-        };
+        let stream = Self::build_stream(
+            &device,
+            &stream_config,
+            sample_format,
+            channels,
+            device_sample_rate,
+            &inner,
+        )?;
 
         stream
             .play()
@@ -342,6 +279,126 @@ impl AudioRecorder {
 
         self.stream = Some(stream);
         Ok(())
+    }
+
+    fn resolve_stream_config(
+        device: &cpal::Device,
+    ) -> Result<cpal::SupportedStreamConfig, AudioError> {
+        match device.default_input_config() {
+            Ok(c) if Self::format_priority(c.sample_format()) > 0 => Ok(c),
+            _ => {
+                let supported = device.supported_input_configs().map_err(stream_error)?;
+                Self::select_input_config(supported)
+            }
+        }
+    }
+
+    fn build_stream(
+        device: &cpal::Device,
+        stream_config: &cpal::StreamConfig,
+        sample_format: cpal::SampleFormat,
+        channels: usize,
+        device_sample_rate: cpal::SampleRate,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) -> Result<Stream, AudioError> {
+        match sample_format {
+            cpal::SampleFormat::I16 => {
+                Self::build_i16_stream(device, stream_config, channels, device_sample_rate, inner)
+            }
+            cpal::SampleFormat::F32 => {
+                Self::build_f32_stream(device, stream_config, channels, device_sample_rate, inner)
+            }
+            cpal::SampleFormat::U16 => {
+                Self::build_u16_stream(device, stream_config, channels, device_sample_rate, inner)
+            }
+            cpal::SampleFormat::U8 => {
+                Self::build_u8_stream(device, stream_config, channels, device_sample_rate, inner)
+            }
+            _ => Err(AudioError::StreamError(format!(
+                "Unsupported sample format: {:?}",
+                sample_format
+            ))),
+        }
+    }
+
+    fn build_i16_stream(
+        device: &cpal::Device,
+        stream_config: &cpal::StreamConfig,
+        channels: usize,
+        device_sample_rate: cpal::SampleRate,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) -> Result<Stream, AudioError> {
+        let inner = Arc::clone(inner);
+        device
+            .build_input_stream(
+                stream_config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    Self::process_input_i16(data, channels, device_sample_rate, &inner);
+                },
+                log_stream_error,
+                None,
+            )
+            .map_err(|e| AudioError::StreamError(format!("Failed to build i16 input stream: {}", e)))
+    }
+
+    fn build_f32_stream(
+        device: &cpal::Device,
+        stream_config: &cpal::StreamConfig,
+        channels: usize,
+        device_sample_rate: cpal::SampleRate,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) -> Result<Stream, AudioError> {
+        let inner = Arc::clone(inner);
+        device
+            .build_input_stream(
+                stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    Self::process_input_f32(data, channels, device_sample_rate, &inner);
+                },
+                log_stream_error,
+                None,
+            )
+            .map_err(|e| AudioError::StreamError(format!("Failed to build f32 input stream: {}", e)))
+    }
+
+    fn build_u16_stream(
+        device: &cpal::Device,
+        stream_config: &cpal::StreamConfig,
+        channels: usize,
+        device_sample_rate: cpal::SampleRate,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) -> Result<Stream, AudioError> {
+        let inner = Arc::clone(inner);
+        device
+            .build_input_stream(
+                stream_config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    Self::process_input_u16(data, channels, device_sample_rate, &inner);
+                },
+                log_stream_error,
+                None,
+            )
+            .map_err(|e| AudioError::StreamError(format!("Failed to build u16 input stream: {}", e)))
+    }
+
+    fn build_u8_stream(
+        device: &cpal::Device,
+        stream_config: &cpal::StreamConfig,
+        channels: usize,
+        device_sample_rate: cpal::SampleRate,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) -> Result<Stream, AudioError> {
+        let inner = Arc::clone(inner);
+        device
+            .build_input_stream(
+                stream_config,
+                move |data: &[u8], _: &cpal::InputCallbackInfo| {
+                    Self::process_input_u8(data, channels, device_sample_rate, &inner);
+                },
+                log_stream_error,
+                None,
+            )
+            .map_err(|e| AudioError::StreamError(format!("Failed to build u8 input stream: {}", e)))
     }
 
     /// 采样格式优先级评分：I16 > F32 > U16 > U8 > 其他
@@ -409,36 +466,12 @@ impl AudioRecorder {
 
         let handle = std::thread::spawn(move || {
             loop {
-                {
-                    let mut guard = match inner.lock() {
-                        Ok(g) => g,
-                        Err(poisoned) => {
-                            tracing::error!("Audio buffer lock poisoned, recovering");
-                            poisoned.into_inner()
-                        }
-                    };
-                    if !guard.is_recording {
-                        break;
-                    }
-
-                    // 写入 silence 到缓冲区。
-                    let silence = vec![0i16; RMS_WINDOW_SAMPLES];
-                    guard.buffer.extend_from_slice(&silence);
-                    guard.sample_count += RMS_WINDOW_SAMPLES as u64;
-
-                    // 录音时长上限检查。
-                    if guard.buffer.len() >= MAX_SAMPLES {
-                        guard.is_recording = false;
-                        guard.auto_stopped = true;
-                        tracing::warn!("Recording auto-stopped: max duration reached");
-                        break;
-                    }
-
-                    // Push a zero-level RMS entry.
-                    if guard.rms_levels.len() >= MAX_RMS_LEVELS {
-                        guard.rms_levels.pop_front();
-                    }
-                    guard.rms_levels.push_back(0.0);
+                let should_continue = {
+                    let mut guard = lock_inner(&inner);
+                    Self::push_mock_frame(&mut guard)
+                };
+                if !should_continue {
+                    break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
@@ -446,6 +479,22 @@ impl AudioRecorder {
 
         self.mock_thread = Some(handle);
         Ok(())
+    }
+
+    fn push_mock_frame(guard: &mut RecorderInner) -> bool {
+        if !guard.is_recording {
+            return false;
+        }
+        guard.buffer.extend_from_slice(&vec![0i16; RMS_WINDOW_SAMPLES]);
+        guard.sample_count += RMS_WINDOW_SAMPLES as u64;
+        if guard.buffer.len() >= MAX_SAMPLES {
+            guard.is_recording = false;
+            guard.auto_stopped = true;
+            tracing::warn!("Recording auto-stopped: max duration reached");
+            return false;
+        }
+        push_rms_level(guard, 0.0);
+        true
     }
 
     // ------------------------------------------------------------------
@@ -513,69 +562,89 @@ impl AudioRecorder {
         device_sample_rate: u32,
         inner: &Arc<Mutex<RecorderInner>>,
     ) {
-        let resampled: Cow<'_, [f32]> = if device_sample_rate == 16_000 {
-            Cow::Borrowed(samples)
-        } else {
-            let ratio = 16_000.0 / device_sample_rate as f64;
-            let out_len = (samples.len() as f64 * ratio).ceil() as usize;
-            Cow::Owned(
-                (0..out_len)
-                    .map(|i| {
-                        let src_idx = ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
-                        samples[src_idx]
-                    })
-                    .collect(),
-            )
-        };
-
-        // Convert to i16.
-        let pcm: Vec<i16> = resampled
-            .iter()
-            .map(|&s| {
-                let clamped = s.clamp(-1.0, 1.0);
-                (clamped * i16::MAX as f32) as i16
-            })
-            .collect();
-
-        let mut guard = match inner.lock() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                tracing::error!("Audio buffer lock poisoned, recovering");
-                poisoned.into_inner()
-            }
-        };
-
+        let resampled = resample_to_16khz(samples, device_sample_rate);
+        let pcm = convert_to_pcm_i16(resampled.as_ref());
+        let mut guard = lock_inner(inner);
         if !guard.is_recording {
             return;
         }
+        Self::append_pcm(&mut guard, &pcm);
+        Self::accumulate_rms(&mut guard, resampled.as_ref());
+    }
 
-        // 写入 PCM 到缓冲区。
-        let pcm_len = pcm.len();
-        guard.buffer.extend_from_slice(&pcm);
-        guard.sample_count += pcm_len as u64;
-
-        // 录音时长上限检查。
+    fn append_pcm(guard: &mut RecorderInner, pcm: &[i16]) {
+        guard.buffer.extend_from_slice(pcm);
+        guard.sample_count += pcm.len() as u64;
         if guard.buffer.len() >= MAX_SAMPLES {
             guard.is_recording = false;
             guard.auto_stopped = true;
             tracing::warn!("Recording auto-stopped: max duration reached");
         }
+    }
 
-        // RMS computation over ~30ms windows.
-        for &sample in resampled.as_ref() {
+    fn accumulate_rms(guard: &mut RecorderInner, samples: &[f32]) {
+        for &sample in samples {
             guard.rms_accumulator.push(sample);
             if guard.rms_accumulator.len() >= RMS_WINDOW_SAMPLES {
-                let sum_sq: f32 = guard.rms_accumulator.iter().map(|s| s * s).sum();
-                let rms = (sum_sq / guard.rms_accumulator.len() as f32).sqrt();
+                let rms = compute_rms(&guard.rms_accumulator);
                 guard.rms_accumulator.clear();
-
-                if guard.rms_levels.len() >= MAX_RMS_LEVELS {
-                    guard.rms_levels.pop_front();
-                }
-                guard.rms_levels.push_back(rms);
+                push_rms_level(guard, rms);
             }
         }
     }
+}
+
+fn stream_error(err: impl std::fmt::Display) -> AudioError {
+    AudioError::StreamError(format!("Failed to query input configs: {err}"))
+}
+
+fn log_stream_error(err: cpal::StreamError) {
+    tracing::error!("cpal stream error: {}", err);
+}
+
+fn lock_inner(inner: &Arc<Mutex<RecorderInner>>) -> std::sync::MutexGuard<'_, RecorderInner> {
+    match inner.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            tracing::error!("Audio buffer lock poisoned, recovering");
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn resample_to_16khz<'a>(samples: &'a [f32], device_sample_rate: u32) -> Cow<'a, [f32]> {
+    if device_sample_rate == 16_000 {
+        return Cow::Borrowed(samples);
+    }
+    let ratio = 16_000.0 / device_sample_rate as f64;
+    let out_len = (samples.len() as f64 * ratio).ceil() as usize;
+    Cow::Owned(
+        (0..out_len)
+            .map(|i| {
+                let src_idx = ((i as f64) / ratio).min((samples.len() - 1) as f64) as usize;
+                samples[src_idx]
+            })
+            .collect(),
+    )
+}
+
+fn convert_to_pcm_i16(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        .collect()
+}
+
+fn compute_rms(samples: &[f32]) -> f32 {
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
+fn push_rms_level(guard: &mut RecorderInner, rms: f32) {
+    if guard.rms_levels.len() >= MAX_RMS_LEVELS {
+        guard.rms_levels.pop_front();
+    }
+    guard.rms_levels.push_back(rms);
 }
 
 #[cfg(test)]
