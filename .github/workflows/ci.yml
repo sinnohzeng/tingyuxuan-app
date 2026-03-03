@@ -118,6 +118,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Redline Quality Gate
+        run: npm run quality:redline
+
       - name: ESLint
         run: npm run lint
 

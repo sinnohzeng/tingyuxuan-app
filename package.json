@@ -12,6 +12,7 @@
     "test": "vitest run",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
+    "quality:redline": "node scripts/quality/redline-check.mjs",
     "format": "prettier --write src/",
     "lint:docs": "markdownlint-cli2",
     "lint:links": "lychee '**/*.md' --config .lychee.toml --exclude-path node_modules --exclude-path target",
