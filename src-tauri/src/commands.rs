@@ -325,7 +325,7 @@ pub async fn stop_recording(
         .0
         .send(PipelineEvent::RecordingStopped { duration_ms });
 
-    // 3. 检查音频是否过短。
+    // 3. 检查音频是否过短或为静音。
     if buffer.duration_ms() < MIN_AUDIO_DURATION_MS {
         tracing::warn!(duration_ms = buffer.duration_ms(), "Audio too short");
         let _ = event_bus.0.send(PipelineEvent::Error {
@@ -335,6 +335,16 @@ pub async fn stop_recording(
         let h = history_state.0.lock().await;
         let _ = h.update_status(&session_id, "failed");
         return Ok("empty".to_string());
+    }
+
+    let rms = buffer.rms_level();
+    tracing::info!(rms, duration_ms = buffer.duration_ms(), "Audio buffer stats");
+    if rms < 200.0 {
+        tracing::warn!(rms, "Audio appears to be silence, skipping LLM");
+        let _ = event_bus.0.send(PipelineEvent::RecordingCancelled);
+        let h = history_state.0.lock().await;
+        let _ = h.update_status(&session_id, "cancelled");
+        return Ok("silence".to_string());
     }
 
     // 4. 使用 session 中锁定的 pipeline 引用（无 TOCTOU 风险）。
@@ -688,5 +698,37 @@ pub async fn open_permission_settings(target: Option<String>) -> Result<(), Stri
     crate::platform::linux::open_permission_settings_for(target.as_deref());
 
     let _ = target;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Audio Devices
+// ---------------------------------------------------------------------------
+
+/// 枚举所有可用音频输入设备。
+#[tauri::command]
+#[tracing::instrument(skip_all)]
+pub async fn list_input_devices(
+) -> Result<Vec<tingyuxuan_core::audio::devices::AudioDeviceInfo>, String> {
+    tingyuxuan_core::audio::devices::enumerate_input_devices().map_err(|e| e.to_string())
+}
+
+/// 设置输入设备并持久化。`device_id = None` 表示恢复为系统默认。
+#[tauri::command]
+#[tracing::instrument(skip_all)]
+pub async fn set_input_device(
+    device_id: Option<String>,
+    config_state: State<'_, ConfigState>,
+    recorder_state: State<'_, RecorderState>,
+) -> Result<(), String> {
+    // 持久化到配置文件。
+    {
+        let mut config = config_state.0.write().await;
+        config.audio.input_device_id = device_id.clone();
+        config.save().map_err(|e| e.to_string())?;
+    }
+    // 通知 recorder actor 切换设备。
+    recorder_state.0.set_device(device_id).await;
+    tracing::info!("Input device updated");
     Ok(())
 }

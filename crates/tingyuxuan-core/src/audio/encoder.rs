@@ -59,6 +59,16 @@ impl AudioBuffer {
         self.samples.len() >= MAX_SAMPLES
     }
 
+    /// 计算音频 RMS 电平（均方根）。
+    /// 静音阈值参考：i16 范围 [-32768, 32767]，环境噪声约 100-300，语音 >500。
+    pub fn rms_level(&self) -> f32 {
+        if self.samples.is_empty() {
+            return 0.0;
+        }
+        let sum_sq: f64 = self.samples.iter().map(|&s| (s as f64).powi(2)).sum();
+        (sum_sq / self.samples.len() as f64).sqrt() as f32
+    }
+
     /// 编码为指定格式的字节序列。
     pub fn encode(&self, format: AudioFormat) -> Result<EncodedAudio, AudioError> {
         match format {

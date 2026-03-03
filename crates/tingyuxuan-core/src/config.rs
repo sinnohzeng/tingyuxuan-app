@@ -26,6 +26,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
+    pub audio: AudioConfig,
+    #[serde(default)]
     pub user_dictionary: Vec<String>,
     // 向后兼容：忽略旧配置中的 stt 字段。
     #[serde(default, skip_serializing)]
@@ -116,6 +118,14 @@ pub enum LLMProviderType {
     Custom,
 }
 
+/// 音频配置。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AudioConfig {
+    /// 选中的麦克风设备 ID（`DeviceId.to_string()`）。`None` = 系统默认。
+    #[serde(default)]
+    pub input_device_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
     /// 历史记录保留天数。
@@ -181,6 +191,7 @@ impl Default for AppConfig {
                 failed_retention_days: None,
                 max_cache_size_mb: None,
             },
+            audio: AudioConfig::default(),
             user_dictionary: Vec::new(),
             stt: None,
         }
@@ -576,5 +587,34 @@ mod tests {
         let mut config = AppConfig::default();
         config.llm.base_url = Some("https://api.example.com/v1".to_string());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_backward_compat_no_audio() {
+        // 旧配置文件无 audio 字段 — 应正常反序列化为默认值。
+        let json = r#"{
+            "llm": { "provider": "dashscope", "api_key_ref": "", "model": "qwen3-omni-flash" },
+            "language": { "primary": "zh", "translation_target": "en" }
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(config.audio.input_device_id.is_none());
+    }
+
+    #[test]
+    fn test_config_with_audio_device() {
+        let mut config = AppConfig::default();
+        config.audio.input_device_id = Some("usb-mic-001".to_string());
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.audio.input_device_id.as_deref(),
+            Some("usb-mic-001")
+        );
+    }
+
+    #[test]
+    fn test_default_audio_config_is_none() {
+        let audio = AudioConfig::default();
+        assert!(audio.input_device_id.is_none());
     }
 }

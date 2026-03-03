@@ -5,7 +5,7 @@
  * - 左侧：品牌导航栏（Logo + 页面导航 + 设置齿轮）。
  * - 右侧：react-router <Outlet />。
  */
-import { lazy, Suspense, useCallback, useEffect } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
   FluentProvider,
@@ -27,8 +27,12 @@ import {
 import { useSystemTheme } from "../hooks/useSystemTheme";
 import { useTauriEvent } from "../hooks/useTauriEvent";
 import { useUIStore } from "../stores/uiStore";
+import { createLogger, setLogSession } from "../lib/logger";
+import { trackEvent } from "../lib/telemetry";
 import ErrorBoundary from "./ErrorBoundary";
 import logoSrc from "../../assets/logo.svg";
+
+const log = createLogger("MainLayout");
 
 const HomeIcon = bundleIcon(HomeFilled, HomeRegular);
 const HistoryIcon = bundleIcon(HistoryFilled, HistoryRegular);
@@ -58,6 +62,7 @@ export default function MainLayout() {
   const theme = useSystemTheme();
   const openSettings = useUIStore((s) => s.openSettings);
   const navigate = useNavigate();
+  const [shortcutPulse, setShortcutPulse] = useState<string | null>(null);
 
   // 首次启动检测 — 未完成引导则重定向
   useEffect(() => {
@@ -69,9 +74,66 @@ export default function MainLayout() {
   // 托盘菜单事件联动
   useTauriEvent("open-settings", openSettings);
   useTauriEvent(
-    "open-history",
-    useCallback(() => navigate("/main/history"), [navigate]),
+    "open-dictionary",
+    useCallback(() => navigate("/main/dictionary"), [navigate]),
   );
+
+  // 快捷键动作监听 — 在主窗口处理录音控制（主窗口始终加载，避免隐藏窗口事件丢失）
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    let cleaned = false;
+
+    async function setup() {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const { invoke } = await import("@tauri-apps/api/core");
+
+        const u = await listen<string>("shortcut-action", async (event) => {
+          const action = event.payload;
+          log.info(`快捷键: ${action}`);
+
+          // 视觉脉冲反馈
+          setShortcutPulse(action);
+          setTimeout(() => setShortcutPulse(null), 800);
+
+          // 后端已做 toggle 判断：录音中发 "stop"，非录音中发模式名。
+          // 主窗口和浮动条是独立 JS 上下文，Zustand store 不共享，
+          // 因此不依赖本窗口 store 状态做守卫，直接执行后端指令。
+          switch (action) {
+            case "cancel":
+              trackEvent("user_action", { action: "cancel" });
+              invoke("cancel_recording").catch(() => {});
+              break;
+            case "stop":
+              invoke("stop_recording").catch(() => {});
+              break;
+            case "dictate":
+            case "translate":
+            case "ai_assistant":
+              trackEvent("user_action", { action: `start_${action}` });
+              invoke<string>("start_recording", { mode: action })
+                .then((sessionId) => {
+                  setLogSession(sessionId);
+                })
+                .catch((errStr: string) => {
+                  log.warn(`录音启动失败: ${errStr}`);
+                });
+              break;
+          }
+        });
+        if (cleaned) { u(); return; }
+        unlisteners.push(u);
+      } catch {
+        // 非 Tauri 环境（开发模式）
+      }
+    }
+
+    setup();
+    return () => {
+      cleaned = true;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, []);
 
   return (
     <FluentProvider theme={theme} className="flex h-screen bg-gray-50 dark:bg-gray-950">
@@ -132,12 +194,28 @@ export default function MainLayout() {
       </nav>
 
       {/* 内容区 */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto relative">
         <ErrorBoundary>
           <Suspense fallback={<LoadingFallback />}>
             <Outlet />
           </Suspense>
         </ErrorBoundary>
+
+        {/* 快捷键触发反馈 — 按下 RAlt 等快捷键时短暂闪烁 */}
+        {shortcutPulse && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 animate-pulse-fade pointer-events-none">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-blue-600/90 text-white text-sm shadow-lg">
+              <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+              <span>
+                {shortcutPulse === "dictate" && "听写模式启动"}
+                {shortcutPulse === "translate" && "翻译模式启动"}
+                {shortcutPulse === "ai_assistant" && "AI 助手启动"}
+                {shortcutPulse === "stop" && "停止录音"}
+                {shortcutPulse === "cancel" && "取消录音"}
+              </span>
+            </div>
+          </div>
+        )}
       </main>
 
       <Suspense>

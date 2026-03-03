@@ -1,3 +1,4 @@
+use crate::audio::devices;
 use crate::audio::encoder::{AudioBuffer, MAX_SAMPLES};
 use crate::error::AudioError;
 use cpal::Stream;
@@ -45,25 +46,23 @@ pub struct AudioRecorder {
     mock_thread: Option<std::thread::JoinHandle<()>>,
     /// True when running in mock mode (no real microphone).
     mock_mode: bool,
+    /// 用户选择的输入设备 ID。`None` = 系统默认。
+    device_id: Option<String>,
 }
 
 impl AudioRecorder {
     /// Creates a new `AudioRecorder`.
     ///
-    /// In mock mode (`TINGYUXUAN_MOCK_AUDIO=1`) no audio device initialisation
-    /// is performed.  Otherwise the default cpal host is probed to make sure
-    /// there is at least one input device available.
-    pub fn new() -> Result<Self, AudioError> {
+    /// `device_id` 指定目标麦克风（`DeviceId.to_string()`）；`None` 使用系统默认设备。
+    /// Mock 模式（`TINGYUXUAN_MOCK_AUDIO=1`）下忽略 device_id，不初始化音频硬件。
+    pub fn new(device_id: Option<&str>) -> Result<Self, AudioError> {
         let mock_mode = std::env::var("TINGYUXUAN_MOCK_AUDIO")
             .map(|v| v == "1")
             .unwrap_or(false);
 
         if !mock_mode {
             // Probe for an input device early so callers get a clear error.
-            let host = cpal::default_host();
-            let _device = host
-                .default_input_device()
-                .ok_or(AudioError::NoInputDevice)?;
+            let _device = devices::resolve_input_device(device_id)?;
         }
 
         let inner = RecorderInner {
@@ -78,7 +77,7 @@ impl AudioRecorder {
         if mock_mode {
             tracing::info!("AudioRecorder initialized (mock mode)");
         } else {
-            tracing::info!("AudioRecorder initialized");
+            tracing::info!(device_id, "AudioRecorder initialized");
         }
 
         Ok(Self {
@@ -86,6 +85,7 @@ impl AudioRecorder {
             stream: None,
             mock_thread: None,
             mock_mode,
+            device_id: device_id.map(String::from),
         })
     }
 
@@ -240,18 +240,20 @@ impl AudioRecorder {
     // Private helpers
     // ------------------------------------------------------------------
 
-    /// Starts recording from the real default input device using cpal.
+    /// Starts recording from the configured input device using cpal.
     fn start_real_stream(&mut self) -> Result<(), AudioError> {
-        let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or(AudioError::NoInputDevice)?;
+        let device = devices::resolve_input_device(self.device_id.as_deref())?;
 
-        let supported = device.supported_input_configs().map_err(|e| {
-            AudioError::StreamError(format!("Failed to query input configs: {}", e))
-        })?;
-
-        let config = Self::select_input_config(supported)?;
+        // 优先使用设备默认配置（WASAPI 最可靠的路径），fallback 到手动选择
+        let config = match device.default_input_config() {
+            Ok(c) if Self::format_priority(c.sample_format()) > 0 => c,
+            _ => {
+                let supported = device.supported_input_configs().map_err(|e| {
+                    AudioError::StreamError(format!("Failed to query input configs: {}", e))
+                })?;
+                Self::select_input_config(supported)?
+            }
+        };
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
 
@@ -310,6 +312,18 @@ impl AudioRecorder {
                 .map_err(|e| {
                     AudioError::StreamError(format!("Failed to build u16 input stream: {}", e))
                 })?,
+            cpal::SampleFormat::U8 => device
+                .build_input_stream(
+                    &stream_config,
+                    move |data: &[u8], _: &cpal::InputCallbackInfo| {
+                        Self::process_input_u8(data, channels, device_sample_rate, &inner);
+                    },
+                    err_callback,
+                    None,
+                )
+                .map_err(|e| {
+                    AudioError::StreamError(format!("Failed to build u8 input stream: {}", e))
+                })?,
             _ => {
                 return Err(AudioError::StreamError(format!(
                     "Unsupported sample format: {:?}",
@@ -326,7 +340,20 @@ impl AudioRecorder {
         Ok(())
     }
 
+    /// 采样格式优先级评分：I16 > F32 > U16 > U8 > 其他
+    fn format_priority(format: cpal::SampleFormat) -> u8 {
+        match format {
+            cpal::SampleFormat::I16 => 4,
+            cpal::SampleFormat::F32 => 3,
+            cpal::SampleFormat::U16 => 2,
+            cpal::SampleFormat::U8 => 1,
+            _ => 0,
+        }
+    }
+
     /// Selects the best supported input configuration.
+    ///
+    /// 优先级：支持的采样格式（I16 > F32 > U16 > U8）→ 包含 16kHz → 采样率最接近 16kHz。
     fn select_input_config(
         supported: cpal::SupportedInputConfigs,
     ) -> Result<cpal::SupportedStreamConfig, AudioError> {
@@ -337,20 +364,36 @@ impl AudioRecorder {
             ));
         }
 
-        // Prefer a config that includes 16 kHz.
         let target_rate = 16_000u32;
+
+        // 按格式优先级排序（高优先在前），同格式按采样率接近 16kHz 排序
+        configs.sort_by(|a, b| {
+            let fa = Self::format_priority(a.sample_format());
+            let fb = Self::format_priority(b.sample_format());
+            fb.cmp(&fa).then_with(|| {
+                let da = (a.max_sample_rate() as i64 - target_rate as i64).unsigned_abs();
+                let db = (b.max_sample_rate() as i64 - target_rate as i64).unsigned_abs();
+                da.cmp(&db)
+            })
+        });
+
+        // 优先选包含 16kHz 的高优先级格式
         for cfg in &configs {
+            if Self::format_priority(cfg.sample_format()) == 0 {
+                continue; // 跳过不支持的格式
+            }
             if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
                 return Ok((*cfg).with_sample_rate(target_rate));
             }
         }
 
-        // Fall back to the config closest to 16 kHz.
-        configs.sort_by_key(|c| {
-            let rate = c.max_sample_rate() as i64;
-            (rate - target_rate as i64).unsigned_abs()
-        });
-        let best = configs.first().unwrap();
+        // 回退：选第一个支持的格式（已按优先级排序）
+        let best = configs
+            .iter()
+            .find(|c| Self::format_priority(c.sample_format()) > 0)
+            .ok_or_else(|| {
+                AudioError::StreamError("No supported sample format found".to_string())
+            })?;
         let rate = best.max_sample_rate().min(48_000);
         let clamped = rate.clamp(best.min_sample_rate(), best.max_sample_rate());
         Ok((*best).with_sample_rate(clamped))
@@ -445,6 +488,20 @@ impl AudioRecorder {
         Self::process_mono_f32(&mono_f32, device_sample_rate, inner);
     }
 
+    fn process_input_u8(
+        data: &[u8],
+        channels: usize,
+        device_sample_rate: u32,
+        inner: &Arc<Mutex<RecorderInner>>,
+    ) {
+        // U8 音频：128 为静音中心，范围 0-255 → 映射到 [-1.0, 1.0]
+        let mono_f32: Vec<f32> = data
+            .chunks(channels)
+            .map(|frame| (frame[0] as f32 - 128.0) / 128.0)
+            .collect();
+        Self::process_mono_f32(&mono_f32, device_sample_rate, inner);
+    }
+
     /// Core processing: accepts mono f32 samples in [-1.0, 1.0], resamples to
     /// 16 kHz when necessary, writes PCM to buffer, and computes RMS.
     fn process_mono_f32(
@@ -525,7 +582,7 @@ mod tests {
     /// Helper: create a recorder in mock mode for testing.
     fn mock_recorder() -> AudioRecorder {
         temp_env::with_var("TINGYUXUAN_MOCK_AUDIO", Some("1"), || {
-            AudioRecorder::new().expect("mock recorder should succeed")
+            AudioRecorder::new(None).expect("mock recorder should succeed")
         })
     }
 
@@ -533,9 +590,22 @@ mod tests {
     #[serial]
     fn test_new_mock_mode() {
         temp_env::with_var("TINGYUXUAN_MOCK_AUDIO", Some("1"), || {
-            let recorder = AudioRecorder::new();
+            let recorder = AudioRecorder::new(None);
             assert!(recorder.is_ok());
             assert!(recorder.unwrap().mock_mode);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_new_with_device_id_mock() {
+        temp_env::with_var("TINGYUXUAN_MOCK_AUDIO", Some("1"), || {
+            let recorder = AudioRecorder::new(Some("nonexistent-device"));
+            assert!(recorder.is_ok());
+            assert_eq!(
+                recorder.unwrap().device_id.as_deref(),
+                Some("nonexistent-device")
+            );
         });
     }
 

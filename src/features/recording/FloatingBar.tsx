@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../../shared/stores/appStore";
-import type { PipelineEvent, UserAction, StructuredError } from "../../shared/lib/types";
+import type { PipelineEvent, UserAction } from "../../shared/lib/types";
 import { createLogger, setLogSession } from "../../shared/lib/logger";
 import { trackEvent } from "../../shared/lib/telemetry";
 import { useSoundEffect } from "./hooks/useSoundEffect";
@@ -31,27 +31,27 @@ function barContainerClass(
   mode: string,
   aiResult: string | null,
 ): string {
-  if (state === "error") return "w-[400px] min-h-[64px]";
+  if (state === "error") return "w-[320px] min-h-[56px]";
   if (state === "done" && mode === "ai_assistant" && aiResult)
-    return "w-[420px] h-[360px] flex-col";
-  return "w-[400px] h-[56px]";
+    return "w-[340px] h-[320px] flex-col";
+  return "w-[320px] h-[48px]";
 }
 
 /** 根据状态计算浮动条的样式 */
 function barStyleClass(state: string): string {
   switch (state) {
     case "recording":
-      return "bg-blue-700/95 border-2 border-blue-400/70 animate-recording-pulse";
+      return "bg-black/90 border border-white/15 animate-recording-pulse";
     case "processing":
-      return "bg-indigo-600/95 border-2 border-indigo-400/60";
+      return "bg-black/90 border border-white/15";
     case "done":
-      return "bg-emerald-700/95 border-2 border-emerald-400/60";
+      return "bg-black/90 border border-white/15";
     case "cancelled":
-      return "bg-red-800/95 border-2 border-red-500/60";
+      return "bg-black/90 border border-white/15";
     case "error":
-      return "bg-red-900/95 border-2 border-red-500/70 animate-error-shake";
+      return "bg-black/90 border border-red-500/40 animate-error-shake";
     default:
-      return "bg-gray-900/90 border border-gray-700/50";
+      return "bg-black/90 border border-white/10";
   }
 }
 
@@ -196,51 +196,7 @@ export default function FloatingBar() {
         if (cleaned) { u1(); return; }
         unlisteners.push(u1);
 
-        // Shortcut actions from global shortcuts
-        const u2 = await listen("shortcut-action", async (event) => {
-          const action = event.payload as string;
-          const { invoke } = await import("@tauri-apps/api/core");
-          const currentState = useAppStore.getState().recordingState;
-          log.debug(`shortcut: ${action}`, { currentState });
-
-          switch (action) {
-            case "cancel":
-              if (currentState === "recording" || currentState === "processing") {
-                store.setRecordingState("cancelled");
-                invoke("cancel_recording").catch(() => {});
-              }
-              break;
-            case "stop":
-              if (currentState === "recording") {
-                store.setRecordingState("processing");
-                invoke("stop_recording").catch(() => {});
-              }
-              break;
-            case "dictate":
-            case "translate":
-            case "ai_assistant":
-              if (currentState === "idle") {
-                store.setRecordingMode(action as "dictate" | "translate" | "ai_assistant");
-                // 乐观更新：立即显示录音 UI，不等待 RecordingStarted 事件
-                store.setRecordingState("recording");
-                invoke<string>("start_recording", { mode: action })
-                  .then((sessionId) => {
-                    store.setSessionId(sessionId);
-                  })
-                  .catch((errStr: string) => {
-                    try {
-                      const se = JSON.parse(errStr) as StructuredError;
-                      store.setError(se.message, se.user_action);
-                    } catch {
-                      store.setError(errStr, "Retry");
-                    }
-                  });
-              }
-              break;
-          }
-        });
-        if (cleaned) { u2(); return; }
-        unlisteners.push(u2);
+        // 注意：shortcut-action 监听已移至 MainLayout（主窗口始终加载，避免隐藏窗口事件丢失）
       } catch {
         // Not running in Tauri - that's fine for dev mode
       }
@@ -316,7 +272,7 @@ export default function FloatingBar() {
     <div className="floating-bar-window h-screen w-screen flex items-center justify-center">
       <div
         className={`
-          flex items-center rounded-2xl shadow-2xl
+          flex items-center rounded-2xl
           backdrop-blur-md animate-bar-enter
           ${barStyleClass(recordingState)}
           ${barContainerClass(recordingState, recordingMode, aiResult)}

@@ -23,6 +23,8 @@ pub struct AppConfig {
     pub llm: LLMConfig,
     pub cache: CacheConfig,
     #[serde(default)]
+    pub audio: AudioConfig,
+    #[serde(default)]
     pub user_dictionary: Vec<String>,
     // 向后兼容：忽略旧配置中的 stt 字段。
     #[serde(default, skip_serializing)]
@@ -77,6 +79,16 @@ pub enum FloatingBarPosition {
 | `model` | `String` | `"qwen3-omni-flash"` | 模型名称（必须支持音频输入） |
 
 **LLMProviderType 枚举:** `OpenAI` (`"openai"`), `DashScope` (`"dashscope"`), `Volcengine` (`"volcengine"`), `Custom` (`"custom"`)
+
+### AudioConfig
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `input_device_id` | `Option<String>` | `None` | 选中的麦克风设备 ID（`DeviceId.to_string()`）。`None` = 系统默认 |
+
+> **向后兼容**：使用 `#[serde(default)]`，旧配置文件中无此字段时反序列化为默认值（`None`）。无需 config version bump。
+>
+> 设备标识方案详见 [ADR-0009](../architecture/adr/0009-audio-device-selection.md)。
 
 ### CacheConfig
 
@@ -156,12 +168,13 @@ pub enum ConfigError {
 - `load()` 在文件不存在时静默返回默认配置（`Ok(Self::default())`），文件存在但格式错误时返回 `JsonError`
 - `save()` 使用 `create_dir_all` 确保目录存在，写入使用 `serde_json::to_string_pretty` 保证可读性
 - `user_dictionary` 字段使用 `#[serde(default)]` 保证向后兼容性（旧配置文件中不存在此字段时反序列化为空 Vec）
+- `audio` 字段使用 `#[serde(default)]` 保证向后兼容性（旧配置文件中不存在此字段时反序列化为 `AudioConfig::default()`）
 
 ---
 
 ## 测试覆盖
 
-共 **12 个单元测试**，位于 `config.rs` 的 `#[cfg(test)] mod tests`：
+共 **15 个单元测试**，位于 `config.rs` 的 `#[cfg(test)] mod tests`：
 
 | 测试 | 覆盖内容 |
 |------|---------|
@@ -177,6 +190,9 @@ pub enum ConfigError {
 | `test_serialization_includes_version` | 序列化输出包含 config_version 字段 |
 | `test_migration_v0_to_v1` | v0→v1 迁移正确设置版本号且保留所有原始值 |
 | `test_config_version_roundtrip` | 版本号序列化/反序列化往返一致 |
+| `test_config_backward_compat_no_audio` | 旧 JSON 无 audio 字段正常反序列化 |
+| `test_config_with_audio_device` | audio.input_device_id 序列化/反序列化往返一致 |
+| `test_default_audio_config_is_none` | AudioConfig::default().input_device_id == None |
 
 ---
 

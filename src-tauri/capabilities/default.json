@@ -10,6 +10,7 @@
     "global-shortcut:default",
     "shell:default",
     "dialog:default",
-    "sentry:default"
+    "sentry:default",
+    "opener:default"
   ]
 }

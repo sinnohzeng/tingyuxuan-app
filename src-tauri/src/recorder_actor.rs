@@ -35,6 +35,11 @@ enum RecorderCommand {
     IsRecording {
         reply: oneshot::Sender<bool>,
     },
+    /// 切换输入设备 — 非录音期间重建 AudioRecorder。
+    SetDevice {
+        device_id: Option<String>,
+        reply: oneshot::Sender<()>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -51,8 +56,12 @@ pub struct RecorderHandle {
 impl RecorderHandle {
     /// Spawn the recorder actor on a dedicated OS thread.
     ///
+    /// `device_id` 指定初始麦克风设备（`None` = 系统默认）。
     /// Volume updates are pushed to `event_tx` every ~33ms while recording.
-    pub fn spawn(event_tx: broadcast::Sender<PipelineEvent>) -> Self {
+    pub fn spawn(
+        event_tx: broadcast::Sender<PipelineEvent>,
+        device_id: Option<String>,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel::<RecorderCommand>(32);
 
         std::thread::Builder::new()
@@ -64,7 +73,7 @@ impl RecorderHandle {
                         .build()
                         .expect("failed to create tokio runtime for recorder actor");
 
-                    rt.block_on(run_actor(cmd_rx, event_tx));
+                    rt.block_on(run_actor(cmd_rx, event_tx, device_id));
                 })) {
                     tracing::error!("Recorder actor panicked: {e:?}");
                 }
@@ -120,6 +129,22 @@ impl RecorderHandle {
         }
         rx.await.unwrap_or(false)
     }
+
+    /// 切换输入设备。非录音期间重建 AudioRecorder；录音中则忽略。
+    pub async fn set_device(&self, device_id: Option<String>) {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .cmd_tx
+            .send(RecorderCommand::SetDevice {
+                device_id,
+                reply: tx,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = rx.await;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +154,9 @@ impl RecorderHandle {
 async fn run_actor(
     mut cmd_rx: mpsc::Receiver<RecorderCommand>,
     event_tx: broadcast::Sender<PipelineEvent>,
+    device_id: Option<String>,
 ) {
-    let mut recorder = match AudioRecorder::new() {
+    let mut recorder = match AudioRecorder::new(device_id.as_deref()) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to create AudioRecorder: {e}");
@@ -139,6 +165,8 @@ async fn run_actor(
             return;
         }
     };
+    // 当前生效的设备 ID — 用于 SetDevice 命令重建 recorder。
+    let mut current_device_id = device_id;
 
     // Volume push timer — ticks every ~33ms (≈30 fps).
     let mut volume_interval = tokio::time::interval(Duration::from_millis(33));
@@ -148,7 +176,9 @@ async fn run_actor(
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(cmd) => handle_command(cmd, &mut recorder),
+                    Some(cmd) => handle_command(
+                        cmd, &mut recorder, &mut current_device_id,
+                    ),
                     None => break, // All senders dropped — shut down.
                 }
             }
@@ -164,33 +194,46 @@ async fn run_actor(
     tracing::info!("Recorder actor shutting down");
 }
 
-fn handle_command(cmd: RecorderCommand, recorder: &mut AudioRecorder) {
+fn handle_command(
+    cmd: RecorderCommand,
+    recorder: &mut AudioRecorder,
+    current_device_id: &mut Option<String>,
+) {
     match cmd {
         RecorderCommand::Start { reply } => {
             tracing::debug!("Recorder command: Start");
             let result = recorder.start();
-            if reply.send(result).is_err() {
-                tracing::warn!("Reply channel dropped (caller timed out?)");
-            }
+            let _ = reply.send(result);
         }
         RecorderCommand::Stop { reply } => {
             tracing::debug!("Recorder command: Stop");
             let result = recorder.stop();
-            if reply.send(result).is_err() {
-                tracing::warn!("Reply channel dropped (caller timed out?)");
-            }
+            let _ = reply.send(result);
         }
         RecorderCommand::Cancel { reply } => {
             tracing::debug!("Recorder command: Cancel");
             let result = recorder.cancel();
-            if reply.send(result).is_err() {
-                tracing::warn!("Reply channel dropped (caller timed out?)");
-            }
+            let _ = reply.send(result);
         }
         RecorderCommand::IsRecording { reply } => {
-            if reply.send(recorder.is_recording()).is_err() {
-                tracing::warn!("Reply channel dropped (caller timed out?)");
+            let _ = reply.send(recorder.is_recording());
+        }
+        RecorderCommand::SetDevice { device_id, reply } => {
+            if recorder.is_recording() {
+                tracing::warn!("SetDevice ignored: recording in progress");
+            } else {
+                tracing::info!(device_id = ?device_id, "Switching audio device");
+                match AudioRecorder::new(device_id.as_deref()) {
+                    Ok(new_rec) => {
+                        *recorder = new_rec;
+                        *current_device_id = device_id;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to switch device: {e}");
+                    }
+                }
             }
+            let _ = reply.send(());
         }
     }
 }
@@ -212,6 +255,9 @@ async fn drain_with_error(cmd_rx: &mut mpsc::Receiver<RecorderCommand>, error_ms
             }
             RecorderCommand::IsRecording { reply } => {
                 let _ = reply.send(false);
+            }
+            RecorderCommand::SetDevice { reply, .. } => {
+                let _ = reply.send(());
             }
         }
     }

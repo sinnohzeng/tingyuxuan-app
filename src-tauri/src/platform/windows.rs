@@ -432,9 +432,12 @@ pub struct RAltKeyMonitor {
 }
 
 /// 钩子回调的线程局部上下文。
+///
+/// 重要：hook_proc 必须在 ~300ms 内返回，否则 Windows 静默卸载钩子。
+/// 因此 hook_proc 只做最小状态更新 + PostThreadMessageW，不做任何 I/O（含 tracing）。
 #[cfg(target_os = "windows")]
 struct HookContext {
-    app_handle: tauri::AppHandle,
+    thread_id: u32,
     ralt_down: bool,
     last_lctrl_time: u32,
 }
@@ -481,26 +484,36 @@ impl RAltKeyMonitor {
     }
 
     /// 在当前线程内安装 WH_KEYBOARD_LL 钩子并运行消息循环。
+    ///
+    /// 架构：hook_proc 只做最小状态更新 + PostThreadMessageW（零 I/O，< 1μs），
+    /// 消息循环收到 WM_RALT_ACTION 后才做 tracing + async dispatch。
+    /// 这避免了 LL hook 因回调超时被 Windows 静默卸载的问题。
     fn run_message_loop(
         app: tauri::AppHandle,
         tx: &std::sync::mpsc::SyncSender<Result<u32, super::PlatformError>>,
     ) {
         use windows::Win32::System::Threading::GetCurrentThreadId;
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+            DispatchMessageW, GetMessageW, PeekMessageW, SetWindowsHookExW, TranslateMessage,
+            UnhookWindowsHookEx, WH_KEYBOARD_LL, PM_NOREMOVE, WM_APP,
         };
 
-        // 设置 thread_local 上下文
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        // 设置 thread_local 上下文 — 只含状态，不含 AppHandle
         HOOK_CTX.with(|ctx| {
             *ctx.borrow_mut() = Some(HookContext {
-                app_handle: app,
+                thread_id,
                 ralt_down: false,
                 last_lctrl_time: 0,
             });
         });
 
+        // 初始化线程消息队列 — PeekMessage 确保队列在 hook 安装前已创建。
+        let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+        let _ = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE) };
+
         // 安装低级键盘钩子
-        // 传入当前进程的模块句柄 — Windows 11 某些版本要求 LL 钩子提供有效 HINSTANCE
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         let hmod = unsafe { GetModuleHandleW(None) };
         let hinstance = match &hmod {
@@ -516,8 +529,12 @@ impl RAltKeyMonitor {
         let hook =
             unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinstance, 0) };
         let hook = match hook {
-            Ok(h) => h,
+            Ok(h) => {
+                eprintln!("[HOOK_INIT] SetWindowsHookExW succeeded, hook={:?}", h.0);
+                h
+            }
             Err(e) => {
+                eprintln!("[HOOK_INIT] SetWindowsHookExW FAILED: {e}");
                 let _ = tx.send(Err(super::PlatformError::InjectionFailed(format!(
                     "SetWindowsHookExW failed: {e}"
                 ))));
@@ -525,16 +542,38 @@ impl RAltKeyMonitor {
             }
         };
 
-        let thread_id = unsafe { GetCurrentThreadId() };
         tracing::info!(thread_id, "RAltKeyMonitor started on dedicated thread");
+        eprintln!("[HOOK_INIT] thread_id={thread_id}, entering message loop...");
         let _ = tx.send(Ok(thread_id));
 
-        // 消息循环 — GetMessageW 驱动钩子回调，收到 WM_QUIT 时退出
-        let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
+        // 自定义消息：hook_proc 检测到 RAlt 后发送此消息到本线程。
+        // wParam: shift_held (0 或 1)
+        let wm_ralt_action = WM_APP + 1;
+
+        // 消息循环：处理 LL hook 事件 + 自定义 RAlt 分发消息。
         loop {
             let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) };
             if !ret.as_bool() {
                 break; // WM_QUIT 或错误
+            }
+
+            // 处理 hook_proc 发来的 RAlt 快捷键消息（此处做 I/O 安全，不在 hook 回调中）
+            if msg.message == wm_ralt_action {
+                let shift_held = msg.wParam.0 != 0;
+                let action = if shift_held { "translate" } else { "dictate" };
+                tracing::info!(action, "RAlt shortcut dispatched");
+
+                let handle = app.clone();
+                let mode = action.to_string();
+                tauri::async_runtime::spawn(async move {
+                    crate::handle_shortcut_action(&handle, &mode).await;
+                });
+                continue;
+            }
+
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
         }
 
@@ -565,30 +604,39 @@ fn is_key_down(msg: u32) -> bool {
 }
 
 /// 处理 VK_RMENU 事件，返回 true 表示需要抑制该事件。
+///
+/// 注意：此函数从 hook_proc 调用，必须零 I/O（不调 tracing、不做文件操作）。
+/// 快捷键分发通过 PostThreadMessageW 传递到消息循环，在那里安全地做 I/O。
 #[cfg(target_os = "windows")]
 fn process_ralt_event(
     ctx: &mut HookContext,
     kb: &windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT,
     msg: u32,
 ) -> bool {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
+
     let time_diff = kb.time.wrapping_sub(ctx.last_lctrl_time);
     let is_altgr = time_diff <= ALTGR_TIMING_THRESHOLD_MS;
     let is_down = is_key_down(msg);
 
-    eprintln!(
-        "[RALT_DIAG] is_down={is_down} is_altgr={is_altgr} diff={time_diff} ralt_down={}",
-        ctx.ralt_down
-    );
-
     if is_down {
         if is_altgr {
-            eprintln!("[RALT_DIAG] => filtered as AltGr");
             return false;
         }
         if !ctx.ralt_down {
             ctx.ralt_down = true;
-            eprintln!("[RALT_DIAG] => dispatching shortcut!");
-            dispatch_shortcut(ctx);
+            // 检测 Shift 状态并发送自定义消息到消息循环（零 I/O）
+            let shift = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
+            let _ = unsafe {
+                PostThreadMessageW(
+                    ctx.thread_id,
+                    WM_APP + 1,
+                    WPARAM(shift as usize),
+                    LPARAM(0),
+                )
+            };
             return true;
         }
         return true; // 长按重复，抑制
@@ -599,27 +647,10 @@ fn process_ralt_event(
     !is_altgr
 }
 
-/// 异步分发快捷键到统一处理函数（handle_shortcut_action）。
-#[cfg(target_os = "windows")]
-fn dispatch_shortcut(ctx: &HookContext) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
-
-    // SAFETY: GetKeyState 读取按键状态，无前置条件。
-    let shift_held = unsafe { (GetKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 };
-    let action = if shift_held { "translate" } else { "dictate" };
-    tracing::info!(action, "RAlt shortcut dispatched");
-
-    let handle = ctx.app_handle.clone();
-    let mode = action.to_string();
-    tauri::async_runtime::spawn(async move {
-        crate::handle_shortcut_action(&handle, &mode).await;
-    });
-}
-
 /// WH_KEYBOARD_LL 钩子回调。
 ///
 /// 关键约束：必须在 ~300ms 内返回，否则 Windows 会静默移除钩子。
-/// 路由层：仅做事件分发，具体逻辑交给 process_ralt_event / dispatch_shortcut。
+/// 此函数只做：状态更新 + PostThreadMessageW。不调 tracing、不做文件 I/O。
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn hook_proc(
     n_code: i32,

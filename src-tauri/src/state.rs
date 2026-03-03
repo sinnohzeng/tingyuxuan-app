@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -41,6 +42,9 @@ pub struct InjectorState(pub Arc<PlatformInjector>);
 /// Platform context detector — created once, used for all context queries.
 pub struct DetectorState(pub PlatformDetector);
 
+/// 托盘图标 handle — 用于运行时重建菜单（惰性设备枚举）。
+pub struct TrayState(pub Arc<Mutex<Option<tauri::tray::TrayIcon>>>);
+
 /// Holds the network monitor cancellation token to keep it alive for the app's lifetime.
 /// The field is never read directly — the struct exists solely to keep the token alive.
 #[allow(dead_code)]
@@ -48,6 +52,20 @@ pub struct MonitorState(pub tokio_util::sync::CancellationToken);
 
 /// Telemetry 后端 — 应用生命周期内存活，用于上报事件到 SLS。
 pub struct TelemetryState(pub Box<dyn tingyuxuan_core::telemetry::TelemetryBackend>);
+
+/// 会话阶段追踪 — 后端唯一真值，防止快捷键在不当时刻触发。
+///
+/// 状态机: Idle → Recording → Processing → Idle
+/// - Recording 前 800ms 内忽略 RAlt（防误触）
+/// - Processing 期间忽略所有 RAlt
+pub struct SessionPhaseState(pub Arc<RwLock<SessionPhase>>);
+
+#[derive(Debug, Clone, Copy)]
+pub enum SessionPhase {
+    Idle,
+    Recording { started_at: Instant },
+    Processing,
+}
 
 /// macOS Fn 键监听器状态 — 持有 FnKeyMonitor 使其在应用生命周期内存活。
 /// 在非 macOS 平台上不使用。
@@ -87,6 +105,7 @@ pub struct AppStates {
     pub network: NetworkState,
     pub injector: InjectorState,
     pub detector: DetectorState,
+    pub tray: TrayState,
 }
 
 impl AppStates {
@@ -96,9 +115,12 @@ impl AppStates {
         let history = HistoryManager::new()?;
         let (event_tx, _) = broadcast::channel::<PipelineEvent>(64);
 
+        // 读取用户选择的麦克风设备 ID（None = 系统默认）。
+        let device_id = config.audio.input_device_id.clone();
+
         // Spawn the recorder actor on a dedicated OS thread.
         // Volume updates are pushed to the event bus automatically.
-        let recorder_handle = RecorderHandle::spawn(event_tx.clone());
+        let recorder_handle = RecorderHandle::spawn(event_tx.clone(), device_id);
 
         // Create platform-specific injector and detector once at startup.
         let injector = PlatformInjector::new();
@@ -114,6 +136,7 @@ impl AppStates {
             network: NetworkState(Arc::new(std::sync::atomic::AtomicBool::new(true))),
             injector: InjectorState(Arc::new(injector)),
             detector: DetectorState(detector),
+            tray: TrayState(Arc::new(Mutex::new(None))),
         })
     }
 }

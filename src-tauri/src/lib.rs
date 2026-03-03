@@ -24,7 +24,8 @@ pub fn run() {
         .device_event_filter(tauri::DeviceEventFilter::Never)
         .plugin(tauri_plugin_sentry::init(&sentry_client))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_shell::init()) // 用于 shell:default 权能（未来可能需要 open URL）
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Build all application states (split into independent managed states).
             let states = AppStates::new()?;
@@ -41,6 +42,12 @@ pub fn run() {
             // manage floating-bar window visibility, and track
             // network status changes.
             // ----------------------------------------------------------
+            // 会话阶段状态 — 在 event bridge 和 handle_shortcut_action 之间共享。
+            let session_phase = std::sync::Arc::new(tokio::sync::RwLock::new(
+                state::SessionPhase::Idle,
+            ));
+            let phase_for_bridge = session_phase.clone();
+
             let mut event_rx = states.event_bus.0.subscribe();
             let handle = app.handle().clone();
             let network_flag = states.network.0.clone();
@@ -67,10 +74,12 @@ pub fn run() {
                         if let Some(window) = handle.get_webview_window("floating-bar") {
                             match &event {
                                 PipelineEvent::RecordingStarted { .. } => {
+                                    position_floating_bar(&window);
                                     let result = window.show();
                                     tracing::info!(?result, "Event bridge: floating-bar window.show()");
                                 }
                                 PipelineEvent::Error { .. } => {
+                                    position_floating_bar(&window);
                                     let _ = window.show();
                                 }
                                 PipelineEvent::ProcessingComplete { .. } => {
@@ -81,6 +90,17 @@ pub fn run() {
                             }
                         } else {
                             tracing::warn!("Event bridge: floating-bar window NOT FOUND");
+                        }
+
+                        // 会话阶段复位：处理完成/错误/取消后回到 Idle。
+                        match &event {
+                            PipelineEvent::ProcessingComplete { .. }
+                            | PipelineEvent::Error { .. }
+                            | PipelineEvent::RecordingCancelled => {
+                                *phase_for_bridge.write().await = state::SessionPhase::Idle;
+                                tracing::info!("Session phase → Idle");
+                            }
+                            _ => {}
                         }
 
                         // Track network status.
@@ -133,11 +153,15 @@ pub fn run() {
             app.manage(states.network);
             app.manage(states.injector);
             app.manage(states.detector);
+            app.manage(states.tray);
 
             // Initialize telemetry backend (SLS or noop).
             let app_version = env!("CARGO_PKG_VERSION");
             let telemetry_backend = tingyuxuan_core::telemetry::sls::create_backend(app_version);
             app.manage(state::TelemetryState(telemetry_backend));
+
+            // 会话阶段状态（与 event bridge 共享同一个 Arc）。
+            app.manage(state::SessionPhaseState(session_phase));
 
             // Set up system tray.
             tray::create_tray(app.handle())?;
@@ -182,6 +206,8 @@ pub fn run() {
             commands::check_platform_permissions,
             commands::open_permission_settings,
             commands::report_telemetry_event,
+            commands::list_input_devices,
+            commands::set_input_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TingYuXuan");
@@ -296,30 +322,87 @@ fn register_linux_shortcuts(app: &tauri::App) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-/// Handle a global shortcut action by invoking the appropriate recording command.
-pub(crate) async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
-    use crate::state::RecorderState;
+/// 将浮动条窗口定位到屏幕底部居中（任务栏上方约 60 逻辑像素）。
+fn position_floating_bar(window: &tauri::WebviewWindow) {
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let phys = monitor.size();
+        let scale = monitor.scale_factor();
+        let origin = monitor.position();
+        let win_w = 360.0_f64;
+        let win_h = 80.0_f64;
+        let taskbar_margin = 60.0_f64;
 
-    tracing::info!(action, "Shortcut triggered");
+        let logical_w = phys.width as f64 / scale;
+        let logical_h = phys.height as f64 / scale;
+        let origin_x = origin.x as f64 / scale;
+        let origin_y = origin.y as f64 / scale;
+
+        let x = origin_x + (logical_w - win_w) / 2.0;
+        let y = origin_y + logical_h - win_h - taskbar_margin;
+
+        if let Err(e) = window.set_position(tauri::Position::Logical(
+            tauri::LogicalPosition::new(x, y),
+        )) {
+            tracing::warn!(?e, "Failed to position floating bar");
+        }
+    }
+}
+
+/// 快捷键动作处理 — 基于 SessionPhase 状态机。
+///
+/// 状态机: Idle → Recording → Processing → Idle
+/// - Idle + RAlt → 开始录音
+/// - Recording + RAlt（>800ms） → 停止录音
+/// - Recording + RAlt（<800ms） → 忽略（防误触）
+/// - Processing + RAlt → 忽略（等待处理完毕）
+/// - 任意状态 + Cancel → 取消
+pub(crate) async fn handle_shortcut_action(handle: &tauri::AppHandle, action: &str) {
+    use crate::state::{SessionPhase, SessionPhaseState};
+
+    /// 防误触最短录音时长（毫秒）。
+    const DEBOUNCE_MS: u64 = 800;
+
+    let phase_state = handle.state::<SessionPhaseState>();
 
     match action {
         "cancel" => {
-            // Cancel is always safe to call — it's a no-op if not recording.
-            tracing::info!("Emitting shortcut-action: cancel");
+            let mut phase = phase_state.0.write().await;
+            if matches!(*phase, SessionPhase::Idle) {
+                return;
+            }
+            *phase = SessionPhase::Idle;
+            drop(phase);
+            tracing::info!("Shortcut: cancel");
             let _ = handle.emit("shortcut-action", "cancel");
         }
         mode @ ("dictate" | "translate" | "ai_assistant") => {
-            // Toggle behaviour: if already recording, stop; otherwise start.
-            let recorder = handle.state::<RecorderState>();
-            let is_recording = recorder.0.is_recording().await;
-            tracing::info!(mode, is_recording, "Toggle recording");
-
-            if is_recording {
-                tracing::info!("Emitting shortcut-action: stop");
-                let _ = handle.emit("shortcut-action", "stop");
-            } else {
-                tracing::info!(mode, "Emitting shortcut-action: start");
-                let _ = handle.emit("shortcut-action", mode);
+            let mut phase = phase_state.0.write().await;
+            match *phase {
+                SessionPhase::Idle => {
+                    *phase = SessionPhase::Recording {
+                        started_at: std::time::Instant::now(),
+                    };
+                    drop(phase);
+                    tracing::info!(mode, "Shortcut: start recording");
+                    let _ = handle.emit("shortcut-action", mode);
+                }
+                SessionPhase::Recording { started_at } => {
+                    let elapsed = started_at.elapsed();
+                    if elapsed < std::time::Duration::from_millis(DEBOUNCE_MS) {
+                        tracing::info!(
+                            elapsed_ms = elapsed.as_millis(),
+                            "Shortcut: debounce (too quick, ignoring)"
+                        );
+                        return;
+                    }
+                    *phase = SessionPhase::Processing;
+                    drop(phase);
+                    tracing::info!("Shortcut: stop recording");
+                    let _ = handle.emit("shortcut-action", "stop");
+                }
+                SessionPhase::Processing => {
+                    tracing::info!("Shortcut: ignoring (processing in progress)");
+                }
             }
         }
         _ => {}

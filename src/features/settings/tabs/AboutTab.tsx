@@ -6,7 +6,7 @@ import { InfoRegular } from "@fluentui/react-icons";
 import { createLogger } from "../../../shared/lib/logger";
 
 const log = createLogger("AboutTab");
-const APP_VERSION = "0.7.3";
+const APP_VERSION = "0.10.0";
 
 export default function AboutTab() {
   const openExternal = async (url: string) => {

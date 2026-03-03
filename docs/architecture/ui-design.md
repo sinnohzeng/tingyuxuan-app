@@ -88,3 +88,33 @@ hook catch 块
 
 - Windows/Linux：PermissionGuide 自动跳过（`check_platform_permissions` 返回 `"granted"`）
 - a11y：IntroSlide 步骤指示器使用 `role="tablist"` + `aria-selected` + `aria-label`
+
+## 系统托盘菜单
+
+对标 Typeless 应用的托盘菜单结构，以实用工具为主：
+
+```
+反馈意见                     → 打开 GitHub Issues
+打开听语轩主页               → 显示主窗口
+───────────
+设置...                      → 显示主窗口 + 打开设置对话框
+选择麦克风                →  ┌ 系统默认 ✓        ┐
+                              │ Studio Display Mic │
+                              └ USB Headset        ┘
+───────────
+将词汇添加到词典             → 显示主窗口 + 导航到词典页
+───────────
+版本 X.Y.Z                   → 灰色不可点击
+检查更新                     → 打开 GitHub Releases/latest
+───────────
+退出听语轩
+```
+
+### 设计要点
+
+- **URL 推导**：使用 `env!("CARGO_PKG_REPOSITORY")` 编译时获取，不硬编码
+- **版本号**：使用 `env!("CARGO_PKG_VERSION")` 编译时获取
+- **麦克风子菜单**：惰性重建 — 每次右键打开托盘时重新枚举设备（cpal 无热插拔通知）
+- **TrayState**：`TrayIcon` handle 存入 Tauri managed state，支持 `set_menu()` 动态重建
+- **菜单 ID 路由**：麦克风项使用 `"mic:{device_id}"` 前缀，`handle_menu_event` 统一路由
+- **设备选择详见** [ADR-0009](adr/0009-audio-device-selection.md)

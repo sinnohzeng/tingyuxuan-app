@@ -27,7 +27,11 @@ const OnboardingFlow = lazy(
 function App() {
   return (
     <ErrorBoundary>
-      <Suspense>
+      <Suspense fallback={
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#fafafa" }}>
+          <span style={{ color: "#888", fontSize: 14 }}>加载中…</span>
+        </div>
+      }>
         <Routes>
           {/* 悬浮录音条 — 轻量窗口，无 Fluent */}
           <Route path="/floating-bar" element={<FloatingBar />} />

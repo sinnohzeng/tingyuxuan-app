@@ -45,6 +45,20 @@ pub const MAX_RECORDING_SECONDS: u64 = 300;
 pub const MAX_SAMPLES: usize = 16_000 * MAX_RECORDING_SECONDS as usize;
 ```
 
+### AudioDeviceInfo（设备子模块 `audio/devices.rs`）
+
+```rust
+/// 音频输入设备的可序列化描述。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioDeviceInfo {
+    pub id: String,         // DeviceId.to_string() — 持久化标识
+    pub name: String,       // DeviceDescription — 用户可读名称（UI 显示）
+    pub is_default: bool,   // 是否为系统默认输入设备
+}
+```
+
+设备标识方案详见 [ADR-0009](../architecture/adr/0009-audio-device-selection.md)。
+
 ### AudioRecorder
 
 ```rust
@@ -65,6 +79,8 @@ pub struct AudioRecorder {
     stream: Option<Stream>,
     /// True when running in mock mode (no real microphone).
     mock_mode: bool,
+    /// 选中的麦克风设备 ID。None = 系统默认。
+    device_id: Option<String>,
 }
 ```
 
@@ -149,6 +165,13 @@ pub enum AudioError {
 
 ## 公开 API
 
+### 设备枚举与选择（`audio/devices.rs`）
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `enumerate_input_devices()` | `fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError>` | 枚举所有可用音频输入设备。Mock 模式返回模拟设备 |
+| `resolve_input_device()` | `fn resolve_input_device(device_id: Option<&str>) -> Result<cpal::Device, AudioError>` | 根据持久化的 DeviceId 查找设备。None 或找不到时 fallback 到默认设备 |
+
 ### AudioBuffer（编码子模块）
 
 | 方法 | 签名 | 说明 |
@@ -173,7 +196,7 @@ pub enum AudioError {
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `new()` | `fn new() -> Result<Self, AudioError>` | 创建录音器实例。Mock 模式下跳过设备初始化，正常模式下探测默认输入设备 |
+| `new()` | `fn new(device_id: Option<&str>) -> Result<Self, AudioError>` | 创建录音器实例。`device_id` 指定麦克风设备（`None` = 系统默认）。Mock 模式下跳过设备初始化 |
 | `start()` | `fn start(&mut self, ...) -> Result<(), AudioError>` | 开始录音，PCM 数据累积到内部 AudioBuffer |
 | `stop()` | `fn stop(&mut self) -> Result<AudioBuffer, AudioError>` | 停止录音并返回 AudioBuffer（所有权转移） |
 | `cancel()` | `fn cancel(&mut self) -> Result<(), AudioError>` | 取消录音并清空缓冲区 |
@@ -210,7 +233,7 @@ pub enum AudioError {
 
 ## 错误处理策略
 
-- **设备探测阶段：** `new()` 在正常模式下立即探测默认输入设备，缺少设备时返回 `AudioError::NoInputDevice`
+- **设备探测阶段：** `new(device_id)` 在正常模式下通过 `resolve_input_device()` 查找指定设备（或默认设备），缺少设备时返回 `AudioError::NoInputDevice`
 - **录音状态守卫：** 重复调用 `start()` 返回 `AlreadyRecording`；在未录音时调用 `stop()` / `cancel()` 返回 `NotRecording`
 - **cpal 流错误：** 通过 `AudioError::StreamError(String)` 包装，涵盖配置查询失败、流构建失败、播放失败等场景
 - **WAV 写入错误：** 通过 `AudioError::WavWriteError(String)` 包装 hound 库错误
@@ -224,7 +247,15 @@ pub enum AudioError {
 
 ## 测试覆盖
 
-共 **31** 个单元测试（含编码器 9 个）：
+共 **36** 个单元测试（含编码器 9 个、设备模块 3 个）：
+
+### 设备枚举测试（3 个）
+
+| 测试名称 | 覆盖场景 |
+|----------|----------|
+| `test_enumerate_mock_mode` | Mock 模式返回包含 "Mock Microphone" 的设备列表 |
+| `test_mock_device_is_default` | Mock 模式返回的设备 is_default=true |
+| `test_audio_device_info_serialization` | AudioDeviceInfo JSON 序列化/反序列化往返一致 |
 
 ### AudioBuffer / EncodedAudio 编码器测试（9 个）
 
@@ -240,11 +271,12 @@ pub enum AudioError {
 | `test_base64_encoding` | base64 编码/解码往返一致 |
 | `test_duration_ms_preserved` | 编码后 duration_ms 一致 |
 
-### AudioRecorder 测试（9 个）
+### AudioRecorder 测试（10 个）
 
 | 测试名称 | 覆盖场景 |
 |----------|----------|
 | `test_new_mock_mode` | Mock 模式下初始化成功 |
+| `test_new_with_device_id_mock` | Mock 模式下指定 device_id 初始化成功 |
 | `test_not_recording_initially` | 初始状态非录音 |
 | `test_stop_without_start_returns_error` | 未开始时 stop 返回错误 |
 | `test_cancel_without_start_returns_error` | 未开始时 cancel 返回错误 |

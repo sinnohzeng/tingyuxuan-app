@@ -16,7 +16,7 @@
 | Audio | cpal 0.17 + hound 3.5 (optional feature, 桌面专用) |
 | UI 组件库 | Fluent UI 2 (@fluentui/react-components) |
 | 可观测性 | Sentry 0.42 + tauri-plugin-sentry 0.5 (崩溃/错误) + SLS Web Tracking (埋点) |
-| Testing | 124 Rust + 71 vitest + 13 JNI + 7 Android 单元测试 |
+| Testing | 131 Rust + 71 vitest + 13 JNI + 7 Android 单元测试 |
 
 ## 项目结构
 
@@ -137,6 +137,8 @@ AGP 9.0 是大版本更新，以下全部在 v0.4.0 构建中踩过：
 | `open_permission_settings` | `target: Option<String>` | `()` | 打开权限设置 |
 | `report_telemetry_event` | `event: String` | `()` | 前端埋点上报 |
 | `is_first_launch` | — | `bool` | 首次启动检查 |
+| `list_input_devices` | — | `Vec<AudioDeviceInfo>` | 枚举音频输入设备 |
+| `set_input_device` | `device_id: Option<String>` | `()` | 设置输入设备 |
 
 ## 环境变量
 

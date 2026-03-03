@@ -1,8 +1,9 @@
 [package]
 name = "tingyuxuan-app"
-version = "0.8.1"
+version = "0.10.0"
 edition = "2024"
 description = "TingYuXuan - AI-powered voice input tool"
+repository = "https://github.com/sinnohzeng/tingyuxuan-app"
 license = "LicenseRef-Proprietary"
 
 [dependencies]
@@ -10,6 +11,7 @@ tingyuxuan-core = { path = "../crates/tingyuxuan-core" }
 tauri = { version = "2.10", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2.3"
 tauri-plugin-shell = "2.3"
+tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

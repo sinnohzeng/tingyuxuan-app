@@ -27,6 +27,8 @@ export default defineConfig(async () => ({
   build: {
     sourcemap: true,
   },
+  // 排除 Rust target 目录，避免 Vite 扫描 target/doc/ 下的 HTML 文件
+  exclude: ["**/target/**"],
   clearScreen: false,
   server: {
     port: 1420,
