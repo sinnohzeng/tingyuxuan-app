@@ -2,7 +2,10 @@
 
 ## 模块职责
 
-Audio 模块负责麦克风音频采集、PCM 缓冲区累积、压缩编码和录音文件缓存管理。录音器通过 cpal 库采集 16 kHz / 16-bit / 单声道 PCM 数据，累积到内存 `AudioBuffer` 中（而非流式写入文件），录音结束后由 `AudioBuffer` 优先编码为 MP3（24 kbps），若编码失败自动回退 WAV，再交给多模态 LLM 一步处理。同时提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
+Audio 模块负责麦克风音频采集、PCM 缓冲区累积、压缩编码和录音文件缓存管理。
+录音器通过 cpal 库采集 16 kHz / 16-bit / 单声道 PCM 数据，累积到内存 `AudioBuffer` 中（而非流式写入文件），
+录音结束后由 `AudioBuffer` 优先编码为 MP3（24 kbps），若编码失败自动回退 WAV，再交给多模态 LLM 一步处理。
+同时提供带有 JSON sidecar 元数据的文件缓存生命周期管理。
 
 ---
 

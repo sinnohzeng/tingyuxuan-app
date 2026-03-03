@@ -52,6 +52,11 @@ cargo test -p tingyuxuan-core          # 124 Rust tests
 npm test                                # 71 frontend tests
 npx tsc --noEmit                        # TypeScript 类型检查
 
+# 文档质量
+npm run lint:docs                       # Markdown 格式检查（markdownlint-cli2）
+npm run lint:links                      # 文档链接校验（需安装 lychee）
+npm run changelog:next                  # 预览未发布变更日志（需安装 git-cliff）
+
 # 本机无法完整编译 Tauri（缺 webkit2gtk 头文件），但可以：
 cargo check -p tingyuxuan-core --no-default-features   # 不含音频的核心检查
 cargo test -p tingyuxuan-jni                            # JNI 测试 (7 tests)

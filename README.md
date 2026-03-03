@@ -76,6 +76,10 @@ npx tauri build
 - [配置指南](docs/guides/configuration.md)
 - [故障排查](docs/guides/troubleshooting.md)
 
+## 贡献
+
+欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发环境搭建、代码规范和提交流程。
+
 ## 许可证
 
 Source-Available，保留所有权利。详见 [LICENSE](LICENSE)。

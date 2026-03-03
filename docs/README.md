@@ -5,18 +5,23 @@
 
 ## 文档导航
 
-### 产品
-- [产品需求文档（PRD）](prd.md) — 产品定位、功能需求、交互设计、成功指标
-- [竞品分析](competitive-analysis.md) — Typeless 调研、竞品功能对比矩阵
+### 用户文档（安装 · 使用 · 配置）
 
-### 架构
+- [安装指南](guides/installation.md) — 下载、安装、系统依赖
+- [使用指南](guides/usage.md) — 快捷键、录音流程、四种模式
+- [配置指南](guides/configuration.md) — API Key、语言、快捷键自定义
+- [故障排查](guides/troubleshooting.md) — 常见问题与解决方案
+
+### 开发者文档（架构 · 模块 · 贡献）
+
+**架构**
 - [系统架构总览](architecture/overview.md) — 分层架构、技术栈、核心组件
 - [管线数据流](architecture/data-flow.md) — 事件流、离线队列、窗口管理
 - [前端架构](architecture/frontend.md) — feature-based 目录、Zustand stores、路由
 - [UI 设计规格](architecture/ui-design.md) — Fluent UI 2 组件系统、主题、无障碍
 - [架构决策记录 (ADR)](architecture/adr/) — 所有重大架构决策的背景与理由
 
-### 功能模块规格
+**模块规格**
 - [录音与编码](modules/audio.md) — AudioRecorder + AudioBuffer + WAV/MP3 编码器
 - [多模态语言模型 (LLM)](modules/llm.md) — MultimodalProvider + 音频+上下文一步处理 + 提示词系统
 - [管线编排](modules/pipeline.md) — Pipeline 单步多模态处理 + 重试 + 事件广播
@@ -26,16 +31,19 @@
 - [安全模型](modules/security.md) — CSP、API Key 存储、输入验证
 - [JNI 桥接](modules/jni-bridge.md) — Android Rust JNI 接口
 
-### 用户指南
-- [安装指南](guides/installation.md)
-- [使用指南](guides/usage.md)
-- [配置指南](guides/configuration.md)
-- [故障排查](guides/troubleshooting.md)
+**贡献**
+- [贡献指南](../CONTRIBUTING.md) — 开发环境搭建、代码规范、提交流程
 - [CI/Release 构建踩坑记录](guides/ci-release-notes.md) — AGP 9.0 迁移、Tauri target 路径、OOM 等
 
-### 开发计划
+### 内部文档（产品 · 计划 · 治理）
 
-**Phase 计划**（`phase-N-name.md`）：里程碑级别的阶段规划。
+**产品**
+- [产品需求文档（PRD）](prd.md) — 产品定位、功能需求、交互设计、成功指标
+- [竞品分析](competitive-analysis.md) — Typeless 调研、竞品功能对比矩阵
+
+**开发计划**
+
+Phase 计划（`phase-N-name.md`）：里程碑级别的阶段规划。
 
 - [Phase 1: MVP 核心骨架](plan/phase-1-mvp.md)
 - [Phase 2: 端到端集成](plan/phase-2-integration.md)
@@ -45,7 +53,7 @@
 - [Phase 6: 多模态一步管线重构](plan/phase-6-multimodal-pipeline.md)
 - [Phase 7: Windows 语音 MVP 修复与重构（当前执行 SSOT）](plan/phase-7-voice-mvp-remediation.md)
 
-**Sprint 实施计划**（`YYYY-MM-DD-topic.md`）：具体任务级别的实施方案。
+Sprint 实施计划（`YYYY-MM-DD-topic.md`）：具体任务级别的实施方案。
 
 - [全链路可观测性增强方案](plan/observability-enhancement.md)
 - [Sprint 8: 权限系统 + 可观测性实施](plan/2026-03-02-permissions-observability.md)
@@ -53,6 +61,7 @@
 - [Qwen3-ASR-Flash 传输与压缩决策](plan/2026-03-03-qwen3-asr-flash-transport-decision.md)
 - [MVP 整体验收报告](plan/2026-03-03-mvp-acceptance-report.md)
 - [文档系统性治理计划](plan/2026-03-03-documentation-governance.md)
+- [文档自动化工具链](plan/2026-03-03-documentation-automation.md)
 
 ## 文档约定
 
@@ -88,3 +97,4 @@
 4. 相关 `docs/modules/*.md` — 接口变更同步
 5. `README.md` — 面向用户的重大变更
 6. `docs/prd.md` 第七节 — 实现状态追踪更新
+7. 运行 `npm run lint:docs` 确认文档格式无违规

@@ -2,7 +2,11 @@
 
 ## 模块职责
 
-LLM 模块负责将编码后的音频数据和上下文信息通过多模态大语言模型一步完成语音识别与文本处理，包括听写清理、翻译、AI 助手和文本编辑四种模式。通过 `LLMProvider` trait 抽象支持多种后端，使用 OpenAI 兼容的 Chat Completions API（含多模态扩展）。核心实现 `MultimodalProvider` 发送音频 base64 + 上下文 system prompt，通过 SSE 流式响应解析获取最终文本。连接测试已升级为**真实音频多模态探测**（非纯文本 ping）。
+LLM 模块负责将编码后的音频数据和上下文信息通过多模态大语言模型一步完成语音识别与文本处理，
+包括听写清理、翻译、AI 助手和文本编辑四种模式。通过 `LLMProvider` trait 抽象支持多种后端，
+使用 OpenAI 兼容的 Chat Completions API（含多模态扩展）。核心实现 `MultimodalProvider`
+发送音频 base64 + 上下文 system prompt，通过 SSE 流式响应解析获取最终文本。
+连接测试已升级为**真实音频多模态探测**（非纯文本 ping）。
 
 ---
 
@@ -165,7 +169,7 @@ data: {"choices":[{"delta":{}}],"usage":{"total_tokens":42}}
 data: [DONE]
 ```
 
-解析逻辑：逐行读取 `data: ` 前缀的行，反序列化为 `SSEChunk`，拼接所有 `delta.content`，提取最终 `usage.total_tokens`。
+解析逻辑：逐行读取 `data:` 前缀的行，反序列化为 `SSEChunk`，拼接所有 `delta.content`，提取最终 `usage.total_tokens`。
 
 ---
 

@@ -12,7 +12,10 @@
     "test": "vitest run",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "format": "prettier --write src/"
+    "format": "prettier --write src/",
+    "lint:docs": "markdownlint-cli2",
+    "lint:links": "lychee '**/*.md' --config .lychee.toml --exclude-path node_modules --exclude-path target",
+    "changelog:next": "git-cliff --unreleased"
   },
   "dependencies": {
     "@fluentui/react-components": "^9.73.1",
@@ -40,6 +43,7 @@
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.0.1",
     "jsdom": "^28.1.0",
+    "markdownlint-cli2": "^0.21.0",
     "prettier": "^3.8.1",
     "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",

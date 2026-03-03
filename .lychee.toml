@@ -1,0 +1,33 @@
+# lychee 链接校验配置
+# https://github.com/lycheeverse/lychee
+
+exclude = [
+  # 平台特定 URI scheme
+  "ms-settings:.*",
+  # 本地地址
+  "http://localhost.*",
+  "http://127\\.0\\.0\\.1.*",
+  "http://ipc\\.localhost",
+  # 需要认证的 URL
+  "https://platform.minimaxi.com/.*",
+  # 可能限流的外部站点
+  "https://help.aliyun.com/.*",
+  # mailto
+  "mailto:.*",
+]
+
+include_fragments = true
+max_concurrency = 8
+timeout = 30
+accept = ["100..=399", "429"]
+
+exclude_path = [
+  "node_modules",
+  "target",
+  ".git",
+  "dist",
+  "android",
+]
+
+cache = true
+max_cache_age = "1d"

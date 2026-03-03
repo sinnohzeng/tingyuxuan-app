@@ -330,29 +330,32 @@ jobs:
           cat SHA256SUMS.txt
 
       # ── Sentry Release ──────────────────────────────────────
-      - name: Setup Sentry CLI
-        if: env.SENTRY_AUTH_TOKEN != ''
-        uses: getsentry/action-cli-setup@v2
-        with:
-          token: ${{ secrets.SENTRY_AUTH_TOKEN }}
-
       - name: Create Sentry Release
-        if: env.SENTRY_AUTH_TOKEN != ''
+        if: ${{ secrets.SENTRY_AUTH_TOKEN != '' && secrets.SENTRY_ORG != '' && secrets.SENTRY_PROJECT != '' }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          sentry-cli releases new -o "$SENTRY_ORG" -p "$SENTRY_PROJECT" "$VERSION"
-          sentry-cli releases set-commits "$VERSION" --auto
-          sentry-cli releases finalize "$VERSION"
+          npx --yes @sentry/cli releases new -o "$SENTRY_ORG" -p "$SENTRY_PROJECT" "$VERSION"
+          npx --yes @sentry/cli releases set-commits "$VERSION" --auto
+          npx --yes @sentry/cli releases finalize "$VERSION"
         env:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_URL: ${{ secrets.SENTRY_URL }}
 
+      - name: Generate release changelog
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "TingYuXuan v${{ steps.version.outputs.version }}"
+          body_path: CHANGES.md
           files: release-files/*
           draft: true
-          generate_release_notes: true
